@@ -44,7 +44,27 @@ TIMING_CLASSES = {"fixed", "tight", "scattered", "date_only"}
 # config time - not a topic judgement, so there is nothing here to rot.
 JURISDICTIONS = {"AU", "US", "CN", "HK", "EU", "UK", "JP"}
 
-_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+# ${NAME} is required; ${NAME:-fallback} has a default. The second form
+# exists so a fork can identify itself without every user having to set a
+# variable, while a genuinely required value still fails loudly.
+_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+# What each required variable is FOR, so a missing one explains itself
+# instead of naming a symbol and leaving you to search for it.
+ENV_HELP = {
+    "MACROWIRE_CONTACT": (
+        "A contact address for the outbound User-Agent. Every source here is a\n"
+        "  public government or exchange server and they expect to know who is\n"
+        "  calling; some block requests that do not say.\n"
+        "    MACROWIRE_CONTACT=you@example.com"
+    ),
+    "SEC_CONTACT": (
+        "The SEC requires a User-Agent of the form 'Name email' and ENFORCES it -\n"
+        "  anything else is answered with HTTP 403. Note the space: a bare email\n"
+        "  is not enough.\n"
+        "    SEC_CONTACT=Jane Doe jane@example.com"
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -77,13 +97,17 @@ def _expand_env(value):
     if isinstance(value, str):
 
         def replace(match):
-            name = match.group(1)
-            if name not in os.environ:
-                raise ConfigError(
-                    f"sources.yaml references ${{{name}}} but {name} is not set. "
-                    f"Copy .env.example to .env and fill it in."
-                )
-            return os.environ[name]
+            name, fallback = match.group(1), match.group(2)
+            if name in os.environ:
+                return os.environ[name]
+            if fallback is not None:
+                return fallback
+            hint = ENV_HELP.get(name)
+            raise ConfigError(
+                f"{name} is not set, and sources.yaml needs it.\n"
+                + (f"  {hint}\n" if hint else "")
+                + f"  Set it in {REPO_ROOT / '.env'} (copy .env.example to start)."
+            )
 
         return _ENV_REF.sub(replace, value)
     if isinstance(value, dict):
@@ -152,6 +176,28 @@ def load_sources(path: Path | None = None) -> list[Source]:
         user_agent = setting("user_agent")
         if not user_agent:
             raise ConfigError(f"{path}: '{name}' has no user_agent and no default")
+
+        # Contacts are validated HERE rather than at fetch time. Both are
+        # required by the servers we poll, and discovering that through a
+        # stack trace mid-cycle is the wrong first contact with the tool.
+        if "@" not in user_agent:
+            raise ConfigError(
+                f"{path}: '{name}' user_agent has no contact address.\n"
+                f"  These are public government servers and they expect one.\n"
+                f"  Set MACROWIRE_CONTACT in .env, e.g.\n"
+                f"    MACROWIRE_CONTACT=you@example.com"
+            )
+        if entry.get("parser") == "sec_edgar" or config.get("sec_contact") is not None:
+            contact = (config.get("sec_contact") or "").strip()
+            if not contact or "@" not in contact or " " not in contact:
+                raise ConfigError(
+                    f"{path}: '{name}' needs a valid sec_contact.\n"
+                    f"  The SEC requires a User-Agent of the form 'Name email' and\n"
+                    f"  ENFORCES it - anything else is answered with HTTP 403.\n"
+                    f"  Set SEC_CONTACT in .env, e.g.\n"
+                    f"    SEC_CONTACT=Jane Doe jane@example.com\n"
+                    f"  Currently: {contact!r}"
+                )
 
         categories = setting("categories", []) or []
         if not isinstance(categories, list):
@@ -247,16 +293,58 @@ def load_sources(path: Path | None = None) -> list[Source]:
     return sources
 
 
+def _validated_dir(declared, label: str, config_path: Path, default: Path) -> tuple[Path, bool]:
+    """Resolve and check a user-supplied output directory.
+
+    Checked at config load, not at write time. A directory that does not
+    exist or cannot be written should fail while you are looking at the
+    config, not silently at the moment it mattered.
+    """
+    if not declared:
+        target = default
+    else:
+        declared = os.path.expanduser(_expand_env(str(declared)))
+        target = Path(declared)
+        if not target.is_absolute():
+            raise ConfigError(
+                f"{config_path}: {label} {declared!r} must be an absolute path - a "
+                f"relative one would resolve differently depending on where you "
+                f"ran the command from")
+        if not target.exists():
+            raise ConfigError(
+                f"{config_path}: {label} {target} does not exist. Create it, or "
+                f"remove {label} to use the default {default}.")
+        if not target.is_dir():
+            raise ConfigError(f"{config_path}: {label} {target} is not a directory")
+        if not os.access(target, os.W_OK):
+            raise ConfigError(f"{config_path}: {label} {target} is not writable")
+    try:
+        target.relative_to(REPO_ROOT)
+        return target, False
+    except ValueError:
+        return target, True
+
+
 def load_backup_settings(path: Path | None = None) -> dict:
-    """The `backup:` block from sources.yaml defaults, with safe fallbacks."""
+    """The `backup:` block from sources.yaml defaults.
+
+    `path` may point anywhere, same as export. A backup on the same disk as
+    the database protects against a mistake but not a drive failure, and the
+    config should let you say so.
+    """
     load_dotenv(REPO_ROOT / ".env")
     path = path or DEFAULT_CONFIG_PATH
     document = yaml.safe_load(path.read_text()) or {}
     block = ((document.get("defaults") or {}).get("backup") or {})
+    default_dir = REPO_ROOT / "data" / "backups"
+    target, external = _validated_dir(block.get("path"), "backup.path", path, default_dir)
     return {
         "enabled": bool(block.get("enabled", True)),
         "interval_seconds": int(block.get("interval_seconds", 86400)),
         "keep": int(block.get("keep", 7)),
+        "path": target,
+        "external": external,
+        "default_path": default_dir,
     }
 
 
@@ -277,3 +365,27 @@ def load_web_settings(path: Path | None = None) -> dict:
     if not 1 <= port <= 65535:
         raise ConfigError(f"{path}: web.port {port} is not a valid port")
     return {"host": str(block.get("host", "127.0.0.1")), "port": port}
+
+
+def load_export_settings(path: Path | None = None) -> dict:
+    """The `export:` block from sources.yaml defaults.
+
+    `path` may point anywhere - a synced folder, an external drive. It is
+    validated HERE, at config load, rather than at export time: a directory
+    that does not exist or cannot be written should fail while you are
+    looking at the config, not silently three weeks later when the one copy
+    of your irreplaceable rows fails to be written.
+    """
+    load_dotenv(REPO_ROOT / ".env")
+    path = path or DEFAULT_CONFIG_PATH
+    document = yaml.safe_load(path.read_text()) or {}
+    block = ((document.get("defaults") or {}).get("export") or {})
+
+    default_dir = REPO_ROOT / "export"
+    target, external = _validated_dir(block.get("path"), "export.path", path, default_dir)
+    return {
+        "path": target,
+        "external": external,
+        "auto": bool(block.get("auto", True)),
+        "default_path": default_dir,
+    }

@@ -1,30 +1,67 @@
 #!/usr/bin/env bash
-# Enforce commit authorship. Git hooks are not cloned, so this file lives
-# in the repo and must be copied into .git/hooks/ by hand:
 #
-#   cp git-hooks/commit-msg .git/hooks/commit-msg
-#   chmod +x .git/hooks/commit-msg
+# Refuses a commit whose authorship looks wrong, and one carrying a
+# machine-generated attribution trailer.
+#
+# WHAT IT IS FOR
+#   Two things go wrong quietly in a repository worked on with assistance:
+#   a commit lands under whatever identity the shell happened to have, and
+#   a tool appends "Co-authored-by" or "Generated with" to the message.
+#   Neither is caught by review, because neither shows up in a diff.
+#
+# WHAT IT CHECKS
+#   By default: that author and committer are set, non-empty, and identical.
+#   That is enough to catch a misconfigured shell without naming anybody, so
+#   it works for every contributor rather than one.
+#
+#   To pin a specific identity - useful on a single-author repo - set:
+#     git config macrowire.authorName  "Your Name"
+#     git config macrowire.authorEmail "you@example.com"
+#   Both must be set for the check to apply.
+#
+# INSTALLING
+#   Hooks are not cloned. Copy it in by hand:
+#     cp git-hooks/commit-msg .git/hooks/commit-msg
+#     chmod +x .git/hooks/commit-msg
 #
 set -euo pipefail
 
-EXPECTED_NAME="Spyril"
-EXPECTED_EMAIL="spyril@gmail.com"
+msg_file="$1"
 
-actual_name="$(git config user.name || true)"
-actual_email="$(git config user.email || true)"
+author_name="$(git config user.name || true)"
+author_email="$(git config user.email || true)"
+committer_name="${GIT_COMMITTER_NAME:-$author_name}"
+committer_email="${GIT_COMMITTER_EMAIL:-$author_email}"
 
-if [[ "$actual_name" != "$EXPECTED_NAME" || "$actual_email" != "$EXPECTED_EMAIL" ]]; then
-    echo "commit-msg: refusing commit." >&2
-    echo "  expected author: ${EXPECTED_NAME} <${EXPECTED_EMAIL}>" >&2
-    echo "  configured     : ${actual_name} <${actual_email}>" >&2
-    echo >&2
-    echo "  git config user.name  \"${EXPECTED_NAME}\"" >&2
-    echo "  git config user.email \"${EXPECTED_EMAIL}\"" >&2
+if [[ -z "$author_name" || -z "$author_email" ]]; then
+    echo "commit-msg: refusing commit - git identity is not set." >&2
+    echo "  git config user.name  \"Your Name\"" >&2
+    echo "  git config user.email \"you@example.com\"" >&2
     exit 1
 fi
 
-# Reject machine-generated attribution trailers.
-msg_file="$1"
+if [[ "$author_email" != "$committer_email" ]]; then
+    echo "commit-msg: refusing commit - author and committer disagree." >&2
+    echo "  author   : ${author_name} <${author_email}>" >&2
+    echo "  committer: ${committer_name} <${committer_email}>" >&2
+    echo "  Usually a stale GIT_COMMITTER_* in the environment." >&2
+    exit 1
+fi
+
+# Optional pin. Only enforced when BOTH are configured, so the hook is
+# usable by anyone who clones this without editing it.
+expected_name="$(git config macrowire.authorName || true)"
+expected_email="$(git config macrowire.authorEmail || true)"
+if [[ -n "$expected_name" && -n "$expected_email" ]]; then
+    if [[ "$author_name" != "$expected_name" || "$author_email" != "$expected_email" ]]; then
+        echo "commit-msg: refusing commit - authorship does not match the pin." >&2
+        echo "  expected : ${expected_name} <${expected_email}>" >&2
+        echo "  actual   : ${author_name} <${author_email}>" >&2
+        echo "  (pin lives in git config macrowire.authorName / macrowire.authorEmail)" >&2
+        exit 1
+    fi
+fi
+
 if grep -qiE '^(co-authored-by|generated with|assisted-by)' "$msg_file"; then
     echo "commit-msg: attribution trailers are not permitted in this repo." >&2
     exit 1

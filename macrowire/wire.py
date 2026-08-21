@@ -29,9 +29,12 @@ def _age_seconds(timestamp: str | None) -> float | None:
     return (datetime.now(timezone.utc) - moment).total_seconds()
 
 
-def _download(source: Source, url: str | None = None, params: dict | None = None) -> httpx.Response:
+def _download(source: Source, url: str | None = None, params: dict | None = None,
+              headers: dict | None = None) -> httpx.Response:
     url = url or source.url
-    headers = {
+    # A source may override the User-Agent entirely: the SEC requires its own
+    # documented 'Name email' form and answers anything else with a 403.
+    headers = dict(headers) if headers else {
         "User-Agent": source.user_agent,
         "Accept": "application/rss+xml, application/rdf+xml, application/xml, "
                   "text/xml, application/json",
@@ -103,7 +106,13 @@ def _source_state(conn: sqlite3.Connection, source: Source, source_id: int) -> d
     row = conn.execute(
         "SELECT MAX(period) FROM observations WHERE source_id = ?", (source_id,)
     ).fetchone()
-    return {"latest_period": row[0] if row and row[0] else None}
+    watch = [
+        r[0] for r in conn.execute(
+            """SELECT ticker FROM watchlists WHERE user_id = ? AND market = 'US'
+               ORDER BY ticker""", (db.LOCAL_USER_ID,))
+    ]
+    return {"latest_period": row[0] if row and row[0] else None,
+            "watchlist_us": watch}
 
 
 def classify(source: Source, parsed: ParsedFeed) -> None:
@@ -119,6 +128,9 @@ def classify(source: Source, parsed: ParsedFeed) -> None:
     fallback = source.config.get("announcement_type")
     for item in parsed.items:
         if item.get("announcement_type"):
+            item.setdefault("type_primary", None)
+            if not item.get("type_primary"):
+                item["type_primary"] = item["announcement_type"]
             continue
         url = item.get("url") or ""
         for rule in source.categories:
@@ -127,6 +139,8 @@ def classify(source: Source, parsed: ParsedFeed) -> None:
                 break
         else:
             item["announcement_type"] = fallback
+        if not item.get("type_primary"):
+            item["type_primary"] = item["announcement_type"]
 
 
 def _store_items(conn, source_id: int, parsed: ParsedFeed) -> int:
@@ -145,8 +159,9 @@ def _store_items(conn, source_id: int, parsed: ParsedFeed) -> int:
             INSERT OR IGNORE INTO items (
                 id, source_id, external_id, title, url, summary, content,
                 published_at, fetched_at, ticker, is_price_sensitive,
-                announcement_type, institution_abbrev, simple_title, occurrence_date
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                announcement_type, type_primary, type_tags,
+                institution_abbrev, simple_title, occurrence_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item_id,
@@ -161,6 +176,8 @@ def _store_items(conn, source_id: int, parsed: ParsedFeed) -> int:
                 item["ticker"],
                 item["is_price_sensitive"],
                 item["announcement_type"],
+                item.get("type_primary"),
+                item.get("type_tags"),
                 item["institution_abbrev"],
                 item["simple_title"],
                 item["occurrence_date"],
@@ -262,13 +279,15 @@ def fetch_source(conn: sqlite3.Connection, source: Source, stagger: bool = False
     age = _age_seconds(db.last_attempt_at(conn, source.name))
     if age is not None and age < source.min_interval_seconds:
         wait = int(source.min_interval_seconds - age)
+        # Never contacted. Says nothing about whether the source is alive.
         db.log_fetch(
             conn,
             source.name,
-            status="skipped",
+            status=db.STATUS_THROTTLED,
             detail=f"{wait}s below the {source.min_interval_seconds}s minimum interval",
         )
-        return {"source": source.name, "skipped": True, "wait_seconds": wait}
+        return {"source": source.name, "skipped": True, "kind": "throttled",
+                "wait_seconds": wait}
 
     if stagger and source.stagger_seconds:
         time.sleep(source.stagger_seconds)
@@ -283,12 +302,16 @@ def fetch_source(conn: sqlite3.Connection, source: Source, stagger: bool = False
             # decide there is nothing to collect.
             responses, note = fetcher(
                 source,
-                lambda url, params=None: _download(source, url, params),
+                lambda url, params=None, headers=None: _download(
+                    source, url, params, headers),
                 _source_state(conn, source, source_id),
             )
             if not responses:
-                db.log_fetch(conn, source.name, status="skipped", detail=note)
-                return {"source": source.name, "skipped": True, "reason": note}
+                # The fetcher reached the source and it had nothing new. That
+                # is a successful poll and it proves reachability.
+                db.log_fetch(conn, source.name, status=db.STATUS_NO_CHANGE, detail=note)
+                return {"source": source.name, "skipped": True,
+                        "kind": "no_change", "reason": note}
 
         parser = get_parser(source.parser)
         parsed = ParsedFeed()
@@ -375,7 +398,16 @@ def fetch_all(conn: sqlite3.Connection, sources: list[Source]) -> tuple[list[dic
 
 
 def source_status(conn: sqlite3.Connection, source: Source) -> dict:
-    """Everything `status` prints. All of it is information, none of it raises."""
+    """Everything `status` prints. All of it is information, none of it raises.
+
+    Health is derived from the DATA wherever the data can answer, and from
+    fetch_log only where it cannot. The log is not a reliable witness: a
+    restore drops rows that predate the backup, a gated source logs
+    no_change rather than ok, and a source whose every poll dedupes never
+    logs new_item_count > 0 again. Three separate false alarms came from
+    trusting it, and a false alarm in a fail-loudly system is worse than no
+    alarm because it teaches you to ignore the real ones.
+    """
     row = conn.execute("SELECT id FROM sources WHERE name = ?", (source.name,)).fetchone()
     source_id = row["id"] if row else None
 
@@ -383,47 +415,120 @@ def source_status(conn: sqlite3.Connection, source: Source) -> dict:
         found = conn.execute(query, params).fetchone()
         return found[0] if found and found[0] is not None else None
 
-    last_success = scalar(
+    # ---- what the data itself says ---------------------------------------
+    item_rows = observation_rows = 0
+    latest_content = last_stored = None
+    if source_id is not None:
+        item_rows = scalar("SELECT COUNT(*) FROM items WHERE source_id = ?", (source_id,)) or 0
+        observation_rows = scalar(
+            "SELECT COUNT(*) FROM observations WHERE source_id = ?", (source_id,)) or 0
+
+        # Newest thing the SOURCE published, whichever table it writes to.
+        # Checking only `items` reported "never" for every observation
+        # source, which is a query looking in the wrong place, not a fault.
+        content_stamps = [
+            scalar("SELECT MAX(published_at) FROM items WHERE source_id = ?", (source_id,)),
+            scalar("SELECT MAX(observed_at) FROM observations WHERE source_id = ?", (source_id,)),
+        ]
+        latest_content = max([c for c in content_stamps if c], default=None)
+
+        # When we last WROTE something new. fetched_at is stamped at insert,
+        # and a deduped row is never re-inserted, so this is exactly it.
+        stored_stamps = [
+            scalar("SELECT MAX(fetched_at) FROM items WHERE source_id = ?", (source_id,)),
+            scalar("SELECT MAX(fetched_at) FROM observations WHERE source_id = ?", (source_id,)),
+        ]
+        last_stored = max([c for c in stored_stamps if c], default=None)
+
+    # ---- what the log says -----------------------------------------------
+    # A successful CONTACT, not merely a successful store. Legacy 'skipped'
+    # rows predate the distinction and are not counted as contact: they were
+    # mostly throttles, and guessing would re-create the false alarm.
+    last_contact = scalar(
+        """SELECT MAX(timestamp) FROM fetch_log
+           WHERE source = ? AND status IN ('ok', 'no_change', 'backfill')""",
+        (source.name,),
+    )
+    last_ok = scalar(
         "SELECT MAX(timestamp) FROM fetch_log WHERE source = ? AND status = 'ok'",
         (source.name,),
     )
-    last_error_row = conn.execute(
-        """SELECT timestamp, error FROM fetch_log
-           WHERE source = ? AND status = 'error'
-           ORDER BY timestamp DESC LIMIT 1""",
-        (source.name,),
-    ).fetchone()
-    last_new = scalar(
-        """SELECT MAX(timestamp) FROM fetch_log
-           WHERE source = ? AND status = 'ok' AND new_item_count > 0""",
+    last_throttled = scalar(
+        "SELECT MAX(timestamp) FROM fetch_log WHERE source = ? AND status IN ('throttled','skipped')",
         (source.name,),
     )
     revisions = scalar(
         "SELECT COUNT(*) FROM fetch_log WHERE source = ? AND status = 'revision'",
         (source.name,),
     ) or 0
-
-    item_rows = observation_rows = 0
-    latest_content = None
-    if source_id is not None:
-        item_rows = scalar("SELECT COUNT(*) FROM items WHERE source_id = ?", (source_id,)) or 0
-        observation_rows = (
-            scalar("SELECT COUNT(*) FROM observations WHERE source_id = ?", (source_id,)) or 0
-        )
-        latest_content = scalar(
-            "SELECT MAX(published_at) FROM items WHERE source_id = ?", (source_id,)
-        ) or scalar(
-            "SELECT MAX(observed_at) FROM observations WHERE source_id = ?", (source_id,)
-        )
-
     raw_rows = scalar(
-        "SELECT COUNT(*) FROM raw_responses WHERE source = ?", (source.name,)
-    ) or 0
+        "SELECT COUNT(*) FROM raw_responses WHERE source = ?", (source.name,)) or 0
 
-    # A corrected headline upstream lands as a new row sharing the same
-    # external_id rather than overwriting the one you may already have
-    # read. Count those chains so the near-duplicates are visible and a
-    # UI can collapse them.
+    # ---- reconciling the two ---------------------------------------------
+    # Data newer than the newest logged contact means the log is missing
+    # rows - a restore from a backup taken before that fetch is the usual
+    # cause. The data is fine and saying "never fetched" about it is a lie.
+    log_incomplete = bool(
+        last_stored and (last_contact is None or last_stored > last_contact))
+
+    # Consecutive failures = errors since the most recent NON-error row, not
+    # since the last 'ok'. A source that only ever legitimately skips has no
+    # 'ok' row, so the old cutoff never advanced and one ancient blip read as
+    # a permanent failure streak.
+    #
+    # Ordered by id, not timestamp. utc_now() has one-second resolution and a
+    # recovery logged in the same second as the failure it recovered from
+    # would otherwise be invisible - the same tiebreak the revision chains
+    # needed for the same reason.
+    last_non_error_id = scalar(
+        """SELECT MAX(id) FROM fetch_log WHERE source = ? AND status <> 'error'""",
+        (source.name,),
+    ) or 0
+    consecutive = scalar(
+        """SELECT COUNT(*) FROM fetch_log
+           WHERE source = ? AND status = 'error' AND id > ?""",
+        (source.name, last_non_error_id),
+    ) or 0
+    kinds = []
+    for kind, count in conn.execute(
+        """SELECT error_kind, COUNT(*) FROM fetch_log
+           WHERE source = ? AND status = 'error' AND id > ?
+           GROUP BY error_kind ORDER BY COUNT(*) DESC""",
+        (source.name, last_non_error_id),
+    ):
+        label = kind or "unclassified"
+        kinds.append(f"{label}×{count}" if count > 1 else label)
+
+    last_error_row = conn.execute(
+        """SELECT id, timestamp, error FROM fetch_log
+           WHERE source = ? AND status = 'error'
+           ORDER BY id DESC LIMIT 1""",
+        (source.name,),
+    ).fetchone()
+    last_error = dict(last_error_row) if last_error_row else None
+    # An error a later contact superseded is history, not a live fault. By id
+    # again, for the same one-second-resolution reason.
+    if last_error:
+        contact_id = scalar(
+            """SELECT MAX(id) FROM fetch_log
+               WHERE source = ? AND status IN ('ok', 'no_change', 'backfill')""",
+            (source.name,),
+        ) or 0
+        last_error["resolved"] = contact_id > last_error["id"]
+
+    # ---- staleness, from the CONTENT ------------------------------------
+    # "How long since this source published anything new" is a question about
+    # the source, so it is answered from the newest published/observed stamp.
+    # Reading it off fetch_log made a source storing rows every single day
+    # report STALE, because every poll after the first deduped.
+    since_content = _age_seconds(latest_content)
+    days_since_content = since_content / 86400 if since_content is not None else None
+    stale = (
+        source.staleness_days is not None
+        and days_since_content is not None
+        and days_since_content > source.staleness_days
+    )
+
     chains = superseded = 0
     if source_id is not None:
         row = conn.execute(
@@ -435,44 +540,9 @@ def source_status(conn: sqlite3.Connection, source: Source) -> dict:
         ).fetchone()
         chains, superseded = row["chains"], row["superseded"]
 
-    since_success = _age_seconds(last_success)
-    since_new = _age_seconds(last_new)
-    days_since_new = since_new / 86400 if since_new is not None else None
-
-    # How much of this source would be lost with the database.
     replaceable = {"none": "NO", "rolling": "PARTIAL",
                    "queryable": "YES", "unknown": "?"}[source.archive]
     at_risk = (item_rows + observation_rows) if source.archive == "none" else 0
-
-    # Consecutive failures since the last success: one is a blip, twelve is
-    # a source that has gone.
-    last_ok = scalar(
-        "SELECT MAX(timestamp) FROM fetch_log WHERE source = ? AND status = 'ok'",
-        (source.name,),
-    )
-    consecutive = scalar(
-        """SELECT COUNT(*) FROM fetch_log
-           WHERE source = ? AND status = 'error' AND timestamp > COALESCE(?, '')""",
-        (source.name, last_ok),
-    ) or 0
-    # error_kind is NULL for any failure logged before migration 002 added
-    # the column. Formatting that as "Nonex1" is how a null reaches the
-    # screen dressed as a value.
-    kinds = []
-    for kind, count in conn.execute(
-        """SELECT error_kind, COUNT(*) FROM fetch_log
-           WHERE source = ? AND status = 'error' AND timestamp > COALESCE(?, '')
-           GROUP BY error_kind ORDER BY COUNT(*) DESC""",
-        (source.name, last_ok),
-    ):
-        label = kind or "unclassified"
-        kinds.append(f"{label}×{count}" if count > 1 else label)
-
-    stale = (
-        source.staleness_days is not None
-        and days_since_new is not None
-        and days_since_new > source.staleness_days
-    )
 
     return {
         "name": source.name,
@@ -484,19 +554,28 @@ def source_status(conn: sqlite3.Connection, source: Source) -> dict:
         "revisions": revisions,
         "revision_chains": chains,
         "superseded_items": superseded,
-        "last_success": last_success,
-        "seconds_since_success": since_success,
-        "last_new_item": last_new,
-        "days_since_new_item": days_since_new,
+
+        "last_contact": last_contact,
+        "seconds_since_contact": _age_seconds(last_contact),
+        "last_success": last_ok,
+        "seconds_since_success": _age_seconds(last_ok),
+        "last_throttled": last_throttled,
+
+        "last_stored_at": last_stored,
+        "seconds_since_stored": _age_seconds(last_stored),
         "latest_content_at": latest_content,
+        "days_since_content": days_since_content,
+        "log_incomplete": log_incomplete,
+
+        "consecutive_failures": consecutive,
+        "failure_kinds": kinds,
+        "last_error": last_error,
+
         "archive": source.archive,
         "replaceable": replaceable,
         "at_risk": at_risk,
-        "consecutive_failures": consecutive,
-        "failure_kinds": kinds,
         "staleness_days": source.staleness_days,
         "stale": stale,
-        "last_error": dict(last_error_row) if last_error_row else None,
     }
 
 

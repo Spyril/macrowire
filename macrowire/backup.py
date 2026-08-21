@@ -33,8 +33,11 @@ VERIFIED_TABLES = (
 STAMP = "%Y%m%dT%H%M%SZ"
 
 
-def backup_dir(db_file: Path) -> Path:
-    return db_file.parent / "backups"
+def backup_dir(db_file: Path, directory: Path | None = None) -> Path:
+    """Where backups live. Configurable, same as export - a backup on the
+    same disk as the database protects against a mistake but not a drive
+    failure, and the config should let you say so."""
+    return directory or (db_file.parent / "backups")
 
 
 def _counts(conn: sqlite3.Connection) -> dict[str, int]:
@@ -48,9 +51,9 @@ def _counts(conn: sqlite3.Connection) -> dict[str, int]:
 
 
 def create(source_conn: sqlite3.Connection, db_file: Path, keep: int = 7,
-           now: datetime | None = None) -> dict:
+           now: datetime | None = None, directory: Path | None = None) -> dict:
     """Take a verified backup and prune older ones to `keep`."""
-    target_dir = backup_dir(db_file)
+    target_dir = backup_dir(db_file, directory)
     target_dir.mkdir(parents=True, exist_ok=True)
     stamp = (now or datetime.now(timezone.utc)).strftime(STAMP)
     target = target_dir / f"{db_file.stem}-{stamp}.db"
@@ -97,7 +100,7 @@ def create(source_conn: sqlite3.Connection, db_file: Path, keep: int = 7,
             f"backup row counts do not match source {differing}; discarded"
         )
 
-    pruned = prune(db_file, keep)
+    pruned = prune(db_file, keep, directory)
     return {
         "path": target,
         "bytes": target.stat().st_size,
@@ -106,18 +109,18 @@ def create(source_conn: sqlite3.Connection, db_file: Path, keep: int = 7,
     }
 
 
-def existing(db_file: Path) -> list[Path]:
-    d = backup_dir(db_file)
+def existing(db_file: Path, directory: Path | None = None) -> list[Path]:
+    d = backup_dir(db_file, directory)
     if not d.exists():
         return []
     return sorted(d.glob(f"{db_file.stem}-*.db"))
 
 
-def prune(db_file: Path, keep: int) -> list[Path]:
+def prune(db_file: Path, keep: int, directory: Path | None = None) -> list[Path]:
     """Delete all but the newest `keep` backups. Filenames sort chronologically."""
     if keep < 1:
         raise MacroWireError("keep must be at least 1")
-    found = existing(db_file)
+    found = existing(db_file, directory)
     doomed = found[:-keep] if len(found) > keep else []
     for path in doomed:
         path.unlink()

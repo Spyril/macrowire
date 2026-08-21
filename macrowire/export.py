@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -102,13 +103,64 @@ def build(conn: sqlite3.Connection, sources) -> str:
     return "".join(lines)
 
 
-def write(conn: sqlite3.Connection, sources, directory: Path | None = None) -> dict:
+def state(conn: sqlite3.Connection, sources, settings) -> dict:
+    """MEASURE whether the irreplaceable rows are actually protected.
+
+    Never warn unconditionally. If someone has pointed export.path at a
+    synced folder and it is up to date, the honest report is that the
+    problem is solved - and a panel that keeps nagging anyway is one you
+    learn to ignore, which costs you the warning that mattered.
+    """
+    target = settings["path"] / EXPORT_NAME
+    payload = build(conn, sources)
+    on_disk = target.read_text(encoding="utf-8") if target.exists() else None
+
+    rows = sum(1 for line in payload.splitlines()
+               if json.loads(line).get("type") in ("item", "observation"))
+
+    return {
+        "path": target,
+        "directory": settings["path"],
+        "external": settings["external"],
+        "exists": on_disk is not None,
+        "current": on_disk == payload,
+        "rows": rows,
+        "written_at": (datetime.fromtimestamp(target.stat().st_mtime, tz=timezone.utc)
+                       .isoformat(timespec="seconds") if target.exists() else None),
+        "sources": [s.name for s in irreplaceable_sources(sources)],
+    }
+
+
+def _row_count(payload: str) -> int:
+    return sum(1 for line in payload.splitlines()
+               if json.loads(line).get("type") in ("item", "observation"))
+
+
+def write(conn: sqlite3.Connection, sources, directory: Path | None = None,
+          force: bool = False) -> dict:
     directory = directory or DEFAULT_EXPORT_DIR
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / EXPORT_NAME
 
     payload = build(conn, sources)
     previous = target.read_text(encoding="utf-8") if target.exists() else None
+
+    # Refuse to shrink. The export path is global config while the database
+    # path can be overridden by MACROWIRE_DB, so a second instance or a test
+    # run pointed at a scratch database would otherwise overwrite the only
+    # off-disk copy of the irreplaceable rows with a nearly-empty file.
+    # That is not hypothetical - it happened while this guard was being
+    # written, from a temp database in /tmp.
+    if previous is not None and not force:
+        had, have = _row_count(previous), _row_count(payload)
+        if have < had:
+            from .errors import MacroWireError
+            raise MacroWireError(
+                f"refusing to overwrite {target}: it holds {had} irreplaceable "
+                f"row(s) and this database offers only {have}. If the database "
+                f"is genuinely the right one, pass force=True. Check MACROWIRE_DB "
+                f"first - a scratch database is the usual cause.")
+
     unchanged = previous == payload
     if not unchanged:
         target.write_text(payload, encoding="utf-8")

@@ -48,6 +48,118 @@ def _completed(conn: sqlite3.Connection, source: str) -> set[str]:
     return {r[0] for r in rows if r[0]}
 
 
+def single_url(source: Source) -> str | None:
+    """Some sources seed from ONE request rather than a paginated walk.
+
+    The ECB publishes a 90-day file in the same shape as its daily one, so
+    seeding is a single fetch and the window/page machinery would be
+    ceremony around a single GET.
+    """
+    return source.config.get("backfill_url")
+
+
+def run_single(conn: sqlite3.Connection, source: Source, dry_run: bool = False) -> dict:
+    url = single_url(source)
+    print(f"  single-request seed: {url}")
+    if dry_run:
+        print("\n  dry run - no requests made.")
+        return {"requests": 0, "stored": 0, "skipped": 0, "dry_run": True}
+
+    source_id = db.upsert_source(conn, source.name, source.kind, source.config)
+    conn.commit()
+
+    response = wire._download(source, url)
+    raw_id = db.store_raw_response(
+        conn, source.name, str(response.url), response.status_code, response.content)
+    conn.commit()
+    body, encoding_used = decode(
+        source.name, response.content, response.headers.get("content-type"))
+    db.record_raw_encoding(conn, raw_id, encoding_used)
+
+    parsed = get_parser(source.parser)(source, body)
+    new, revisions = wire._store_observations(conn, source, source_id, parsed)
+    db.log_fetch(conn, source.name, status="backfill", new_item_count=new,
+                 detail=f"single-request seed from {url}")
+    conn.commit()
+
+    periods = sorted({o["period"] for o in parsed.observations})
+    print(f"    {len(parsed.observations)} parsed over {len(periods)} date(s) "
+          f"{periods[0]} .. {periods[-1]}" if periods else "    nothing parsed")
+    print(f"    {new} new" + (f", {len(revisions)} REVISED" if revisions else ""))
+    return {"requests": 1, "stored": new, "skipped": 0, "dry_run": False,
+            "revisions": revisions}
+
+
+def paged_query(source: Source):
+    """Sources that seed by walking offsets rather than date windows.
+
+    CFTC publishes one Socrata endpoint with the whole history behind it;
+    the natural seed is `$limit`/`$offset` pages, not date ranges.
+    """
+    return source.config.get("backfill_page_size")
+
+
+def run_paged(conn: sqlite3.Connection, source: Source, dry_run: bool = False) -> dict:
+    from .parsers import cftc_cot
+
+    page_size = int(paged_query(source))
+    delay = float(source.config.get("request_interval_seconds", 1.0))
+    print(f"  paged seed: {source.url}")
+    print(f"  page size : {page_size}   delay: {delay}s between pages "
+          f"(their robots.txt asks Crawl-delay: 1)")
+    if dry_run:
+        print("\n  dry run - no requests made.")
+        return {"requests": 0, "stored": 0, "skipped": 0, "dry_run": True}
+
+    source_id = db.upsert_source(conn, source.name, source.kind, source.config)
+    conn.commit()
+    parser = get_parser(source.parser)
+    requests_made = stored = 0
+    offset = 0
+    first = True
+
+    while True:
+        if not first:
+            time.sleep(delay)
+        first = False
+        response = wire._download(
+            source, source.url,
+            cftc_cot.query(source, limit=page_size, offset=offset, order="ASC"))
+        requests_made += 1
+
+        raw_id = db.store_raw_response(
+            conn, source.name, str(response.url), response.status_code, response.content)
+        conn.commit()
+        body, encoding_used = decode(
+            source.name, response.content, response.headers.get("content-type"))
+        db.record_raw_encoding(conn, raw_id, encoding_used)
+
+        parsed = parser(source, body)
+        if not parsed.observations:
+            break
+        new, revisions = wire._store_observations(conn, source, source_id, parsed)
+        stored += new
+
+        # One API row expands to several observations (one per metric), so
+        # the page is counted in API rows - the thing $limit actually
+        # bounds - not in rows written.
+        api_rows = len({o["external_id"].split("#", 1)[0] for o in parsed.observations})
+        periods = sorted({o["period"] for o in parsed.observations})
+        db.log_fetch(conn, source.name, status="backfill", new_item_count=new,
+                     detail=f"offset {offset} ({periods[0]}..{periods[-1]})")
+        conn.commit()
+        print(f"    offset {offset:>6}  {api_rows:>5} rows -> "
+              f"{len(parsed.observations):>5} observations  "
+              f"{periods[0]} .. {periods[-1]}  {new:>5} new"
+              + (f", {len(revisions)} REVISED" if revisions else ""))
+
+        offset += page_size
+        if api_rows < page_size:      # a short page is the last page
+            break
+
+    return {"requests": requests_made, "stored": stored, "skipped": 0, "dry_run": False}
+
+
 def plan(source: Source, today: date) -> dict:
     start = source.config.get("backfill_start")
     if not start:
@@ -80,6 +192,11 @@ def run(conn: sqlite3.Connection, source: Source, today: date, dry_run: bool = F
     Requests are strictly sequential with a fixed delay between them.
     There is no concurrency here by design.
     """
+    if single_url(source):
+        return run_single(conn, source, dry_run=dry_run)
+    if paged_query(source):
+        return run_paged(conn, source, dry_run=dry_run)
+
     outline = plan(source, today)
     done = _completed(conn, source.name)
     source_id = db.upsert_source(conn, source.name, source.kind, source.config)

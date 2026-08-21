@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS items (
     url                 TEXT,
     summary             TEXT,
     content             TEXT,
+    type_primary        TEXT,
+    type_tags           TEXT,
     published_at        TEXT,
     fetched_at          TEXT NOT NULL,
     ticker              TEXT,
@@ -131,9 +133,29 @@ ALTER TABLE fetch_log ADD COLUMN error_kind TEXT;
 CREATE INDEX IF NOT EXISTS idx_fetch_log_kind ON fetch_log(source, error_kind);
 """
 
+# --- 003 -------------------------------------------------------------------
+# Type as two filterable fields rather than one display string.
+#
+# `announcement_type` keeps the source's own label verbatim, which for SEC
+# filings is a composite: "8-K [2.02, 9.01]". That string cannot express
+# "show me results announcements" - which is form 8-K carrying item 2.02, OR
+# form 10-Q/10-K - because the form and the items are welded together.
+#
+# So they are split. Deliberately named generically rather than `form` and
+# `sec_items`: ECB already has a primary with no tags, and any later source
+# with a two-level vocabulary (HKEX's "Announcements and Notices - [Interim
+# Results]" would have been exactly this) fits without another migration.
+TYPE_FIELDS = """
+ALTER TABLE items ADD COLUMN type_primary TEXT;
+ALTER TABLE items ADD COLUMN type_tags TEXT;
+CREATE INDEX IF NOT EXISTS idx_items_type_primary
+    ON items(source_id, type_primary);
+"""
+
 MIGRATIONS: list[tuple[int, str, str]] = [
     (1, "baseline", BASELINE),
     (2, "fetch_log.error_kind", ERROR_KIND),
+    (3, "items type_primary / type_tags", TYPE_FIELDS),
 ]
 
 

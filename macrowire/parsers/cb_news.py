@@ -71,6 +71,12 @@ def parse(source, body: str) -> ParsedFeed:
                 "content": None,
                 "published_at": published_at,
                 "announcement_type": announcement_type,
+                # The cbwiki URI's fragment is the only part that means
+                # anything; that is what a filter should match on.
+                "type_primary": (announcement_type.rsplit("#", 1)[1].replace("-", " ")
+                                 if announcement_type and "#" in announcement_type
+                                 else announcement_type),
+                "type_tags": None,
                 "institution_abbrev": institution or source.config.get("institution"),
                 "simple_title": simple_title,
                 "occurrence_date": occurrence,

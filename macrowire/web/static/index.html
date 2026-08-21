@@ -32,8 +32,22 @@
 
 <div class="body">
   <main>
-    <div class="chips chips-j" id="chips-j" aria-label="Filter by jurisdiction"></div>
-    <div class="chips" id="chips" aria-label="Filter by source"></div>
+    <div class="filterbar">
+      <button class="fbtn" id="fopen" aria-expanded="false" aria-controls="fpanel">
+        Filter <kbd>f</kbd>
+      </button>
+      <div class="tokens" id="tokens" aria-live="polite"></div>
+      <button class="fclear" id="fclear" hidden>clear all <kbd>c</kbd></button>
+    </div>
+
+    <div class="fpanel" id="fpanel" role="dialog" aria-modal="false"
+         aria-label="Filters" hidden>
+      <div class="fgrid" id="fgrid"></div>
+      <div class="fpanel-foot">
+        <span class="fhint">Esc closes &middot; c clears &middot; OR within a row, AND across rows</span>
+        <button class="fbtn" id="fclose">close</button>
+      </div>
+    </div>
     <div class="tape" id="tape"><div class="note">loading…</div></div>
   </main>
 
@@ -41,6 +55,14 @@
     <h2>CNY central parity</h2>
     <div class="fx" id="fx"></div>
     <div class="asof" id="fx-asof"></div>
+
+    <h2>Speculative positioning</h2>
+    <div class="fx" id="cot"></div>
+    <div class="asof" id="cot-asof"></div>
+
+    <h2>ECB reference rates</h2>
+    <div class="fx" id="ecb"></div>
+    <div class="asof" id="ecb-asof"></div>
 
     <h2>RBA 4pm rates</h2>
     <div class="fx" id="rba"></div>
@@ -51,6 +73,7 @@
 
     <h2>If this disk dies</h2>
     <div class="risk" id="risk"></div>
+    <div class="risk" id="export-state"></div>
   </aside>
 </div>
 

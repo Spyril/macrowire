@@ -21,7 +21,8 @@ from macrowire import backup, db, export, wire                    # noqa: E402
 from macrowire.config import load_sources                         # noqa: E402
 from macrowire.encoding import decode                             # noqa: E402
 from macrowire.errors import (                                    # noqa: E402
-    DecodeError, EmptyFeedError, MacroWireError, MalformedEntryError, ParseError,
+    ConfigError, DecodeError, EmptyFeedError, MacroWireError, MalformedEntryError,
+    ParseError,
 )
 from macrowire.parsers import get_parser                          # noqa: E402
 
@@ -666,6 +667,154 @@ class TestServePort(unittest.TestCase):
         self.assertIn("nothing is listening", result["reason"])
 
 
+class TestSecEdgar(unittest.TestCase):
+    """SEC's own vocabulary, their enforced User-Agent, and NULL where a
+    price-sensitive judgement is not defensible."""
+
+    def setUp(self):
+        from macrowire.parsers import sec_edgar
+        self.mod = sec_edgar
+        self.src = SOURCES["sec_edgar"]
+
+    def payload(self, **over):
+        base = {
+            "cik": 320193, "name": "Apple Inc.", "tickers": ["AAPL"],
+            "filings": {"recent": {
+                "accessionNumber": ["0000320193-26-000018", "0000320193-26-000017"],
+                "filingDate": ["2026-07-30", "2026-07-01"],
+                "reportDate": ["2026-07-30", ""],
+                "acceptanceDateTime": ["2026-07-30T20:30:28.000Z", "2026-07-01T12:00:00.000Z"],
+                "form": ["8-K", "4"],
+                "items": ["2.02,9.01", ""],
+                "primaryDocument": ["aapl-20260730.htm", "form4.xml"],
+                "primaryDocDescription": ["8-K", "FORM 4"],
+            }},
+        }
+        base["filings"]["recent"].update(over)
+        return base
+
+    def parse(self, payload):
+        return self.mod.parse(self.src, json.dumps(payload))
+
+    def test_skip_forms_is_exact_not_a_prefix(self):
+        """'4' must not also drop 424B2, an unrelated prospectus form."""
+        p = self.payload(form=["4", "424B2", "8-K"],
+                         accessionNumber=["a", "b", "c"], filingDate=["2026-07-01"] * 3,
+                         reportDate=[""] * 3,
+                         acceptanceDateTime=["2026-07-01T12:00:00.000Z"] * 3,
+                         items=["", "", ""], primaryDocument=["x"] * 3,
+                         primaryDocDescription=[""] * 3)
+        types = {i["announcement_type"] for i in self.parse(p).items}
+        self.assertNotIn("4", types)
+        self.assertIn("424B2", types)
+        self.assertIn("8-K", types)
+
+    def test_price_sensitive_only_where_the_item_says_so(self):
+        self.assertTrue(self.mod.price_sensitive("8-K", ["2.02", "9.01"]))
+        self.assertTrue(self.mod.price_sensitive("8-K", ["5.02"]))
+        self.assertTrue(self.mod.price_sensitive("8-K", ["7.01"]))
+
+    def test_ambiguous_items_stay_null_not_false(self):
+        """8.01 'Other Events' and 9.01 exhibits are not a judgement we can
+        defend, and the column has been nullable since step 1."""
+        self.assertIsNone(self.mod.price_sensitive("8-K", ["8.01", "9.01"]))
+        self.assertIsNone(self.mod.price_sensitive("8-K", ["5.07"]))
+        self.assertIsNone(self.mod.price_sensitive("8-K", []))
+        self.assertIsNone(self.mod.price_sensitive("10-Q", []))
+        self.assertIsNone(self.mod.price_sensitive("144", []))
+
+    def test_announcement_type_is_the_sec_vocabulary(self):
+        self.assertEqual(self.mod.describe("8-K", ["2.02", "9.01"]), "8-K [2.02, 9.01]")
+        self.assertEqual(self.mod.describe("10-Q", []), "10-Q")
+
+    def test_parallel_arrays_must_agree_in_length(self):
+        """Positional zip, same risk class as the CFETS values array."""
+        p = self.payload()
+        p["filings"]["recent"]["form"] = ["8-K"]
+        with self.assertRaises(ParseError):
+            self.parse(p)
+
+    def test_missing_fields_raise(self):
+        p = self.payload()
+        p["filings"]["recent"].pop("acceptanceDateTime")
+        with self.assertRaises(ParseError):
+            self.parse(p)
+
+    def test_uses_acceptance_time_not_just_the_date(self):
+        item = self.parse(self.payload()).items[0]
+        self.assertEqual(item["published_at"], "2026-07-30T20:30:28+00:00")
+
+    def test_accession_number_is_the_external_id(self):
+        item = self.parse(self.payload()).items[0]
+        self.assertEqual(item["external_id"], "0000320193-26-000018")
+        self.assertIn("/Archives/edgar/data/320193/000032019326000018/", item["url"])
+
+    def test_missing_contact_is_a_hard_failure(self):
+        """Their edge answers a wrong UA with 403, so guessing is worse."""
+        from dataclasses import replace
+        for bad in ("", "   ", "MacroWire/0.1", "noatsign"):
+            cfg = dict(self.src.config)
+            cfg["sec_contact"] = bad
+            with self.assertRaises(ParseError, msg=f"accepted {bad!r}"):
+                self.mod.sec_user_agent(replace(self.src, config=cfg))
+
+    def test_valid_contact_is_accepted(self):
+        from dataclasses import replace
+        cfg = dict(self.src.config)
+        cfg["sec_contact"] = "Jane Doe jane@example.com"
+        self.assertEqual(self.mod.sec_user_agent(replace(self.src, config=cfg)),
+                         "Jane Doe jane@example.com")
+
+
+class TestWatchlist(TempDB):
+    """Schema-only since step 1. This is what it was for."""
+
+    CIK = {"AAPL": {"cik": 320193, "title": "Apple Inc."},
+           "MSFT": {"cik": 789019, "title": "MICROSOFT CORP"}}
+
+    def test_ships_empty(self):
+        from macrowire import watchlist as wl
+        self.assertEqual(wl.entries(self.conn, 1), [])
+
+    def test_add_and_list(self):
+        from macrowire import watchlist as wl
+        wl.add(self.conn, 1, "aapl", "us", cik_map=self.CIK)
+        rows = wl.entries(self.conn, 1)
+        self.assertEqual(rows, [{"ticker": "AAPL", "market": "US"}])
+
+    def test_unmatched_us_ticker_fails_immediately(self):
+        """A typo that is accepted returns nothing forever and looks like a
+        quiet company."""
+        from macrowire import watchlist as wl
+        with self.assertRaises(ConfigError):
+            wl.add(self.conn, 1, "APPL", "US", cik_map=self.CIK)
+        self.assertEqual(wl.entries(self.conn, 1), [])
+
+    def test_non_us_market_is_not_validated_against_the_sec_map(self):
+        from macrowire import watchlist as wl
+        wl.add(self.conn, 1, "BHP", "AU", cik_map=self.CIK)
+        self.assertEqual(wl.entries(self.conn, 1), [{"ticker": "BHP", "market": "AU"}])
+
+    def test_adding_twice_does_not_duplicate(self):
+        from macrowire import watchlist as wl
+        wl.add(self.conn, 1, "AAPL", "US", cik_map=self.CIK)
+        wl.add(self.conn, 1, "AAPL", "US", cik_map=self.CIK)
+        self.assertEqual(len(wl.entries(self.conn, 1)), 1)
+
+    def test_remove(self):
+        from macrowire import watchlist as wl
+        wl.add(self.conn, 1, "AAPL", "US", cik_map=self.CIK)
+        self.assertEqual(wl.remove(self.conn, 1, "aapl"), 1)
+        self.assertEqual(wl.entries(self.conn, 1), [])
+
+    def test_empty_watchlist_makes_sec_skip_rather_than_error(self):
+        from macrowire.parsers import sec_edgar
+        responses, note = sec_edgar.fetch(SOURCES["sec_edgar"], None,
+                                          {"watchlist_us": []})
+        self.assertEqual(responses, [])
+        self.assertIn("empty", note)
+
+
 class TestJurisdiction(unittest.TestCase):
     """A fact about the publisher, fixed at config time — no rules to rot."""
 
@@ -762,6 +911,762 @@ class TestJurisdictionFilter(TempDB):
     def test_unread_counts_break_down_by_jurisdiction(self):
         counts = self.queries.unread_counts(self.conn, list(SOURCES.values()), 1)
         self.assertEqual(counts["per_jurisdiction"], {"CN": 1, "US": 1, "AU": 1})
+
+
+class TestTypeDecomposition(TempDB):
+    """The composite string cannot express 'results announcements'."""
+
+    def setUp(self):
+        super().setUp()
+        from macrowire.web import queries
+        self.queries = queries
+        src = SOURCES["sec_edgar"]
+        sid = db.upsert_source(self.conn, src.name, src.kind, src.config)
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        rows = [
+            ("a", "8-K", "2.02,9.01", "8-K [2.02, 9.01]"),
+            ("b", "8-K", "8.01,9.01", "8-K [8.01, 9.01]"),
+            ("c", "10-Q", None, "10-Q"),
+            ("d", "424B2", None, "424B2"),
+        ]
+        for key, primary, tags, composite in rows:
+            self.conn.execute(
+                """INSERT INTO items (id, source_id, title, fetched_at, published_at,
+                                      announcement_type, type_primary, type_tags, ticker)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'AAPL')""",
+                (key, sid, f"filing {key}", now, now, composite, primary, tags))
+        self.conn.commit()
+
+    def tape(self, **kw):
+        return self.queries.tape(self.conn, list(SOURCES.values()), 1, days=30, **kw)
+
+    def test_results_announcements_spans_form_and_item(self):
+        rows = self.tape(types=["sec_edgar:8-K:2.02", "sec_edgar:10-Q"])
+        self.assertEqual({r["title"] for r in rows}, {"filing a", "filing c"})
+
+    def test_item_tag_does_not_match_a_different_item(self):
+        rows = self.tape(types=["sec_edgar:8-K:2.02"])
+        self.assertEqual([r["title"] for r in rows], ["filing a"])
+
+    def test_tag_match_is_not_a_substring_match(self):
+        """9.01 must not match inside '2.02,9.01' by accident, and 2.0 must
+        not match 2.02."""
+        self.assertEqual([r["title"] for r in self.tape(types=["sec_edgar:8-K:9.01"])],
+                         ["filing a", "filing b"])
+        self.assertEqual(self.tape(types=["sec_edgar:8-K:2.0"]), [])
+
+    def test_primary_only_token_matches_every_item_of_that_form(self):
+        rows = self.tape(types=["sec_edgar:8-K"])
+        self.assertEqual({r["title"] for r in rows}, {"filing a", "filing b"})
+
+    def test_type_is_scoped_to_its_source(self):
+        self.assertEqual(self.tape(types=["ecb_press:8-K"]), [])
+
+    def test_axes_and_together(self):
+        self.assertEqual(self.tape(types=["sec_edgar:10-Q"], tickers=["MSFT"]), [])
+        self.assertEqual(len(self.tape(types=["sec_edgar:10-Q"], tickers=["AAPL"])), 1)
+
+
+class TestFacets(TempDB):
+    """Populated-only on every axis: a chip's absence is information."""
+
+    def setUp(self):
+        super().setUp()
+        from macrowire.web import queries
+        self.queries = queries
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        for name, primary, tags in (("hkma_press", "Press Release", None),
+                                    ("ecb_press", "Speech", None),
+                                    ("ecb_press", "Press Release", None),
+                                    ("sec_edgar", "8-K", "2.02,9.01")):
+            src = SOURCES[name]
+            sid = db.upsert_source(self.conn, src.name, src.kind, src.config)
+            self.conn.execute(
+                """INSERT INTO items (id, source_id, title, fetched_at, published_at,
+                                      announcement_type, type_primary, type_tags)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (f"{name}-{primary}", sid, "t", now, now, primary, primary, tags))
+        self.conn.commit()
+
+    def facets(self):
+        return self.queries.facets(self.conn, list(SOURCES.values()), 1)
+
+    def test_only_populated_sources_appear(self):
+        names = {x["value"] for x in self.facets()["source"]}
+        self.assertEqual(names, {"hkma_press", "ecb_press", "sec_edgar"})
+        self.assertNotIn("boe_news", names)
+
+    def test_only_populated_jurisdictions_appear(self):
+        codes = {x["value"] for x in self.facets()["jurisdiction"]}
+        self.assertEqual(codes, {"HK", "EU", "US"})
+        self.assertNotIn("UK", codes)
+
+    def test_single_type_sources_are_not_offered_as_a_type_filter(self):
+        """Their type IS their source; a chip would duplicate the row above."""
+        groups = {g["source"] for g in self.facets()["type"]}
+        self.assertNotIn("hkma_press", groups)
+        self.assertIn("ecb_press", groups)
+
+    def test_eight_k_items_surface_as_tags_with_official_labels(self):
+        sec = [g for g in self.facets()["type"] if g["source"] == "sec_edgar"][0]
+        tags = {t["value"]: t["label"] for t in sec["tags"]}
+        self.assertIn("8-K:2.02", tags)
+        self.assertEqual(tags["8-K:2.02"], "results of operations")
+
+    def test_watchlist_axis_lists_only_held_tickers_with_items(self):
+        self.assertEqual(self.facets()["ticker"], [])
+
+
+class TestCftcCot(unittest.TestCase):
+    """Positioning. Two traps: a net field that isn't, and contract codes."""
+
+    def setUp(self):
+        from macrowire.parsers import cftc_cot
+        self.mod = cftc_cot
+        self.src = SOURCES["cftc_cot"]
+
+    def row(self, **over):
+        base = {
+            "id": "260811232741F",
+            "report_date_as_yyyy_mm_dd": "2026-08-11T00:00:00.000",
+            "cftc_contract_market_code": "232741",
+            "contract_market_name": "AUSTRALIAN DOLLAR",
+            "open_interest_all": "300000",
+            "noncomm_positions_long_all": "80538",
+            "noncomm_positions_short_all": "119761",
+            "change_in_noncomm_long_all": "6153",
+            "change_in_noncomm_short_all": "12186",
+        }
+        base.update(over)
+        return base
+
+    def parse(self, rows):
+        return self.mod.parse(self.src, json.dumps(rows))
+
+    def test_net_is_long_minus_short_with_components_kept(self):
+        obs = {o["series"]: o["value"] for o in self.parse([self.row()]).observations}
+        self.assertEqual(obs["COT/AUD/long"], 80538)
+        self.assertEqual(obs["COT/AUD/short"], 119761)
+        self.assertEqual(obs["COT/AUD/net"], 80538 - 119761)
+        self.assertEqual(obs["COT/AUD/change_net"], 6153 - 12186)
+
+    def test_derived_metrics_say_so(self):
+        """So a number of unknown provenance cannot appear later."""
+        obs = {o["series"]: o for o in self.parse([self.row()]).observations}
+        self.assertIn("derived", obs["COT/AUD/net"]["rate_type"])
+        self.assertNotIn("derived", obs["COT/AUD/long"]["rate_type"])
+
+    def test_the_concentration_fields_are_not_used(self):
+        """Twelve fields carry 'net' and none is the non-commercial net.
+        A maintainer reaching for one by name gets a plausible wrong number."""
+        source = (Path(__file__).resolve().parent.parent
+                  / "macrowire/parsers/cftc_cot.py").read_text()
+        self.assertNotIn("conc_net_le", source.split('"""', 2)[2],
+                         "a concentration ratio is being read as a net position")
+        self.assertIn("conc_net_le", source.split('"""', 2)[1],
+                      "the trap is not documented where someone would hit it")
+
+    def test_reassigned_contract_code_raises(self):
+        """A code silently changing instrument would make one continuous-
+        looking series out of two different things."""
+        with self.assertRaises(ParseError):
+            self.parse([self.row(contract_market_name="AUSTRALIAN DOLLAR - SMALL")])
+
+    def test_unpinned_contract_raises(self):
+        with self.assertRaises(ParseError):
+            self.parse([self.row(cftc_contract_market_code="232661")])
+
+    def test_missing_week_on_week_change_omits_rather_than_zeroes(self):
+        """'No prior week' and 'no change from last week' are different
+        facts and must not look alike. 29 historical rows have no change."""
+        rows = self.parse([self.row(change_in_noncomm_long_all=None,
+                                    change_in_noncomm_short_all=None)]).observations
+        series = {o["series"] for o in rows}
+        self.assertIn("COT/AUD/net", series)
+        self.assertNotIn("COT/AUD/change_net", series)
+        self.assertNotIn("COT/AUD/change_long", series)
+
+    def test_missing_position_still_raises(self):
+        with self.assertRaises(MalformedEntryError):
+            self.parse([self.row(noncomm_positions_long_all=None)])
+
+    def test_non_numeric_position_raises(self):
+        with self.assertRaises(MalformedEntryError):
+            self.parse([self.row(noncomm_positions_short_all="n/a")])
+
+    def test_all_eight_currencies_are_pinned_by_code(self):
+        pinned = self.mod.contracts(self.src)
+        self.assertEqual(len(pinned), 8)
+        self.assertEqual({c["currency"] for c in pinned.values()},
+                         {"AUD", "JPY", "EUR", "GBP", "CHF", "CAD", "NZD", "DXY"})
+        for code in pinned:
+            self.assertTrue(code.isdigit() or code.isalnum())
+
+    def test_period_is_the_report_date(self):
+        obs = self.parse([self.row()]).observations[0]
+        self.assertEqual(obs["period"], "2026-08-11")
+        self.assertEqual(obs["frequency"], "weekly")
+        self.assertEqual(obs["unit"], "contracts")
+
+    def test_not_a_json_array_raises(self):
+        with self.assertRaises(ParseError):
+            self.mod.parse(self.src, '{"error": "nope"}')
+
+
+class TestEcbFx(unittest.TestCase):
+    """Three nested elements all named Cube, told apart only by attributes."""
+
+    DAILY = ('<?xml version="1.0" encoding="UTF-8"?>'
+             '<gesmes:Envelope xmlns:gesmes="http://www.gesmes.org/xml/2002-08-01"'
+             ' xmlns="http://www.ecb.int/vocabulary/2002-08-01/eurofxref">'
+             '<gesmes:subject>Reference rates</gesmes:subject>'
+             '<Cube><Cube time="2026-08-20">'
+             '<Cube currency="USD" rate="1.1681"/>'
+             '<Cube currency="JPY" rate="185.45"/>'
+             '<Cube currency="ZAR" rate="20.1"/>'
+             '</Cube></Cube></gesmes:Envelope>')
+
+    def setUp(self):
+        self.src = SOURCES["ecb_fx"]
+
+    def parse(self, body=None):
+        return get_parser("ecb_fx")(self.src, body or self.DAILY)
+
+    def test_base_is_eur_and_series_follow_the_house_convention(self):
+        obs = {o["series"]: o for o in self.parse().observations}
+        self.assertIn("EUR/USD", obs)
+        self.assertEqual(obs["EUR/USD"]["base_currency"], "EUR")
+        self.assertEqual(obs["EUR/USD"]["target_currency"], "USD")
+        self.assertEqual(obs["EUR/USD"]["value"], 1.1681)
+
+    def test_currencies_filter_is_honoured(self):
+        """ZAR is published but not configured, so it must not be stored."""
+        series = {o["series"] for o in self.parse().observations}
+        self.assertNotIn("EUR/ZAR", series)
+        self.assertIn("EUR/JPY", series)
+
+    def test_publication_time_resolves_per_instant(self):
+        """16:00 Europe/Berlin is 14:00 UTC in summer, 15:00 in winter. An
+        offset must never be stored - the ribbon lesson, applied here."""
+        summer = self.parse().observations[0]["observed_at"]
+        winter_xml = self.DAILY.replace("2026-08-20", "2026-01-20")
+        winter = self.parse(winter_xml).observations[0]["observed_at"]
+        self.assertTrue(summer.endswith("14:00:00+00:00"), summer)
+        self.assertTrue(winter.endswith("15:00:00+00:00"), winter)
+
+    def test_multi_day_file_parses_with_the_same_parser(self):
+        two = self.DAILY.replace(
+            '</Cube></Cube></gesmes:Envelope>',
+            '</Cube><Cube time="2026-08-19">'
+            '<Cube currency="USD" rate="1.1605"/></Cube></Cube></gesmes:Envelope>')
+        periods = {o["period"] for o in self.parse(two).observations}
+        self.assertEqual(periods, {"2026-08-20", "2026-08-19"})
+
+    def test_out_of_bounds_value_raises(self):
+        """A misparse shows as an implausible number, not a plausible one."""
+        with self.assertRaises(MalformedEntryError):
+            self.parse(self.DAILY.replace('rate="1.1681"', 'rate="11.681"'))
+
+    def test_non_numeric_rate_raises(self):
+        with self.assertRaises(MalformedEntryError):
+            self.parse(self.DAILY.replace('rate="1.1681"', 'rate="n/a"'))
+
+    def test_missing_rate_attribute_raises(self):
+        with self.assertRaises(MalformedEntryError):
+            self.parse(self.DAILY.replace(' rate="1.1681"', ''))
+
+    def test_a_feed_with_no_dated_cube_raises(self):
+        empty = ('<gesmes:Envelope xmlns:gesmes="http://www.gesmes.org/xml/2002-08-01"'
+                 ' xmlns="http://www.ecb.int/vocabulary/2002-08-01/eurofxref">'
+                 '<Cube/></gesmes:Envelope>')
+        with self.assertRaises(ParseError):
+            self.parse(empty)
+
+    def test_not_an_envelope_raises(self):
+        with self.assertRaises(ParseError):
+            self.parse("<html><body>503</body></html>")
+
+    def test_jurisdiction_and_archive_are_declared(self):
+        self.assertEqual(self.src.jurisdiction, "EU")
+        self.assertEqual(self.src.archive, "rolling")
+
+
+class TestStatusFalseAlarms(TempDB):
+    """status must never report failure on healthy data. A false alarm in a
+    fail-loudly system is worse than no alarm: it teaches you to ignore the
+    real ones. Each test here corresponds to one that actually fired."""
+
+    def setUp(self):
+        super().setUp()
+        self.cf = SOURCES["cfets_ccpr"]
+        self.rba = SOURCES["rba_exchange_rates"]
+        self.cf_id = db.upsert_source(self.conn, self.cf.name, self.cf.kind, self.cf.config)
+        self.rba_id = db.upsert_source(self.conn, self.rba.name, self.rba.kind, self.rba.config)
+        self.conn.commit()
+
+    def observation(self, source_id, period, observed_at, fetched_at=None):
+        self.conn.execute(
+            """INSERT INTO observations (source_id, series, period, value,
+                                         fetched_at, observed_at)
+               VALUES (?, 'AUD/USD', ?, 0.71, ?, ?)""",
+            (source_id, period, fetched_at or db.utc_now(), observed_at))
+        self.conn.commit()
+
+    def test_a_gated_source_that_only_skips_still_reports_contact(self):
+        """CFETS's publication gate is its NORMAL outcome. Reporting 'never'
+        made a healthy source look dead permanently."""
+        self.observation(self.cf_id, "2026-08-21", "2026-08-21T09:15:00+08:00")
+        db.log_fetch(self.conn, self.cf.name, status=db.STATUS_NO_CHANGE,
+                     detail="no new fix")
+        st = wire.source_status(self.conn, self.cf)
+        self.assertIsNotNone(st["last_contact"])
+        self.assertIsNotNone(st["seconds_since_contact"])
+
+    def test_a_backfill_page_counts_as_contact(self):
+        """A freshly seeded source reported 'log incomplete' about data it
+        had just fetched, because backfill rows were not counted."""
+        self.observation(self.cf_id, "2026-08-21", "2026-08-21T09:15:00+08:00")
+        db.log_fetch(self.conn, self.cf.name, status=db.STATUS_BACKFILL,
+                     new_item_count=500, detail="offset 0")
+        st = wire.source_status(self.conn, self.cf)
+        self.assertIsNotNone(st["last_contact"])
+        self.assertFalse(st["log_incomplete"])
+
+    def test_throttled_is_not_evidence_of_contact(self):
+        """The rate limiter blocked the attempt; nothing was contacted."""
+        db.log_fetch(self.conn, self.cf.name, status=db.STATUS_THROTTLED,
+                     detail="below the minimum interval")
+        st = wire.source_status(self.conn, self.cf)
+        self.assertIsNone(st["last_contact"])
+        self.assertIsNotNone(st["last_throttled"])
+
+    def test_observation_sources_report_when_they_last_stored(self):
+        """The old query looked only in `items`, so every observation source
+        reported 'last new item stored: never' while holding thousands."""
+        self.observation(self.rba_id, "2026-08-21", "2026-08-21T06:30:00+00:00")
+        st = wire.source_status(self.conn, self.rba)
+        self.assertEqual(st["observation_rows"], 1)
+        self.assertIsNotNone(st["last_stored_at"])
+        self.assertIsNotNone(st["latest_content_at"])
+        self.assertIsNotNone(st["days_since_content"])
+
+    def test_data_newer_than_the_log_is_reported_as_such(self):
+        """The restore failure mode: rows survive, log rows do not."""
+        self.observation(self.cf_id, "2026-08-21", "2026-08-21T09:15:00+08:00")
+        st = wire.source_status(self.conn, self.cf)
+        self.assertTrue(st["log_incomplete"])
+        self.assertIsNone(st["last_contact"])
+        self.assertIsNotNone(st["last_stored_at"])
+
+    def test_log_complete_when_contact_follows_the_store(self):
+        self.observation(self.cf_id, "2026-08-21", "2026-08-21T09:15:00+08:00")
+        db.log_fetch(self.conn, self.cf.name, status=db.STATUS_OK, new_item_count=5)
+        self.assertFalse(wire.source_status(self.conn, self.cf)["log_incomplete"])
+
+    def test_stale_is_measured_on_published_content_not_the_log(self):
+        """A source storing rows every day reported STALE because every poll
+        after the first deduped and logged new_item_count = 0."""
+        from datetime import datetime, timedelta, timezone
+        today = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds")
+        self.observation(self.rba_id, "2026-08-21", today)
+        db.log_fetch(self.conn, self.rba.name, status=db.STATUS_OK, new_item_count=21)
+        self.conn.execute("UPDATE fetch_log SET timestamp = ?", (old,))
+        db.log_fetch(self.conn, self.rba.name, status=db.STATUS_OK, new_item_count=0)
+        st = wire.source_status(self.conn, self.rba)
+        self.assertEqual(st["staleness_days"], 4)
+        self.assertFalse(st["stale"], "STALE fired on content published today")
+
+    def test_stale_still_fires_on_genuinely_old_content(self):
+        from datetime import datetime, timedelta, timezone
+        old = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat(timespec="seconds")
+        self.observation(self.rba_id, "2026-08-01", old)
+        db.log_fetch(self.conn, self.rba.name, status=db.STATUS_OK, new_item_count=21)
+        self.assertTrue(wire.source_status(self.conn, self.rba)["stale"])
+
+    def test_consecutive_failures_reset_after_any_good_cycle(self):
+        """A source with no 'ok' row ever had a cutoff that never advanced,
+        so one ancient blip read as a permanent failure streak."""
+        db.log_fetch(self.conn, self.cf.name, status=db.STATUS_ERROR,
+                     error="FetchError: blip", error_kind="network")
+        db.log_fetch(self.conn, self.cf.name, status=db.STATUS_NO_CHANGE, detail="no new fix")
+        st = wire.source_status(self.conn, self.cf)
+        self.assertEqual(st["consecutive_failures"], 0)
+        self.assertEqual(st["failure_kinds"], [])
+
+    def test_consecutive_failures_still_count_a_real_streak(self):
+        db.log_fetch(self.conn, self.cf.name, status=db.STATUS_NO_CHANGE, detail="ok")
+        for _ in range(3):
+            db.log_fetch(self.conn, self.cf.name, status=db.STATUS_ERROR,
+                         error="FetchError: down", error_kind="network")
+        st = wire.source_status(self.conn, self.cf)
+        self.assertEqual(st["consecutive_failures"], 3)
+        self.assertEqual(st["failure_kinds"], ["network×3"])
+
+    def test_a_resolved_error_is_marked_resolved(self):
+        db.log_fetch(self.conn, self.cf.name, status=db.STATUS_ERROR,
+                     error="FetchError: blip", error_kind="network")
+        db.log_fetch(self.conn, self.cf.name, status=db.STATUS_OK, new_item_count=1)
+        st = wire.source_status(self.conn, self.cf)
+        self.assertTrue(st["last_error"]["resolved"])
+
+    def test_a_live_error_is_not_marked_resolved(self):
+        db.log_fetch(self.conn, self.cf.name, status=db.STATUS_OK, new_item_count=1)
+        db.log_fetch(self.conn, self.cf.name, status=db.STATUS_ERROR,
+                     error="FetchError: down", error_kind="network")
+        st = wire.source_status(self.conn, self.cf)
+        self.assertFalse(st["last_error"]["resolved"])
+
+    def test_a_gated_poll_counts_against_the_rate_limiter(self):
+        """no_change made a real request, so it must count - otherwise a
+        gated source is re-probed every cycle regardless of its interval."""
+        db.log_fetch(self.conn, self.cf.name, status=db.STATUS_NO_CHANGE, detail="no new fix")
+        self.assertIsNotNone(db.last_attempt_at(self.conn, self.cf.name))
+
+    def test_a_throttled_row_is_not_an_attempt(self):
+        db.log_fetch(self.conn, self.cf.name, status=db.STATUS_THROTTLED, detail="too soon")
+        self.assertIsNone(db.last_attempt_at(self.conn, self.cf.name))
+
+
+class TestUsableByAnyone(unittest.TestCase):
+    """Nothing here may assume one particular person is running it."""
+
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def test_commit_hook_does_not_hardcode_an_identity(self):
+        """It would reject every other contributor to an open project."""
+        hook = (self.ROOT / "git-hooks/commit-msg").read_text()
+        self.assertNotIn("spyril@gmail.com", hook)
+        self.assertNotIn('EXPECTED_NAME="Spyril"', hook)
+        # The pin remains available, but opt-in and by git config.
+        self.assertIn("macrowire.authorName", hook)
+
+    def test_user_agent_project_url_is_overridable(self):
+        yaml_text = (self.ROOT / "sources.yaml").read_text()
+        self.assertIn("${MACROWIRE_PROJECT_URL:-", yaml_text,
+                      "a fork cannot identify itself")
+
+    def test_env_expansion_supports_defaults(self):
+        import os
+        from macrowire.config import _expand_env
+        os.environ.pop("MW_TEST_UNSET", None)
+        self.assertEqual(_expand_env("${MW_TEST_UNSET:-fallback}"), "fallback")
+        os.environ["MW_TEST_SET"] = "real"
+        self.assertEqual(_expand_env("${MW_TEST_SET:-fallback}"), "real")
+
+    def test_missing_required_contact_explains_itself(self):
+        """A stack trace mid-cycle is the wrong first contact with a tool."""
+        import os
+        from macrowire.config import ENV_HELP, _expand_env
+        from macrowire.errors import ConfigError
+        for var in ("MACROWIRE_CONTACT", "SEC_CONTACT"):
+            self.assertIn(var, ENV_HELP)
+            saved = os.environ.pop(var, None)
+            try:
+                with self.assertRaises(ConfigError) as caught:
+                    _expand_env("${%s}" % var)
+                message = str(caught.exception)
+                self.assertIn(var, message)
+                self.assertIn(".env", message)
+                self.assertIn("=", message, "no example of the expected form")
+            finally:
+                if saved is not None:
+                    os.environ[var] = saved
+
+    def test_watchlist_hint_suggests_a_supported_market(self):
+        """It suggested an ASX ticker for a market that is not a source."""
+        cli = (self.ROOT / "macrowire/__main__.py").read_text()
+        block = cli[cli.index('print("watchlist is empty")'):]
+        block = block[:block.index("conn.close()")]
+        self.assertNotIn("BHP", block)
+        self.assertIn("AAPL", block)
+        self.assertIn("Only US tickers", block)
+
+    def test_backup_path_is_configurable_like_export(self):
+        from macrowire.config import load_backup_settings, load_export_settings
+        for settings in (load_backup_settings(), load_export_settings()):
+            self.assertIn("path", settings)
+            self.assertIn("external", settings)
+
+    def test_backup_path_validated_at_config_load(self):
+        import yaml
+        from macrowire.config import load_backup_settings
+        from macrowire.errors import ConfigError
+        doc = yaml.safe_load((self.ROOT / "sources.yaml").read_text())
+        doc["defaults"]["backup"]["path"] = "/nonexistent/macrowire-backups"
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "s.yaml"
+            p.write_text(yaml.safe_dump(doc, allow_unicode=True))
+            with self.assertRaises(ConfigError):
+                load_backup_settings(p)
+
+    def test_opinionated_defaults_are_labelled_as_such(self):
+        yaml_text = (self.ROOT / "sources.yaml").read_text()
+        self.assertIn("OPINIONS, NOT NEUTRAL SETTINGS", yaml_text)
+        for setting in ("importance", "staleness_days", "skip_forms", "currencies"):
+            self.assertIn(setting, yaml_text)
+
+
+class TestNeverWarnUnconditionally(unittest.TestCase):
+    """The rule: MEASURE the actual state, never warn regardless.
+
+    Four alarms in this project fired without checking whether the thing
+    they warned about was handled. A panel that nags at a solved problem is
+    one you stop reading - and then it cannot warn you about a real one."""
+
+    JS = Path(__file__).resolve().parent.parent / "macrowire/web/static/app.js"
+    CLI = Path(__file__).resolve().parent.parent / "macrowire/__main__.py"
+
+    def test_export_panel_branches_on_measured_state(self):
+        js = self.JS.read_text()
+        block = js[js.index('const x = d.export'):js.index("/* ---------------- boot")]
+        for probe in ("x.error", "!x.exists", "x.external && x.current", "x.external"):
+            self.assertIn(probe, block, f"panel does not check {probe}")
+        self.assertIn("protected", block, "no confirmation branch for a solved state")
+
+    def test_no_git_instruction_in_the_interface(self):
+        """My git workflow is not a feature and this is going to be published."""
+        js = self.JS.read_text()
+        for word in ("git ", "Commit ", "git commit", "git push"):
+            self.assertNotIn(word, js, f"interface instructs {word!r}")
+
+    def test_cli_commit_hint_only_when_a_repo_exists(self):
+        cli = self.CLI.read_text()
+        block = cli[cli.index("def cmd_export"):cli.index("def _repo_present")]
+        self.assertIn("_repo_present()", block,
+                      "commit hint is not gated on a repo actually existing")
+        # and it is a parenthetical, never the primary instruction
+        self.assertIn("one way to get it off the disk", block)
+
+    def test_every_health_state_has_meaning_and_severity(self):
+        from macrowire.web.queries import HEALTH_STATES
+        for key, spec in HEALTH_STATES.items():
+            self.assertTrue(spec["label"], f"{key} has no label")
+            self.assertTrue(spec["meaning"], f"{key} has no plain-language meaning")
+            self.assertIn(spec["severity"], {"ok", "info", "warn", "bad"})
+
+    def test_never_polled_is_not_a_failure(self):
+        """It read like an error. It is a new source nobody has fetched."""
+        from macrowire.web.queries import HEALTH_STATES
+        state = HEALTH_STATES["never_polled"]
+        self.assertEqual(state["severity"], "info")
+        self.assertIn("fetch", state["action"])
+        self.assertIn("Nothing is wrong", state["meaning"])
+
+    def test_log_incomplete_is_not_a_failure(self):
+        from macrowire.web.queries import HEALTH_STATES
+        self.assertEqual(HEALTH_STATES["log_incomplete"]["severity"], "info")
+
+    def test_health_state_selection(self):
+        from macrowire.web.queries import health_state
+        base = {"consecutive_failures": 0, "stale": False, "log_incomplete": False,
+                "last_contact": None, "last_success": None}
+        self.assertEqual(health_state(base), "never_polled")
+        self.assertEqual(health_state({**base, "last_contact": "x"}), "no_change")
+        self.assertEqual(health_state({**base, "last_contact": "x",
+                                       "last_success": "x"}), "healthy")
+        self.assertEqual(health_state({**base, "log_incomplete": True}), "log_incomplete")
+        self.assertEqual(health_state({**base, "stale": True}), "stale")
+        self.assertEqual(health_state({**base, "consecutive_failures": 2}), "failing")
+
+
+class TestExportPath(TempDB):
+    def setUp(self):
+        super().setUp()
+        from macrowire import export as export_mod
+        from macrowire import watchlist  # noqa: F401
+        self.export = export_mod
+        news = SOURCES["rba_media_releases"]
+        sid = db.upsert_source(self.conn, news.name, news.kind, news.config)
+        parsed = get_parser("cb_news")(news, fixture("rba_media_releases.xml").decode("utf-8"))
+        wire.classify(news, parsed)
+        wire._store_items(self.conn, sid, parsed)
+        self.conn.commit()
+
+    def test_absolute_path_required(self):
+        import yaml
+        from macrowire.config import load_export_settings
+        from macrowire.errors import ConfigError
+        doc = yaml.safe_load(Path("sources.yaml").read_text())
+        doc["defaults"]["export"] = {"path": "relative/dir"}
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "s.yaml"
+            p.write_text(yaml.safe_dump(doc, allow_unicode=True))
+            with self.assertRaises(ConfigError):
+                load_export_settings(p)
+
+    def test_missing_directory_fails_at_config_load_not_export_time(self):
+        """Three weeks later, at the moment it mattered, is too late."""
+        import yaml
+        from macrowire.config import load_export_settings
+        from macrowire.errors import ConfigError
+        doc = yaml.safe_load(Path("sources.yaml").read_text())
+        doc["defaults"]["export"] = {"path": "/nonexistent/macrowire-export"}
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "s.yaml"
+            p.write_text(yaml.safe_dump(doc, allow_unicode=True))
+            with self.assertRaises(ConfigError):
+                load_export_settings(p)
+
+    def test_external_path_is_detected(self):
+        import yaml
+        from macrowire.config import load_export_settings
+        with tempfile.TemporaryDirectory() as d:
+            doc = yaml.safe_load(Path("sources.yaml").read_text())
+            doc["defaults"]["export"] = {"path": d}
+            p = Path(d) / "s.yaml"
+            p.write_text(yaml.safe_dump(doc, allow_unicode=True))
+            settings = load_export_settings(p)
+            self.assertTrue(settings["external"])
+            self.assertEqual(settings["path"], Path(d))
+
+    def test_refuses_to_shrink_an_existing_export(self):
+        """A scratch database must not overwrite the only off-disk copy.
+        This is not hypothetical: it happened during development."""
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            self.export.write(self.conn, list(SOURCES.values()), out)
+            before = (out / self.export.EXPORT_NAME).read_text()
+            self.conn.execute("DELETE FROM items")
+            self.conn.commit()
+            with self.assertRaises(MacroWireError):
+                self.export.write(self.conn, list(SOURCES.values()), out)
+            self.assertEqual((out / self.export.EXPORT_NAME).read_text(), before)
+
+    def test_force_overrides_the_shrink_guard(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            self.export.write(self.conn, list(SOURCES.values()), out)
+            self.conn.execute("DELETE FROM items")
+            self.conn.commit()
+            self.export.write(self.conn, list(SOURCES.values()), out, force=True)
+
+    def test_state_reports_solved_when_external_and_current(self):
+        from macrowire.config import REPO_ROOT
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            settings = {"path": out, "external": True, "auto": True,
+                        "default_path": REPO_ROOT / "export"}
+            self.export.write(self.conn, list(SOURCES.values()), out)
+            st = self.export.state(self.conn, list(SOURCES.values()), settings)
+            self.assertTrue(st["exists"])
+            self.assertTrue(st["current"])
+            self.assertTrue(st["external"])
+            self.assertGreater(st["rows"], 0)
+
+
+class TestWriteSurface(unittest.TestCase):
+    """The UI is read-only except item_state and watchlists. Two write paths,
+    both POST, and no GET may mutate."""
+
+    APP = Path(__file__).resolve().parent.parent / "macrowire/web/app.py"
+
+    def setUp(self):
+        self.src = self.APP.read_text()
+
+    def test_bootstrap_does_not_mutate(self):
+        """It used to run the mark-all-read sweep, which made a GET mutate -
+        a prefetch or refresh would have consumed the one chance to do it."""
+        block = self.src[self.src.index('@app.get("/api/bootstrap")'):]
+        block = block[:block.index("@app.post")]
+        for writer in ("mark_all_read", "mark_read", "set_flag", "wl.add", "wl.remove"):
+            self.assertNotIn(writer, block, f"bootstrap calls {writer}")
+
+    def test_no_get_endpoint_calls_a_writer(self):
+        import re
+        WRITERS = ("mark_all_read", "mark_read(", "set_flag", "wl.add", "wl.remove")
+        blocks = re.split(r"@app\.(get|post)\(", self.src)
+        # blocks alternate: [prefix, verb, body, verb, body, ...]
+        for verb, body in zip(blocks[1::2], blocks[2::2]):
+            if verb != "get":
+                continue
+            for writer in WRITERS:
+                self.assertNotIn(writer, body,
+                                 f"a GET endpoint calls {writer}")
+
+    def test_watchlist_mutations_are_post_only(self):
+        self.assertIn('@app.post("/api/watchlist/add")', self.src)
+        self.assertIn('@app.post("/api/watchlist/remove")', self.src)
+        self.assertNotIn('@app.get("/api/watchlist/add")', self.src)
+        self.assertNotIn('@app.get("/api/watchlist/remove")', self.src)
+
+    def test_ui_and_cli_share_one_validation_path(self):
+        """Both call macrowire.watchlist.add; neither reimplements it."""
+        self.assertIn("wl.add(conn, USER_ID", self.src)
+        cli = (Path(__file__).resolve().parent.parent
+               / "macrowire/__main__.py").read_text()
+        self.assertIn("wl.add(conn, user", cli)
+
+    def test_add_returns_the_cli_message_as_a_400(self):
+        self.assertIn("except ConfigError as exc", self.src)
+        self.assertIn("status_code=400", self.src)
+
+
+class TestFilterUI(unittest.TestCase):
+    """Shape assertions on the markup, so a later edit cannot drop the
+    guarantees quietly."""
+
+    ROOT = Path(__file__).resolve().parent.parent / "macrowire/web/static"
+
+    def setUp(self):
+        self.js = (self.ROOT / "app.js").read_text()
+        self.css = (self.ROOT / "style.css").read_text()
+        self.html = (self.ROOT / "index.html").read_text()
+
+    def test_tokens_are_the_only_active_filter_representation(self):
+        """One representation, so there is no second state to drift."""
+        self.assertIn("function drawTokens", self.js)
+        self.assertIn("state.f[b.dataset.axis].delete", self.js)
+
+    def test_filter_bar_sits_between_ribbon_and_tape(self):
+        ribbon = self.html.index('class="ribbon"')
+        bar = self.html.index('class="filterbar"')
+        tape = self.html.index('id="tape"')
+        self.assertLess(ribbon, bar)
+        self.assertLess(bar, tape)
+
+    def test_keyboard_bindings_exist(self):
+        for key in ('"Escape"', '"f"', '"c"', '"Tab"'):
+            self.assertIn(key, self.js, f"no handler for {key}")
+
+    def test_zero_result_state_is_distinct_from_empty(self):
+        self.assertIn("No items match these filters", self.js)
+        self.assertIn("Nothing in this window", self.js)
+
+    def test_clear_all_exists_and_hides_when_inactive(self):
+        self.assertIn("function clearFilters", self.js)
+        self.assertIn('$("fclear").hidden', self.js)
+
+    def test_filter_ui_encodes_no_category_in_colour(self):
+        """The rule is that colour never encodes a CATEGORY - not that the
+        signal tokens are unmentionable. A focus ring and an error message
+        are legitimate: one is an accessibility requirement, the other is
+        exactly what --fault exists for. What must never happen is a chip,
+        token or axis carrying meaning through hue."""
+        import re
+        block = self.css[self.css.index(".filterbar"):self.css.index(".chips {")]
+        for rule in re.finditer(r"([^{}]+)\{([^}]*)\}", block):
+            selector, body = rule.group(1).strip(), rule.group(2)
+            if "--accent" not in body and "--fault" not in body:
+                continue
+            allowed = ("focus-visible" in selector      # accessibility
+                       or ".wl-msg.err" in selector)    # a failure, not a category
+            self.assertTrue(
+                allowed,
+                f"{selector!r} uses a signal colour to carry meaning")
+
+    def test_signal_colours_are_still_reserved(self):
+        """--accent means unread, --fault means something is wrong. Neither
+        may be reused for a filter, a chip or a category anywhere."""
+        import re
+        for rule in re.finditer(r"([^{}]+)\{([^}]*)\}", self.css):
+            selector, body = rule.group(1).strip().split("\n")[-1].strip(), rule.group(2)
+            if "var(--accent)" in body:
+                self.assertTrue(
+                    "unread" in selector or ".n" in selector or "focus-visible" in selector,
+                    f"{selector!r} claims the unread accent")
 
 
 class TestLegibility(unittest.TestCase):

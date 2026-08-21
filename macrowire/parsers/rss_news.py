@@ -77,6 +77,8 @@ def parse(source, body: str) -> ParsedFeed:
                 # Only what the feed itself declares. Configured
                 # classification is applied afterwards by the pipeline.
                 "announcement_type": text(entry, "category"),
+                "type_primary": text(entry, "category"),
+                "type_tags": None,
                 "institution_abbrev": institution,
                 "simple_title": None,
                 "occurrence_date": None,

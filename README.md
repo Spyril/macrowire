@@ -94,6 +94,7 @@ Edit `sources.yaml`. Nothing else.
 | `cb_statistics` | RSS-CB `cb:statistics` entries (RDF/RSS 1.0) | `observations` |
 | `rss_news` | plain RSS 2.0 `<item>` entries | `items` |
 | `cfets_ccpr` | CFETS CNY central parity JSON API | `observations` |
+| `ecb_fx` | ECB euro reference rates (gesmes XML) | `observations` |
 
 Only the RBA uses RSS-CB. Every other central bank verified publishes
 plain RSS 2.0 with no `cb:` namespace at all.
@@ -240,6 +241,80 @@ One asymmetry worth knowing: `cfets_ccpr` is CN but stores observations,
 not items, so it appears in the ribbon and rail but never in the tape.
 Filtering the tape to CN shows the two NBS feeds only.
 
+### Filters: one bar, four axes
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ Filter f │ JUR CN ×  TKR NVDA ×  TYPE sec edgar 8-K:2.02 ×│ clear all│
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+Collapsed to **one ~34px row**, where three chip rows previously took
+~136px. The tape is the product; filters cost almost nothing unused.
+
+**The tokens are the only representation of active state.** There is no
+second copy to drift out of sync, and the bar sits between the ribbon and
+the tape — you cannot look at the tape without crossing it. Each token
+removes itself; `clear all` appears only when something is active.
+
+`f` opens the panel, `Esc` closes, `c` clears, `Tab` is trapped inside the
+panel while open, focus is visible throughout.
+
+Axes combine **OR within a row, AND across rows**.
+
+#### Type is source-scoped, and SEC decomposes
+
+Measuring the actual vocabulary settled the shape:
+
+```
+sec_edgar   44 distinct types      ecb_press  3
+boe_news, boj_whatsnew, hkma_press, nbs_*, fed_*, rba_*   1 each
+```
+
+**Nine of ten sources have exactly one type — their type *is* their
+source.** A global type axis would ship nine chips selecting rows already
+selectable by the source row. So type is grouped under its owning source,
+and a source with a single type is not offered as a type filter at all.
+
+And the stored string is a composite: `8-K [2.02, 9.01]`. *"Show me
+results announcements"* is `form 8-K carrying item 2.02` **or** `form
+10-Q/10-K` — a query that composite can never express, because form and
+items are welded together.
+
+Migration 003 splits them into `type_primary` and `type_tags`, leaving
+`announcement_type` untouched for display. Named generically rather than
+`form`/`sec_items`: ECB already has a primary with no tags, and HKEX's
+*"Announcements and Notices - [Interim Results]"* would have fitted the
+same shape had it been usable.
+
+One correction that mattered: EDGAR's `items` field carries 8-K item
+numbers **only on 8-K and 8-K/A**. On `EFFECT` it holds a related form and
+a timestamp (`S-4,2024-05-06 16:00:00`), on Form D a rule reference
+(`06b`). Reading those as 8-K items would have offered a filter vocabulary
+invented out of a misread field, so items are parsed on 8-K forms only.
+
+#### Populated-only, on every axis
+
+A chip renders only if it would return rows in the current window. The
+absence carries information: **no `UK` chip means the Bank of England has
+published nothing this month.** It also shrinks the type axis from 85
+distinct values to 16.
+
+#### Zero results never look like an empty tape
+
+```
+No items match these filters
+  JUR CN ×   TKR NVDA ×
+Filters combine as OR within a row and AND across rows, so narrowing
+two axes at once can leave nothing.
+                                              [ clear all filters ]
+```
+
+An unfiltered empty window says something different — *"No filters are
+active — the last 30 days are genuinely empty."* The token bar prevents
+the confusion one layer up; this catches it where the confusion would
+actually bite.
+
 ### The tape
 
 Reverse-chronological, day headers in Sydney, time gutter left. Chinese
@@ -285,6 +360,228 @@ true tabular figures so numeric columns align without hacks. Prose uses
 the system UI stack, which hands CJK to Noto without a second declaration,
 so `国家统计局关于2026年早稻产量数据的公告` sits at the same optical weight as the
 English beside it.
+
+## Company filings: SEC EDGAR only, and why
+
+Of ASX, HKEX and SEC EDGAR, **only the SEC permits what this does.**
+
+| | terms |
+|---|---|
+| **SEC EDGAR** | *"We allow scripted access to sec.gov content"* — 10 req/sec, declared User-Agent. US federal works are public domain. |
+| **ASX** | prohibits *"any spider, screen scraper, robot … to use or access the Site in any way whatsoever, including monitoring, downloading or copying"* without prior written consent. Personal non-commercial use covers **manual** reading; automated access is prohibited separately and independently of purpose. |
+| **HKEX** | prohibits *"any programmatic, scripted or other mechanical means to access this Website"*, *"systematic retrieval to create collections, compilations, databases"*, and text/data mining. Its personal-use grant allows storing pages on disk *"but not on any server or other storage device connected to a network."* |
+
+ASX and HKEX are **out**. A JSON endpoint on a different hostname does not
+change the plain intent of "no spider, screen scraper, robot or similar
+process". Same call as the PBoC `robots.txt`.
+
+### The licensing position, stated plainly
+
+**Nothing this project ships touches a prohibited endpoint.** SEC EDGAR is
+public domain and explicitly invites scripted access; the central bank RSS
+feeds are published for reading; CFETS is a public JSON API with no terms
+restricting retrieval. The one source with an explicit prohibition — PBoC —
+is not polled, and the two exchanges with explicit prohibitions are not
+polled either.
+
+That is a deliberate position, not an accident of what was easy. It also
+means the code could be made public without a licensing problem, though
+the *collected data* remains subject to whatever each publisher says about
+it, and this repository is still a single-user personal tool.
+
+### Editing the watchlist: CLI or UI, one code path
+
+Both call `macrowire.watchlist.add`. Neither reimplements validation, so a
+mistyped ticker fails identically in either — the UI surfaces the CLI's
+exact message as a 400, in front of you, never a silent accept.
+
+The interface writes **two** tables and no others: `item_state` and
+`watchlists`. Both write paths are POST.
+
+An earlier version ran the first-run mark-everything-read sweep inside
+`GET /api/bootstrap`, which made a read mutate — a prefetch, a refresh or
+a crawler would have silently consumed the one chance to do it. Bootstrap
+now only *reports* `first_run: true`; the client POSTs `/api/first-run`.
+Two tests enforce this: one that bootstrap calls no writer, and one that
+walks every `@app.get` block asserting the same.
+
+### Watchlist-driven, and it ships empty
+
+Company filings are **watchlist-filtered by default**. The alternative is
+pulling an exchange's entire daily output to keep a handful of rows: ASX
+publishes ~611 announcements a day, HKEX ~658. Against a 5.7 items/day
+tape that is not a bigger system, it is a different one.
+
+```bash
+python -m macrowire watchlist add AAPL              # validated against the SEC map
+python -m macrowire watchlist add BHP --market AU
+python -m macrowire watchlist list
+python -m macrowire watchlist remove AAPL
+python -m macrowire watchlist refresh               # re-download the ticker map
+```
+
+**Ships empty.** A default watchlist would be a guess about what someone
+holds, and `sec_edgar` polls nothing at all until you add something —
+recorded as a skip, not an error.
+
+**A US ticker is validated on add and an unmatched one fails immediately.**
+`APPL` is rejected against the 10,387-entry SEC map. A typo that is
+accepted returns nothing forever and looks exactly like a quiet company,
+which is the same silent-failure class this project has spent every step
+eliminating. The ticker map is cached in `data/` and refreshed weekly.
+
+### The SEC's User-Agent is enforced, not advisory
+
+They require `Name email`. A normal descriptive User-Agent — the kind every
+other source here accepts — was answered with **HTTP 403 "Request Rate
+Threshold Exceeded"**. So `SEC_CONTACT` is required in `.env` and its
+absence is a hard failure: polling in a way that gets the address blocked
+is worse than not polling. Requests are spaced 0.5s, well under their
+10/sec ceiling.
+
+### Their vocabulary, not ours
+
+`announcement_type` carries the form type plus 8-K item numbers where
+present — `8-K [2.02, 9.01]`, `10-Q`, `424B2`. Nothing invented. Headlines
+use the official Form 8-K captions.
+
+`is_price_sensitive` — nullable and unpopulated since step 1 — is set
+**True only where the SEC's own item number says so**:
+
+| item | caption |
+|---|---|
+| 2.02 | Results of Operations and Financial Condition |
+| 5.02 | Departure or Election of Directors or Certain Officers |
+| 7.01 | Regulation FD Disclosure |
+
+Everything else stays **NULL, not False**. 8.01 "Other Events" is the
+obvious temptation and is deliberately excluded — it is a catch-all whose
+contents range from a buyback to a name change. 9.01 is an exhibit marker,
+not an event. A coin flip in that column would be worse than a null.
+
+Form 4 (insider transactions) is skipped by default — 58% of Apple's 1,001
+most recent filings. The match is exact, not a prefix: `424B2` is an
+unrelated prospectus form and is kept.
+
+## Positioning: CFTC Commitments of Traders
+
+Weekly non-commercial (speculative) longs and shorts in currency futures —
+how the money is placed and which way it moved. A different *kind* of
+information from everything else here: the tape says what was announced,
+this says what was positioned.
+
+`publicreporting.cftc.gov/resource/6dca-aqww.json`, Socrata, no key. US
+federal work, public domain. `robots.txt` sets `Crawl-delay: 1` and
+disallows only some browse paths; `/resource/` is allowed. Honoured.
+
+**81,309 observations over 13,767 reports back to 1986-01-15**, seeded in
+**three requests**.
+
+### There is no published net field — and twelve that look like one
+
+The payload has 133 fields. Twelve contain `net`:
+
+```
+conc_net_le_4_tdr_long_all, conc_net_le_8_tdr_short_all, ...
+```
+
+Every one is a **trader-concentration ratio** — the net position of the
+four or eight largest traders. None is the non-commercial net. Reaching
+for `conc_net_le_4_tdr_long_all` because it matches on name returns a
+plausible number measuring something else, and nothing downstream would
+catch it.
+
+Net is `noncomm_positions_long_all − noncomm_positions_short_all`: two
+published fields, same row, same report. Both components are stored
+alongside so the arithmetic stays checkable. `rate_type` marks derived
+metrics as derived. This is arithmetic on one row, unlike the derived
+`USD/JPY` this project declined — that crossed two different rates at a
+fixing time belonging to neither.
+
+### Contracts are pinned by code, never by name
+
+The dataset also carries `JAPANESE YEN-dormant`, `SWISS FRANC-dormant`,
+`POUND STERLING-OLD`, `MARK/YEN XRATE-OLD`, `AUSTRALIAN DOLLAR - SMALL`
+and a shelf of cross-rate contracts. Name matching would sweep those in
+and produce a series that looks continuous while silently mixing
+instruments.
+
+| code | currency | | code | currency |
+|---|---|---|---|---|
+| 232741 | AUD | | 092741 | CHF |
+| 097741 | JPY | | 090741 | CAD |
+| 099741 | EUR | | 112741 | NZD |
+| 096742 | GBP | | 098662 | USD Index |
+
+The expected `name` is stored beside each code and **asserted** against
+what the API returns. If the CFTC reassigns a code, that raises rather
+than quietly changing what is tracked.
+
+### Missing change is omitted, not zeroed
+
+29 of 13,767 rows have no week-on-week change: a contract's first report
+has no prior week, and there are gaps mid-history too (NZ Dollar has 9,
+the USD Index 5 — so not simply one per contract). Those rows store
+`long`, `short` and `net` and **omit** the change metrics. *"No prior
+week"* and *"no change from last week"* are different facts and must not
+look alike.
+
+Raising on them, which the parser did on the first attempt, made the
+entire history unfetchable — the failure was loud and in the right place.
+
+## Three reference series, three bases
+
+The rail carries three daily reference series, and each is quoted against
+whatever its publisher quotes against — none is converted:
+
+| source | base | series | fixed at |
+|---|---|---|---|
+| `cfets_ccpr` | CNY target | `USD/CNY`, `AUD/CNY`, `EUR/CNY`, `HKD/CNY`, `100JPY/CNY` | 09:15 CST |
+| `ecb_fx` | **EUR** | `EUR/USD`, `EUR/JPY`, `EUR/GBP`, `EUR/CHF`, `EUR/AUD`, `EUR/CNY`, `EUR/HKD`, `EUR/CAD` | ~16:00 CET |
+| `rba_exchange_rates` | **AUD** | 21 crosses | 16:00 AEST |
+
+The RBA panel is AUD-only and CFETS is CNY-only **because that is what
+those publishers publish** — not a display choice. There is no `USD/JPY`
+in either feed. Adding major crosses therefore means adding a source, which
+is what `ecb_fx` is.
+
+A derived `USD/JPY` (`AUD/JPY ÷ AUD/USD`) is deliberately **not** offered:
+it would be a number nobody published, carrying the RBA's Sydney fixing
+time, and storing it would break the store-what-was-published principle
+that has held since step 1.
+
+### ECB euro reference rates
+
+`ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml` — published directly by
+the ECB as gesmes XML, 1.5 KB, 29 currencies. Frankfurter and similar
+services are convenience layers over this exact file, so there is no reason
+to use one.
+
+The format nests **three elements all named `Cube`**, distinguished only by
+which attributes they carry: a container, a date, a rate. The parser matches
+on attributes rather than nesting depth, because the daily and 90-day files
+differ in ways the schema does not promise to keep.
+
+The file carries a **date and no time**. The ECB publishes around 16:00 CET,
+applied explicitly from config and resolved per-instant — so a summer date
+stamps `14:00 UTC` and a winter one `15:00 UTC`. A stored offset would be
+wrong for half the year, the same lesson the ribbon taught.
+
+Seeded once from the 90-day file: **512 observations over 64 trading days**.
+That file is erratically slow — three consecutive fetches of the same 69 KB
+took 40.6s, 25.7s and a timeout — while the daily file is consistently fast,
+hence the 300s timeout on this source. It is the server, not the payload.
+
+Cross-checked against the two series already collected:
+
+```
+EUR/CNY   ECB 7.8538  vs CFETS 7.8906           0.47% apart
+EUR/AUD   ECB 1.6438  vs RBA 1/0.6108 = 1.6372  0.40% apart
+EUR/USD   ECB 1.1681  vs CFETS-implied 1.1635   0.39% apart
+```
+
+Three independent central banks, different fixing times and dates, agreeing
+to well under 1%. A misparse would be off by orders of magnitude.
 
 ## Verified sources
 
@@ -693,11 +990,59 @@ candidate if you want one more.
   this stops nine requests going out inside a second across five
   different governments. A full cycle takes ~20s.
 
+## The defaults are opinions
+
+Several settings in `sources.yaml` are one reader's judgement, not neutral
+configuration, and are marked as such in the file itself:
+
+| setting | what it encodes |
+|---|---|
+| `importance` | reading priority — drives type scale in the tape |
+| `staleness_days` | which feeds are expected to be daily |
+| `skip_forms` | SEC forms not worth reading (Form 4 + 144 were ~88% of volume) |
+| `currencies` | which ECB pairs are stored — 8 of the 29 published |
+| **the source list** | **six of thirteen sources are AU, CN or HK** |
+
+The last is the largest and least visible: it is not a setting you can
+change, it is a point of view about which economies matter. Adding a source
+is a YAML block; removing one is a deletion.
+
+## Contacts are required, and fail at config load
+
+Two environment variables are required and validated when config loads, not
+when a request is about to go out:
+
+```
+SEC_CONTACT is not set, and sources.yaml needs it.
+  The SEC requires a User-Agent of the form 'Name email' and ENFORCES it -
+  anything else is answered with HTTP 403. Note the space: a bare email
+  is not enough.
+    SEC_CONTACT=Jane Doe jane@example.com
+  Set it in /path/to/.env (copy .env.example to start).
+```
+
+`MACROWIRE_PROJECT_URL` is optional and defaults to the canonical repo —
+set it if you fork, so your traffic identifies your project. `sources.yaml`
+supports `${VAR:-default}` for exactly this.
+
 ## Git hook
 
-`git-hooks/commit-msg` enforces that commits are authored by
-`Spyril <spyril@gmail.com>` and rejects machine-generated attribution
-trailers.
+`git-hooks/commit-msg` catches two things that do not show up in a diff:
+a commit landing under whatever identity the shell happened to have, and a
+tool appending `Co-authored-by` or `Generated with` to the message.
+
+By default it checks only that author and committer are **set, non-empty
+and identical** — enough to catch a misconfigured shell without naming
+anybody, so it works for every contributor rather than one.
+
+To pin a specific identity on a single-author repo:
+
+```bash
+git config macrowire.authorName  "Your Name"
+git config macrowire.authorEmail "you@example.com"
+```
+
+Both must be set for the pin to apply.
 
 **Hooks are not cloned.** Install it by hand:
 
@@ -814,6 +1159,71 @@ the newest existing backup is older than `interval_seconds` — so an
 unchanged database is not copied 26 MB at a time for nothing. Configure
 under `defaults.backup` in `sources.yaml`.
 
+### status is derived from the data, not the log
+
+`fetch_log` is not a reliable witness to a source's health, and trusting it
+produced **three separate false alarms on healthy sources**. Each field now
+answers from whichever place can actually answer it.
+
+**A false alarm in a fail-loudly system is worse than no alarm** — it
+teaches you to ignore the real ones. That is the whole reason this was
+worth unpicking.
+
+#### Two kinds of skip, and only one is evidence
+
+| status | meaning |
+|---|---|
+| `ok` | contacted, parsed, stored (possibly nothing new) |
+| `no_change` | **contacted**, and the source said nothing is new. A successful poll. |
+| `throttled` | **not contacted** — the rate limiter blocked the attempt |
+| `error` | contacted, and it failed |
+
+Both used to be `skipped`. CFETS's publication gate reads `ccpr.json`,
+finds the fix already stored and stops — which is its *normal* outcome, so
+it logged no `ok` row and reported **"last successful fetch: never"**
+permanently while holding 8,050 observations.
+
+`no_change` also now counts against the rate limiter, because it made a
+real request. It previously did not, so a gated source was re-probed on
+every cycle regardless of its configured interval.
+
+#### What each field is measured from
+
+| field | source of truth | why |
+|---|---|---|
+| last contact | `fetch_log` (`ok` or `no_change`) | only the log knows if we reached out |
+| last stored new | `MAX(fetched_at)` over **items and observations** | a deduped row is never re-inserted, so this is exactly when we last wrote something |
+| newest content | `MAX(published_at)` / `MAX(observed_at)` | what the SOURCE published |
+| **staleness** | newest content | "how long since this source published" is a question about the source |
+| consecutive failures | errors since the last non-error row, **by id** | |
+
+Reading "last new item" off `items` alone reported **"never"** for every
+observation-storing source — a query looking in the wrong table, not a
+fault. Reading staleness off `fetch_log` made a source storing rows *every
+single day* report **STALE**, because every poll after the first deduped
+and logged `new_item_count = 0`.
+
+Failure streaks are counted by row **id**, not timestamp: `utc_now()` has
+one-second resolution, and a recovery logged in the same second as the
+failure it recovered from would otherwise be invisible. Same tiebreak the
+revision chains needed, for the same reason.
+
+#### "Data current, log incomplete"
+
+Where a source holds data newer than its newest logged contact, `status`
+says so explicitly instead of implying failure:
+
+```
+cfets_ccpr
+  last contact          : never    (no contact logged)
+                          DATA CURRENT, LOG INCOMPLETE — stored 5h 38m ago,
+                          newer than any logged contact. A restore from a
+                          backup predating that fetch is the usual cause.
+```
+
+An error that a later contact superseded is labelled `RESOLVED` rather
+than printed as though it were live.
+
 ### A restore can leave data intact but its log missing
 
 Worth knowing before it confuses you: **restoring from a backup taken
@@ -849,6 +1259,67 @@ Tested by round-trip, not by assertion: the suite backs up, deletes
 every row, restores, and diffs counts and contents. Drilled against the
 live database too — 3,640 observations destroyed and fully recovered.
 
+### Never warn unconditionally
+
+Four separate alarms in this project fired regardless of whether the thing
+they warned about had been handled. It is a rule now, not four fixes:
+
+> **Measure the actual state. If the user has solved the problem, confirm
+> it — do not keep warning.**
+
+A panel that nags at a solved problem is one you stop reading, and then it
+cannot warn you about a real one. The disk-dies panel branches on measured
+state:
+
+| measured | shown |
+|---|---|
+| `export.path` outside the project, file current | *"Exporting to /path — 43 rows protected 12m ago. Off this disk, so a drive failure costs nothing."* |
+| outside the project, file stale | *"…but the file is out of date — run fetch or export"* |
+| default local path | *"…same disk as the database, protects against a mistake but not a drive failure. Set export.path…"* |
+| never exported | *"not exported yet — run macrowire export, or set export.path…"* |
+| config invalid | the specific error |
+
+### Health states say what they mean
+
+Every state a source can be in carries plain-language meaning and, where
+there is one, an action — inline in `status`, on hover in the rail:
+
+| state | means | do |
+|---|---|---|
+| **not polled yet** | never fetched. Nothing is wrong. | run `macrowire fetch` |
+| **polled** | last poll succeeded and stored what it found | — |
+| **polled, nothing new** | contacted; source reported nothing new. Normal for a daily source. | — |
+| **waiting on interval** | rate limiter blocked this cycle before any request | — |
+| **data current, log incomplete** | holds data newer than any logged fetch — usually a restore. Data is fine. | harmless; next fetch clears it |
+| **failing** | consecutive failures since the last good cycle | check the error kind |
+| **stale** | polling works, source has published nothing for longer than its threshold | usually the source being quiet |
+
+`"no contact logged"` was truthful and read like an error. It was a new
+source nobody had fetched yet.
+
+### Where your data lives
+
+`fetch` prints this once, on a database that has collected nothing:
+
+```
+Your data lives in /home/you/Documents/Projects/macrowire/data
+That directory is gitignored: cloning this repo gives you the code,
+not the data. Every install builds its own history by polling.
+
+Most of what accumulates is re-fetchable - SEC, NBS, CFETS, ECB and
+the news feeds all serve their recent history on request, so losing
+the database costs polling time rather than data.
+The exception is rba_media_releases, rba_exchange_rates: those feeds
+carry one item and no archive, so what you collect is the only copy
+in existence.
+Set export.path in sources.yaml to a synced folder and your
+irreplaceable rows are backed up automatically.
+```
+
+Proportionate on purpose. *"Back everything up"* is advice people ignore,
+because most of this can be re-fetched by waiting. Naming the small part
+that genuinely cannot is what makes the paragraph worth reading.
+
 ### What you would actually lose
 
 `status` classifies every source:
@@ -874,17 +1345,53 @@ python -m macrowire export     # -> export/irreplaceable.jsonl
 python -m macrowire import     # load it back
 ```
 
-**`export/` is deliberately NOT gitignored.** The file is meant to be
-committed.
+**The tool writes a file to a path. Where that path goes is your
+arrangement.** It does not commit, push, sync, or handle a credential.
 
-> **Committing `export/irreplaceable.jsonl` is what makes the
-> irreplaceable rows survive a disk failure. Nothing in this project does
-> that for you — it is on you to commit it.** An uncommitted export is
-> just another file on the same disk as the database it came from.
+Set `export.path` in `sources.yaml` to a folder that is already synced or
+backed up — Dropbox, Nextcloud, an external drive — and the irreplaceable
+rows are protected automatically with no further action:
 
-`fetch` does not commit and never will; the project makes no commits at
-all by design. `export` prints a reminder when the file has changed and
-says nothing when it hasn't.
+```yaml
+defaults:
+  export:
+    path: /home/you/Dropbox/macrowire
+    auto: true
+```
+
+The path must be **absolute**, and is checked for existence and
+writability **at config load** — not silently at export time, three weeks
+later, at the moment it mattered.
+
+`fetch` re-exports automatically after any cycle that stores new
+irreplaceable rows. Unchanged data produces a byte-identical file and
+nothing is rewritten.
+
+Left unset, the export goes to `<repo>/export`, which is the same disk as
+the database — that protects against a mistake but not a drive failure,
+and the rail says so rather than pretending otherwise.
+
+#### Version control is one option, not the instruction
+
+If you keep this in git, committing the export is a perfectly good way to
+get it off the disk, and `<repo>/export` is not gitignored so that it can
+be. It is **one** arrangement among several — a synced folder, an external
+drive, a backup job — and the tool does not assume it. Nothing in the
+interface mentions git, and the CLI only mentions it parenthetically when
+a repository is actually present.
+
+The project never commits anything itself. That is deliberate and will not
+change: a background process making commits in your name, potentially
+signed, is not a habit worth acquiring.
+
+#### It refuses to shrink
+
+The export path is global config while the database path can be overridden
+with `MACROWIRE_DB`. A second instance or a test run pointed at a scratch
+database would otherwise overwrite the only off-disk copy with a nearly
+empty file — which happened once during development, from a database in
+`/tmp`. Writing an export with **fewer** irreplaceable rows than the file
+already holds now raises, and needs `--force` to proceed.
 
 #### What goes in it
 

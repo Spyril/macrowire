@@ -8,6 +8,9 @@
 #   cb_statistics  -> RSS-CB cb:statistics items -> rows in `observations`
 #   rss_news       -> plain RSS 2.0 items        -> rows in `items`
 #   cfets_ccpr     -> CFETS CNY central parity    -> rows in `observations`
+#   sec_edgar      -> SEC EDGAR company filings   -> rows in `items`
+#   ecb_fx         -> ECB euro reference rates    -> rows in `observations`
+#   cftc_cot       -> CFTC positioning, FX futures -> rows in `observations`
 #
 # `categories:` under a source maps URL substrings to a category name.
 # It is applied by the pipeline, not by any parser, so it works for any
@@ -19,6 +22,38 @@
 # A genuinely new *shape* of feed needs a new parser module; a new feed of
 # an existing shape needs only YAML. See README, "Adding a source".
 #
+# ---------------------------------------------------------------------------
+# THE DEFAULTS IN THIS FILE ARE OPINIONS, NOT NEUTRAL SETTINGS.
+#
+# They were chosen by one reader with one set of interests, and several of
+# them will be wrong for you. They are all editable and none is load-bearing:
+#
+#   importance      Drives type scale in the tape - what shouts and what
+#                   whispers. RBA media releases and the CFETS fix are 5;
+#                   HKMA press releases are 2. That is a reading priority,
+#                   not a fact about the sources.
+#
+#   staleness_days  When `status` says a source has gone quiet. Set only
+#                   where a feed is genuinely daily; left off for sporadic
+#                   ones, because a threshold that cries wolf gets ignored.
+#
+#   skip_forms      SEC forms not worth reading. Form 4 and 144 are insider
+#                   transaction filings and were ~88% of volume across the
+#                   watchlisted tickers - skipped because they are not acted
+#                   on here. Empty the list to keep everything.
+#
+#   currencies      Which ECB pairs are stored. Eight majors, chosen for one
+#                   person's holdings. The ECB publishes 29; unset this to
+#                   take them all.
+#
+#   the source list itself
+#                   Six of thirteen sources are AU, CN or HK. That is a
+#                   point of view about which economies matter, not a
+#                   default anyone should inherit unexamined. Adding a
+#                   source is a YAML block; removing one is a deletion.
+#
+# ---------------------------------------------------------------------------
+#
 # `jurisdiction` is required on every source: AU US CN HK EU UK JP. It is a
 # fact about the publisher, known at config time, so it carries no rules and
 # cannot drift the way a topic taxonomy would.
@@ -29,7 +64,15 @@
 
 defaults:
   # Sent on every outbound request. RBA is a public government server.
-  user_agent: "MacroWire/0.1 (personal news wire; +https://github.com/Spyril/macrowire; ${MACROWIRE_CONTACT})"
+  # Sent on every outbound request. These are public government servers and
+  # they expect to know who is calling.
+  #
+  # MACROWIRE_CONTACT is required - config load fails without it, rather
+  # than letting a nameless request reach a server that may block for it.
+  # MACROWIRE_PROJECT_URL has a default: change it (or set the variable) if
+  # you fork this, so your traffic identifies your project rather than the
+  # canonical one.
+  user_agent: "MacroWire/0.1 (personal news wire; +${MACROWIRE_PROJECT_URL:-https://github.com/Spyril/macrowire}; ${MACROWIRE_CONTACT})"
   # Floor on how often any one source may be polled. Enforced against
   # fetch_log, so it survives restarts. Values below 60 are rejected.
   min_interval_seconds: 60
@@ -58,6 +101,21 @@ defaults:
     host: 127.0.0.1
     port: 8917
 
+  # Where the irreplaceable rows are written. A few sources carry no
+  # archive at all, so what this file holds is the only copy in existence.
+  #
+  # Point `path` at a synced folder - Dropbox, Nextcloud, an external drive -
+  # and those rows are backed up automatically with no further action. Must
+  # be absolute, and is checked for existence and writability at config load
+  # rather than silently at export time.
+  #
+  # Left unset it writes to <repo>/export, which is a copy on the same disk
+  # as the database and therefore protects against a mistake but not a dead
+  # drive.
+  export:
+    # path: /home/you/Dropbox/macrowire
+    auto: true
+
   # Automatic backups, taken by `fetch` rather than a separate cron entry.
   # Rationale: a second cron line is a second thing to forget, and the
   # thing being protected is partly unrecoverable. A backup only happens
@@ -73,6 +131,10 @@ defaults:
     enabled: true
     interval_seconds: 86400   # at most one automatic backup per day
     keep: 7
+    # Same rules as export.path: absolute, checked at config load. Left unset
+    # backups sit in data/backups, on the same disk as the database - which
+    # protects against a mistake but not a drive failure.
+    # path: /home/you/Dropbox/macrowire-backups
 
 sources:
   - name: rba_media_releases
@@ -393,3 +455,139 @@ sources:
       timeout_seconds: 300
       raw_retention_days: 7
       staleness_days: null
+
+  # --- SEC EDGAR: company filings, watchlist-driven -----------------------
+  # One request per watchlisted US ticker against
+  # data.sec.gov/submissions/CIK{10}.json. Polls NOTHING when the watchlist
+  # is empty, which is the shipped state - a default watchlist would be a
+  # guess about what someone holds.
+  #
+  # ACCESS: the SEC explicitly permits scripted access and publishes the
+  # terms - 10 req/sec, and a User-Agent of the form "Name email". That
+  # format is ENFORCED: a normal descriptive User-Agent was answered with
+  # HTTP 403. sec_contact is required and its absence is a hard failure,
+  # because polling in a way that gets the address blocked is worse than
+  # not polling.
+  - name: sec_edgar
+    kind: sec_edgar
+    parser: sec_edgar
+    url: https://data.sec.gov/submissions/
+    config:
+      institution: SEC
+      jurisdiction: US
+      archive: queryable
+      importance: 4
+      # Filings arrive whenever a company files. No schedule to mark.
+      timing:
+        class: scattered
+      announcement_type: Filing
+      # Insider-transaction noise, skipped by default. Form 4 was 58% of
+      # Apple's 1,001 most recent filings; Form 144 (proposed insider sale)
+      # was a further 30% across the three watchlisted tickers. Matching is
+      # exact, not a prefix - 424B2 is an unrelated prospectus form and is
+      # kept. Empty this list to keep everything.
+      skip_forms: [ "4", "4/A", "144", "144/A" ]
+      # Well under the published 10/sec ceiling. We do not need the headroom.
+      request_interval_seconds: 0.5
+      # SEC's documented "Name email" form. Never hardcoded.
+      sec_contact: "${SEC_CONTACT}"
+      min_interval_seconds: 3600
+      timeout_seconds: 120
+      staleness_days: null
+
+  # --- ECB euro foreign exchange reference rates --------------------------
+  # Published directly by the ECB as gesmes/XML. Frankfurter and similar
+  # services are convenience layers over this exact 1.5KB file, so there is
+  # no reason to use one.
+  #
+  # Base is EUR, always: series read EUR/USD, EUR/JPY - target per one euro,
+  # the same convention as the RBA (AUD base) and CFETS (CNY target). This
+  # is a third reference series that happens to cover the majors, not a
+  # localisation feature.
+  #
+  # The file carries a DATE and no time. The ECB publishes around 16:00 CET,
+  # applied explicitly below and resolved per-instant so the CET/CEST switch
+  # lands correctly.
+  - name: ecb_fx
+    kind: ecb_fx
+    parser: ecb_fx
+    url: https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml
+    config:
+      institution: ECB
+      jurisdiction: EU
+      # One request seeds ~64 trading days; older history is not offered by
+      # this feed, so anything that scrolls off is not re-fetchable.
+      archive: rolling
+      importance: 2
+      publication_time: "16:00"
+      timezone: Europe/Berlin
+      timing:
+        class: fixed
+        at: "16:00"
+        timezone: Europe/Berlin
+        window_minutes: 0
+      # The majors. Leave `currencies` unset to store all 29 the ECB
+      # publishes; these are the ones the rail shows.
+      currencies: [ USD, JPY, GBP, CHF, AUD, CNY, HKD, CAD ]
+      # A one-off seed: the same feed in a 90-day file, one request.
+      # That file is erratically slow - three consecutive fetches of the same
+      # 69KB took 40.6s, 25.7s and a timeout - while the daily file is
+      # consistently fast. Hence the generous timeout; it is the server, not
+      # the payload.
+      backfill_url: https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist-90d.xml
+      timeout_seconds: 300
+      # Published once per business day; hourly polling is ample.
+      min_interval_seconds: 3600
+      staleness_days: 5
+
+  # --- CFTC Commitments of Traders: FX futures positioning ---------------
+  # Weekly. Non-commercial (speculative) longs and shorts in currency
+  # futures - how the money is placed, and which way it moved. A kind of
+  # information the tape cannot carry.
+  #
+  # US federal work, public domain. robots.txt sets Crawl-delay: 1 and
+  # disallows only some browse paths; /resource/ is allowed.
+  #
+  # THE NET IS COMPUTED, AND DELIBERATELY SO. The payload has 133 fields,
+  # twelve of them containing "net", and every one is a trader-concentration
+  # ratio rather than the non-commercial net. See the comment at the top of
+  # macrowire/parsers/cftc_cot.py before touching this.
+  #
+  # CONTRACTS ARE PINNED BY CODE. The dataset also carries -dormant, -OLD
+  # and - SMALL variants plus a shelf of cross-rate contracts; matching on
+  # name would produce a series that looks continuous while mixing
+  # instruments. The `name` below is asserted against what the API returns,
+  # so a reassigned code raises rather than silently changing what is
+  # tracked.
+  - name: cftc_cot
+    kind: cftc_cot
+    parser: cftc_cot
+    url: https://publicreporting.cftc.gov/resource/6dca-aqww.json
+    config:
+      institution: CFTC
+      jurisdiction: US
+      archive: queryable
+      importance: 3
+      timezone: America/New_York
+      timing:
+        class: fixed
+        at: "15:30"
+        timezone: America/New_York
+        window_minutes: 0
+      # Crawl-delay: 1, from their robots.txt.
+      request_interval_seconds: 1.0
+      page_size: 200
+      # Full history is 13,767 rows back to 1986; 5,000 a page is 3 requests.
+      backfill_page_size: 5000
+      contracts:
+        - { code: "232741", currency: AUD, name: "AUSTRALIAN DOLLAR" }
+        - { code: "097741", currency: JPY, name: "JAPANESE YEN" }
+        - { code: "099741", currency: EUR, name: "EURO FX" }
+        - { code: "096742", currency: GBP, name: "BRITISH POUND" }
+        - { code: "092741", currency: CHF, name: "SWISS FRANC" }
+        - { code: "090741", currency: CAD, name: "CANADIAN DOLLAR" }
+        - { code: "112741", currency: NZD, name: "NZ DOLLAR" }
+        - { code: "098662", currency: DXY, name: "USD INDEX" }
+      min_interval_seconds: 3600
+      timeout_seconds: 180
+      staleness_days: 14

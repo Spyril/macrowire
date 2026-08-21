@@ -83,8 +83,15 @@ def holder(port: int) -> dict | None:
 
 
 def is_free(port: int, host: str = "127.0.0.1") -> bool:
-    """Can we actually bind? Cheaper and more truthful than guessing."""
+    """Can the server actually bind here?
+
+    SO_REUSEADDR is set because uvicorn sets it. Without it this probe is
+    STRICTER than the thing it is checking for: a socket lingering in a
+    closing state fails a plain bind but not a SO_REUSEADDR one, so the
+    preflight would refuse to start a server that would have started fine.
+    """
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         probe.bind((host, port))
         return True
@@ -120,7 +127,10 @@ def stop(port: int, timeout: float = 5.0) -> dict:
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if holder(port) is None:
+        # Wait for the PORT to be bindable, not merely for the process to
+        # go: the socket outlives the process briefly, and returning early
+        # makes an immediate restart fail for no reason.
+        if holder(port) is None and is_free(port):
             return {"stopped": True, "pid": pid, "signal": "SIGTERM"}
         time.sleep(0.15)
 

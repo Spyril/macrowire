@@ -6,7 +6,7 @@ one line in this table.
 """
 
 from ..errors import ConfigError
-from . import cb_news, cb_statistics, cfets_ccpr, rss_news
+from . import cb_news, cb_statistics, cfets_ccpr, cftc_cot, ecb_fx, rss_news, sec_edgar
 from .base import ParsedFeed
 
 PARSERS = {
@@ -14,12 +14,17 @@ PARSERS = {
     "cb_statistics": cb_statistics.parse,
     "rss_news": rss_news.parse,
     "cfets_ccpr": cfets_ccpr.parse,
+    "cftc_cot": cftc_cot.parse,
+    "ecb_fx": ecb_fx.parse,
+    "sec_edgar": sec_edgar.parse,
 }
 
 # Sources needing more than one request supply their own fetcher.
 # Everything else uses the pipeline's default single GET.
 FETCHERS = {
     "cfets_ccpr": cfets_ccpr.fetch,
+    "cftc_cot": cftc_cot.fetch,
+    "sec_edgar": sec_edgar.fetch,
 }
 
 __all__ = ["ParsedFeed", "PARSERS", "FETCHERS", "get_parser", "get_fetcher"]

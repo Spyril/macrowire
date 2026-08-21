@@ -24,6 +24,34 @@ DEFAULT_DB_PATH = REPO_ROOT / "data" / "macrowire.db"
 
 LOCAL_USER_ID = 1
 
+# fetch_log.status. The distinction that matters is whether the SOURCE was
+# actually contacted, because that is the only thing that proves it is alive.
+#
+#   ok         contacted, parsed, stored (possibly nothing new)
+#   no_change  CONTACTED, and it said there is nothing new. A successful
+#              poll: CFETS's publication gate reads ccpr.json, finds the
+#              fix already stored, and stops. Proves reachability.
+#   throttled  NOT contacted. The rate limiter blocked the attempt before
+#              any request went out. Proves nothing either way.
+#   error      contacted, and it failed
+#
+# Treating no_change and throttled alike is what made a healthy CFETS report
+# "last successful fetch: never" forever - skipping is its normal outcome.
+STATUS_OK = "ok"
+STATUS_NO_CHANGE = "no_change"
+STATUS_THROTTLED = "throttled"
+STATUS_ERROR = "error"
+
+STATUS_BACKFILL = "backfill"
+
+# Rows that mean we reached the source. A backfill page is a real request
+# that got a real answer, so it is evidence of reachability exactly as an
+# ordinary poll is - omitting it made a freshly seeded source report
+# "data current, log incomplete" about data it had just fetched.
+CONTACT_STATUSES = (STATUS_OK, STATUS_NO_CHANGE, STATUS_BACKFILL)
+# Legacy: everything before this distinction existed was written as 'skipped'.
+LEGACY_SKIP = "skipped"
+
 # The schema lives in macrowire/migrations.py as an ordered, versioned
 # list. It is deliberately not duplicated here - two copies would drift.
 
@@ -170,10 +198,15 @@ def has_parsed_before(conn: sqlite3.Connection, source: str) -> bool:
 
 
 def last_attempt_at(conn: sqlite3.Connection, source: str) -> str | None:
-    """Most recent fetch attempt of any outcome, for rate limiting."""
+    """Most recent time we actually went out to the source, for rate limiting.
+
+    Includes no_change: the publication gate DID make a request, so it counts
+    against the interval. Excluding it meant a gated source was re-probed on
+    every cycle regardless of its configured minimum.
+    """
     row = conn.execute(
         """SELECT timestamp FROM fetch_log
-           WHERE source = ? AND status IN ('ok', 'error')
+           WHERE source = ? AND status IN ('ok', 'no_change', 'error')
            ORDER BY timestamp DESC LIMIT 1""",
         (source,),
     ).fetchone()
