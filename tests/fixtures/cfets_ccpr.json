@@ -1,0 +1,88 @@
+{
+ "head": {
+  "version": "2.0",
+  "provider": "CWAP",
+  "req_code": "",
+  "rep_code": "200",
+  "rep_message": "",
+  "ts": 1787285754074,
+  "producer": "",
+  "tstext": "2026-08-21 12:15:54"
+ },
+ "data": {
+  "head": [
+   "USD/CNY",
+   "EUR/CNY",
+   "100JPY/CNY",
+   "HKD/CNY",
+   "GBP/CNY",
+   "AUD/CNY",
+   "NZD/CNY",
+   "SGD/CNY",
+   "CHF/CNY",
+   "CAD/CNY",
+   "CNY/MOP",
+   "CNY/MYR",
+   "CNY/RUB",
+   "CNY/ZAR",
+   "CNY/KRW",
+   "CNY/AED",
+   "CNY/SAR",
+   "CNY/HUF",
+   "CNY/PLN",
+   "CNY/DKK",
+   "CNY/SEK",
+   "CNY/NOK",
+   "CNY/TRY",
+   "CNY/MXN",
+   "CNY/THB"
+  ],
+  "total": 160,
+  "pageTotal": 4,
+  "searchlist": [
+   "USD/CNY",
+   "EUR/CNY",
+   "100JPY/CNY",
+   "HKD/CNY",
+   "AUD/CNY"
+  ],
+  "endDate": "2026-08-21",
+  "pageSize": 50,
+  "currency": "USD/CNY,EUR/CNY,100JPY/CNY,HKD/CNY,AUD/CNY",
+  "pageNum": 4,
+  "flagMessage": "",
+  "startDate": "2025-12-24"
+ },
+ "records": [
+  {
+   "date": "2026-01-08",
+   "values": [
+    "7.0197",
+    "8.1769",
+    "4.4674",
+    "0.90146",
+    "4.7027"
+   ]
+  },
+  {
+   "date": "2026-01-07",
+   "values": [
+    "7.0187",
+    "8.1822",
+    "4.4662",
+    "0.90131",
+    "4.7110"
+   ]
+  },
+  {
+   "date": "2026-01-06",
+   "values": [
+    "7.0173",
+    "8.1919",
+    "4.4664",
+    "0.90161",
+    "4.6862"
+   ]
+  }
+ ]
+}

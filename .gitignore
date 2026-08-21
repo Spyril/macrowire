@@ -1,0 +1,25 @@
+# Secrets
+.env
+.env.local
+*.key
+credentials.json
+
+# Local data store (see README: no backfill, history is not re-fetchable)
+data/
+*.db
+*.sqlite
+
+# Data exports
+*.csv
+*.parquet
+
+# Assistant / editor scaffolding
+CLAUDE.md
+AI_RULES.md
+.claude/
+.vscode/
+
+# Python
+__pycache__/
+.ipynb_checkpoints/
+venv/

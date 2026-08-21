@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MacroWire</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <span class="wordmark">MacroWire</span>
+  <span class="clock" id="clock">--:--:--<span class="zone"> ---</span></span>
+  <span class="unread-total" id="unread-total"></span>
+</header>
+
+<section class="ribbon" aria-label="Session ribbon">
+  <div class="ribbon-head">
+    <span id="ribbon-day">—</span>
+    <span id="ribbon-note">local time computed per instant — offsets are never stored</span>
+  </div>
+  <div class="band">
+    <div class="hours" id="hours"></div>
+    <div class="rows" id="sessions"></div>
+    <div class="marks" id="marks"><div class="track" id="marks-track"></div></div>
+    <div class="nowline" id="nowline" hidden></div>
+  </div>
+  <div class="untimed" id="untimed"></div>
+</section>
+
+<div class="note" id="firstrun" hidden></div>
+
+<div class="body">
+  <main>
+    <div class="chips chips-j" id="chips-j" aria-label="Filter by jurisdiction"></div>
+    <div class="chips" id="chips" aria-label="Filter by source"></div>
+    <div class="tape" id="tape"><div class="note">loading…</div></div>
+  </main>
+
+  <aside class="rail">
+    <h2>CNY central parity</h2>
+    <div class="fx" id="fx"></div>
+    <div class="asof" id="fx-asof"></div>
+
+    <h2>RBA 4pm rates</h2>
+    <div class="fx" id="rba"></div>
+    <div class="asof" id="rba-asof"></div>
+
+    <h2>Source health</h2>
+    <div class="health" id="health"></div>
+
+    <h2>If this disk dies</h2>
+    <div class="risk" id="risk"></div>
+  </aside>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

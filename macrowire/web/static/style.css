@@ -1,0 +1,252 @@
+/* MacroWire — a wire terminal for one reader.
+ *
+ * PALETTE. Ink-on-slate at a base of #14181d. An earlier pass used #0b0d10
+ * to avoid OLED halation; on a non-OLED panel that buys nothing and costs
+ * legibility, so the base is lifted and panels sit above it at #232a35 —
+ * a 1.23:1 surface step, which is where an unbordered edge becomes visible
+ * without needing a rule to announce it.
+ *
+ * TWO TOKEN FAMILIES, and the distinction matters more than the hues:
+ *
+ *   CONTENT  --ink / --ink-2 / --ink-3
+ *     Things you read. Low-importance CONTENT may be dimmed to --ink-3,
+ *     which still clears 7:1. Quiet, not faint.
+ *
+ *   CHROME   --chrome / --chrome-hi / --edge / --edge-hi
+ *     Labels, axes, day headers, chip borders, dividers. Chrome is not
+ *     low-importance content — it is a different thing entirely, and it
+ *     must stay legible however far content is dimmed. An earlier pass
+ *     used one faint token for both, so dimming an HKMA notice and
+ *     labelling the rail drew from the same well at 2.66:1.
+ *
+ * Every token carrying text clears 7:1 on BOTH surfaces. Nothing renders
+ * below 12px anywhere.
+ *
+ * ACCENT. Exactly one — amber --accent — and it means unread. Two other
+ * signals exist and are deliberately not amber: --fault for a failing or
+ * stale source, --cursor for the now-marker. If a second thing were amber,
+ * unread would stop meaning unread.
+ *
+ * TYPE. IBM Plex Mono for every timestamp, rate and count: installed
+ * locally, true tabular figures so numeric columns align without hacks.
+ * Prose uses the system UI stack, which hands CJK to Noto without a second
+ * declaration, so 国家统计局关于2026年早稻产量数据的公告 sits at the same optical
+ * weight as the English beside it. No webfonts: no build step, no network.
+ */
+
+:root {
+  /* surfaces */
+  --ground:     #14181d;
+  --raised:     #232a35;   /* 1.23:1 above ground — a visible edge */
+  --sunken:     #0f1216;
+
+  /* content — things you read */
+  --ink:        #e9eff6;   /* 15.4 : 1 on ground */
+  --ink-2:      #c6d0dc;   /* 11.4 : 1 */
+  --ink-3:      #aab6c4;   /*  8.7 : 1 — quiet content, still readable */
+
+  /* chrome — structure. never dimmed with content. */
+  --chrome:     #b0bdca;   /*  9.2 : 1 */
+  --chrome-hi:  #c6d0dc;
+  /* Structural, not text: WCAG 1.4.11 asks 3:1 for non-text UI, not 7:1.
+     Both clear it on the ground surface. */
+  --edge:       #5a6775;   /* dividers        3.08:1 */
+  --edge-hi:    #6b7a89;   /* chip borders    4.05:1 */
+
+  /* signals */
+  --accent:     #f2ad50;   /* UNREAD ONLY */
+  --fault:      #f6a091;   /* source failing or stale */
+  --cursor:     #f4f8fc;   /* now-marker */
+
+  --syd: #4f8f83; --tyo: #7d6ea6; --hkg: #9a6f60; --lon: #547da8; --nyc: #927c4d;
+
+  --mono: "IBM Plex Mono", "DejaVu Sans Mono", ui-monospace, monospace;
+  --sans: system-ui, "Noto Sans", "Noto Sans CJK SC", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0;
+  background: var(--ground); color: var(--ink);
+  font-family: var(--sans); font-size: 15px; line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- masthead ---------- */
+header {
+  display: flex; align-items: baseline; gap: 20px;
+  padding: 11px 20px; background: var(--raised);
+  border-bottom: 1px solid var(--edge);
+}
+.wordmark { font-family: var(--mono); font-size: 13px; letter-spacing: .2em;
+            text-transform: uppercase; color: var(--chrome); }
+.clock { font-family: var(--mono); font-size: 14px; color: var(--ink);
+         font-variant-numeric: tabular-nums; }
+.clock .zone { color: var(--chrome); }
+.unread-total { margin-left: auto; font-family: var(--mono); font-size: 13px;
+                color: var(--chrome); }
+.unread-total b { color: var(--accent); font-weight: 600; }
+
+/* ---------- ribbon ---------- */
+.ribbon { padding: 14px 20px 10px; background: var(--ground);
+          border-bottom: 1px solid var(--edge); }
+.ribbon-head { display: flex; justify-content: space-between; align-items: baseline;
+               font-family: var(--mono); font-size: 12px; color: var(--chrome);
+               margin-bottom: 10px; letter-spacing: .05em; }
+.band { position: relative; }
+.hours { position: relative; height: 16px; }
+.hours span { position: absolute; transform: translateX(-50%);
+              font-family: var(--mono); font-size: 12px; color: var(--chrome);
+              font-variant-numeric: tabular-nums; }
+.rows { position: relative; }
+.srow { position: relative; height: 19px; margin-bottom: 3px; }
+.srow .lab { position: absolute; left: 0; top: 2px; width: 38px;
+             font-family: var(--mono); font-size: 12px; color: var(--chrome);
+             letter-spacing: .06em; }
+.track { position: absolute; left: 42px; right: 0; top: 0; bottom: 0;
+         border-bottom: 1px solid var(--edge); }
+.seg { position: absolute; top: 2px; bottom: 4px; border-radius: 1px; }
+.seg[data-continues="into"] { border-right: 2px solid var(--cursor); }
+.seg[data-continues="from"] { border-left: 2px solid var(--cursor); }
+/* A session split by local midnight is one session, not two. The arrows
+   say which edge it runs off so the gap reads as a wrap, not a fault. */
+.wrapmark { position: absolute; top: 2px; font-family: var(--mono); font-size: 12px;
+            color: var(--cursor); line-height: 14px; }
+.weekend .seg { opacity: .4; }
+.srow .closed { position: absolute; left: 46px; top: 2px;
+                font-family: var(--mono); font-size: 12px; color: var(--chrome); }
+
+.marks { position: relative; margin-top: 6px; }
+.marks .track { border-bottom: none; position: relative; height: 100%; }
+
+/* Stems and labels occupy SEPARATE vertical zones, and this is load-bearing.
+ * A first pass stacked whole marks in 17px lanes while a mark actually
+ * occupies ~23px (8px stem + a 15px line box). The lower lane's stem then
+ * punched up through the upper lane's label - and because CFETS 11:15 and
+ * NBS 11:30 sit 13.5px apart horizontally, the NBS stem landed at x=623.0
+ * inside the CFETS colon at x=622.9-630.1. The colon rendered as mush.
+ *
+ * Now every stem lives in the axis strip (y 0..9) whatever its lane, and
+ * labels stack strictly below it. A stem can no longer reach a label. */
+.mark { position: absolute; top: 0; }
+.mark .stem { width: 1px; height: 9px; background: var(--chrome); }
+.mark.imp5 .stem { background: var(--ink); width: 2px; }
+.mark .win { position: absolute; top: 3px; height: 3px; background: var(--edge-hi); }
+.mark .tag { position: absolute; left: -1px; white-space: nowrap;
+             font-family: var(--mono); font-size: 12px; color: var(--chrome);
+             letter-spacing: .02em; line-height: 15px; }
+.mark.imp5 .tag { color: var(--ink-2); }
+
+.nowline { position: absolute; top: 0; bottom: 0; width: 1px;
+           background: var(--cursor); pointer-events: none; }
+.nowline::before { content: ""; position: absolute; top: -3px; left: -2.5px;
+                   width: 6px; height: 6px; background: var(--cursor); }
+
+.untimed { margin-top: 8px; font-family: var(--mono); font-size: 12px;
+           color: var(--chrome); letter-spacing: .02em; line-height: 1.6; }
+.untimed b { color: var(--chrome-hi); font-weight: 600; }
+
+/* ---------- layout ---------- */
+.body { display: grid; grid-template-columns: minmax(0,1fr) 310px; }
+@media (max-width: 980px) { .body { grid-template-columns: 1fr; } }
+
+/* ---------- filter chips ---------- */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 20px 10px; }
+.chips-j { padding-top: 14px; padding-bottom: 8px; }
+/* Jurisdiction is the coarser axis, so it reads slightly heavier. Both rows
+   are chrome: a label on the story, never the story. */
+.chips-j .chip { letter-spacing: .12em; font-weight: 600; min-width: 46px;
+                 justify-content: center; text-align: center; }
+.chip { font-family: var(--mono); font-size: 12px; letter-spacing: .03em;
+        padding: 4px 9px; border: 1px solid var(--edge-hi); background: var(--ground);
+        color: var(--chrome); cursor: pointer; border-radius: 2px; }
+.chip:hover { color: var(--ink); border-color: var(--chrome); }
+.chip[aria-pressed="true"] { color: var(--ink); border-color: var(--chrome);
+                             background: var(--raised); }
+.chip .n { color: var(--accent); margin-left: 6px; font-weight: 600; }
+.chip:focus-visible, button:focus-visible, a:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- tape ---------- */
+.tape { padding: 0 20px 60px; border-right: 1px solid var(--edge); }
+@media (max-width: 980px) { .tape { border-right: none; } }
+
+.dayhead { position: sticky; top: 0; z-index: 3;
+           background: var(--raised); color: var(--chrome-hi);
+           font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+           text-transform: uppercase;
+           margin: 16px -20px 0; padding: 7px 20px;
+           border-top: 1px solid var(--edge); border-bottom: 1px solid var(--edge); }
+
+.item { display: grid; grid-template-columns: 58px 3px minmax(0,1fr);
+        gap: 0 10px; padding: 9px 0; border-bottom: 1px solid var(--edge);
+        align-items: start; }
+.item .t { font-family: var(--mono); font-size: 13px; color: var(--chrome);
+           font-variant-numeric: tabular-nums; padding-top: 1px; }
+.item .gut { width: 3px; height: 100%; min-height: 16px; background: transparent;
+             border-radius: 1px; }
+.item.unread .gut { background: var(--accent); }
+.item .hl { color: var(--ink); text-decoration: none; }
+.item .hl:hover { text-decoration: underline; text-underline-offset: 3px; }
+.item .meta { font-family: var(--mono); font-size: 12px; color: var(--chrome);
+              margin-top: 3px; letter-spacing: .02em; }
+.item .meta .src { color: var(--chrome-hi); }
+/* Jurisdiction code. Chrome, and deliberately colourless - seven hues would
+   compete with the one accent that means unread. Weight and a hairline box
+   carry it instead. */
+.item .meta .jur { color: var(--chrome-hi); font-weight: 600; letter-spacing: .1em;
+                   border: 1px solid var(--edge-hi); border-radius: 2px;
+                   padding: 0 4px; margin-right: 7px; }
+.item .count { color: var(--ink-2); }
+.item .sum { color: var(--ink-3); font-size: 13.5px; margin-top: 4px;
+             display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+             overflow: hidden; }
+
+/* Importance drives weight and scale, and dims CONTENT only — never the
+   time gutter, source label or divider, which are chrome. */
+.item.imp5 .hl { font-size: 17px; font-weight: 600; }
+.item.imp4 .hl { font-size: 15.5px; font-weight: 500; }
+.item.imp3 .hl { font-size: 15px; }
+.item.imp2 .hl, .item.imp1 .hl, .item.imp0 .hl { font-size: 14px; color: var(--ink-3); }
+.item.imp2, .item.imp1, .item.imp0 { padding: 6px 0; }
+.item.imp2 .sum, .item.imp1 .sum, .item.imp0 .sum { display: none; }
+
+/* ---------- rail ---------- */
+.rail { background: var(--raised); padding: 14px 16px 40px; }
+.rail h2 { font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+           text-transform: uppercase; color: var(--chrome-hi); font-weight: 600;
+           margin: 22px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--edge-hi); }
+.rail h2:first-child { margin-top: 0; }
+
+.fx { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px;
+      font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+/* 100JPY/CNY is CFETS's own label, kept unnormalised on purpose. It must
+   not wrap and orphan "CNY" onto a line of its own. */
+.fx .k { color: var(--ink-2); white-space: nowrap; }
+.fx .v { color: var(--ink); text-align: right; white-space: nowrap; }
+.fx .d { grid-column: 2; text-align: right; color: var(--ink-3); font-size: 12px;
+         margin-top: -2px; white-space: nowrap; }
+.asof { font-family: var(--mono); font-size: 12px; color: var(--chrome); margin-top: 8px;
+        line-height: 1.5; }
+
+.health { font-family: var(--mono); font-size: 12.5px; }
+.health .jgroup { display: block; color: var(--chrome); letter-spacing: .12em;
+                  font-weight: 600; margin: 10px 0 3px; padding-bottom: 2px;
+                  border-bottom: 1px solid var(--edge); }
+.health .jgroup:first-child { margin-top: 0; }
+.health div { display: flex; justify-content: space-between; gap: 10px;
+              padding: 3px 0; color: var(--ink-2); }
+.health .nm { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis;
+              white-space: nowrap; }
+.health .ok { color: var(--chrome); white-space: nowrap; }
+.health .warn { color: var(--fault); white-space: nowrap; }
+.risk { font-family: var(--mono); font-size: 12.5px; color: var(--ink-2);
+        margin-top: 6px; line-height: 1.6; }
+.risk b { color: var(--ink); font-weight: 600; }
+
+.note { font-family: var(--mono); font-size: 12.5px; color: var(--ink-2);
+        padding: 9px 20px; background: var(--raised);
+        border-bottom: 1px solid var(--edge); }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

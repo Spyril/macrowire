@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Enforce commit authorship. Git hooks are not cloned, so this file lives
+# in the repo and must be copied into .git/hooks/ by hand:
+#
+#   cp git-hooks/commit-msg .git/hooks/commit-msg
+#   chmod +x .git/hooks/commit-msg
+#
+set -euo pipefail
+
+EXPECTED_NAME="Spyril"
+EXPECTED_EMAIL="spyril@gmail.com"
+
+actual_name="$(git config user.name || true)"
+actual_email="$(git config user.email || true)"
+
+if [[ "$actual_name" != "$EXPECTED_NAME" || "$actual_email" != "$EXPECTED_EMAIL" ]]; then
+    echo "commit-msg: refusing commit." >&2
+    echo "  expected author: ${EXPECTED_NAME} <${EXPECTED_EMAIL}>" >&2
+    echo "  configured     : ${actual_name} <${actual_email}>" >&2
+    echo >&2
+    echo "  git config user.name  \"${EXPECTED_NAME}\"" >&2
+    echo "  git config user.email \"${EXPECTED_EMAIL}\"" >&2
+    exit 1
+fi
+
+# Reject machine-generated attribution trailers.
+msg_file="$1"
+if grep -qiE '^(co-authored-by|generated with|assisted-by)' "$msg_file"; then
+    echo "commit-msg: attribution trailers are not permitted in this repo." >&2
+    exit 1
+fi
+
+exit 0
