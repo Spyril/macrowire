@@ -538,6 +538,22 @@ def cmd_status(args) -> int:
             print(f"  consecutive failures  : {row['consecutive_failures']} "
                   f"since the last good cycle  [{', '.join(row['failure_kinds'])}]")
 
+        # Drift is the maintenance cost of a vocabulary, so it is reported
+        # rather than left to be discovered by noticing an absence.
+        fx = row["fx_counts"]
+        if not row["fx_has_vocabulary"]:
+            print(f"  fx classification     : none - every item unclassified")
+        elif row["fx_unclassified_pct"] is not None:
+            line = (f"  fx classification     : {fx['fx']} fx / {fx['not_fx']} not / "
+                    f"{fx['unclassified']} unclassified "
+                    f"({row['fx_unclassified_pct']:.0f}%)")
+            if row["fx_drift"]:
+                line += (f"\n  {'':22}  DRIFT: {row['fx_recent_unclassified_pct']:.0f}% "
+                         f"unclassified in the last 30d vs "
+                         f"{row['fx_older_unclassified_pct']:.0f}% before - the source "
+                         f"may have renamed something the vocabulary matches on.")
+            print(line)
+
         threshold = row["staleness_days"]
         print(f"  staleness threshold   : "
               f"{str(threshold) + ' days' if threshold is not None else 'off'}"

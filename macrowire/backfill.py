@@ -78,7 +78,7 @@ def run_single(conn: sqlite3.Connection, source: Source, dry_run: bool = False) 
 
     parsed = get_parser(source.parser)(source, body)
     new, revisions = wire._store_observations(conn, source, source_id, parsed)
-    db.log_fetch(conn, source.name, status="backfill", new_item_count=new,
+    db.log_fetch(conn, source.name, status=db.STATUS_BACKFILL, new_item_count=new,
                  detail=f"single-request seed from {url}")
     conn.commit()
 
@@ -145,7 +145,7 @@ def run_paged(conn: sqlite3.Connection, source: Source, dry_run: bool = False) -
         # bounds - not in rows written.
         api_rows = len({o["external_id"].split("#", 1)[0] for o in parsed.observations})
         periods = sorted({o["period"] for o in parsed.observations})
-        db.log_fetch(conn, source.name, status="backfill", new_item_count=new,
+        db.log_fetch(conn, source.name, status=db.STATUS_BACKFILL, new_item_count=new,
                      detail=f"offset {offset} ({periods[0]}..{periods[-1]})")
         conn.commit()
         print(f"    offset {offset:>6}  {api_rows:>5} rows -> "
@@ -261,7 +261,7 @@ def run(conn: sqlite3.Connection, source: Source, today: date, dry_run: bool = F
             new, revisions = wire._store_observations(conn, source, source_id, parsed)
             stored += new
             db.log_fetch(
-                conn, source.name, status="backfill",
+                conn, source.name, status=db.STATUS_BACKFILL,
                 new_item_count=new, detail=marker,
             )
             conn.commit()

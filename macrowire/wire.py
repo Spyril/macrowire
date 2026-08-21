@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -17,6 +17,7 @@ from . import db
 from .config import Source, load_sources
 from .encoding import decode
 from .errors import EmptyFeedError, FetchError, MacroWireError
+from . import fx as fxmod
 from .parsers import ParsedFeed, get_fetcher, get_parser
 
 
@@ -159,9 +160,9 @@ def _store_items(conn, source_id: int, parsed: ParsedFeed) -> int:
             INSERT OR IGNORE INTO items (
                 id, source_id, external_id, title, url, summary, content,
                 published_at, fetched_at, ticker, is_price_sensitive,
-                announcement_type, type_primary, type_tags,
+                announcement_type, type_primary, type_tags, fx_state,
                 institution_abbrev, simple_title, occurrence_date
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item_id,
@@ -178,6 +179,7 @@ def _store_items(conn, source_id: int, parsed: ParsedFeed) -> int:
                 item["announcement_type"],
                 item.get("type_primary"),
                 item.get("type_tags"),
+                item.get("fx_state") or fxmod.UNCLASSIFIED,
                 item["institution_abbrev"],
                 item["simple_title"],
                 item["occurrence_date"],
@@ -261,7 +263,7 @@ def _store_observations(conn, source: Source, source_id: int, parsed: ParsedFeed
         )
 
     for note in revisions:
-        db.log_fetch(conn, source.name, status="revision", detail=note)
+        db.log_fetch(conn, source.name, status=db.STATUS_REVISION, detail=note)
 
     return stored, revisions
 
@@ -335,6 +337,7 @@ def fetch_source(conn: sqlite3.Connection, source: Source, stagger: bool = False
 
             page = parser(source, body)
             classify(source, page)
+            fxmod.classify_items(source, page.items)
             parsed.items.extend(page.items)
             parsed.observations.extend(page.observations)
 
@@ -349,11 +352,11 @@ def fetch_source(conn: sqlite3.Connection, source: Source, stagger: bool = False
         conn.commit()
 
     except MacroWireError as exc:
-        db.log_fetch(conn, source.name, status="error",
+        db.log_fetch(conn, source.name, status=db.STATUS_ERROR,
                      error=f"{type(exc).__name__}: {exc}", error_kind=exc.kind)
         raise
     except Exception as exc:  # unexpected, but still must reach fetch_log
-        db.log_fetch(conn, source.name, status="error",
+        db.log_fetch(conn, source.name, status=db.STATUS_ERROR,
                      error=f"{type(exc).__name__}: {exc}", error_kind="internal")
         raise
 
@@ -366,7 +369,7 @@ def fetch_source(conn: sqlite3.Connection, source: Source, stagger: bool = False
         pruned = db.prune_raw_responses(conn, source.name, source.raw_retention_days)
         conn.commit()
 
-    db.log_fetch(conn, source.name, status="ok", new_item_count=total_new)
+    db.log_fetch(conn, source.name, status=db.STATUS_OK, new_item_count=total_new)
 
     return {
         "source": source.name,
@@ -445,8 +448,8 @@ def source_status(conn: sqlite3.Connection, source: Source) -> dict:
     # rows predate the distinction and are not counted as contact: they were
     # mostly throttles, and guessing would re-create the false alarm.
     last_contact = scalar(
-        """SELECT MAX(timestamp) FROM fetch_log
-           WHERE source = ? AND status IN ('ok', 'no_change', 'backfill')""",
+        f"""SELECT MAX(timestamp) FROM fetch_log
+            WHERE source = ? AND {db.contact_sql()}""",
         (source.name,),
     )
     last_ok = scalar(
@@ -510,8 +513,8 @@ def source_status(conn: sqlite3.Connection, source: Source) -> dict:
     # again, for the same one-second-resolution reason.
     if last_error:
         contact_id = scalar(
-            """SELECT MAX(id) FROM fetch_log
-               WHERE source = ? AND status IN ('ok', 'no_change', 'backfill')""",
+            f"""SELECT MAX(id) FROM fetch_log
+                WHERE source = ? AND {db.contact_sql()}""",
             (source.name,),
         ) or 0
         last_error["resolved"] = contact_id > last_error["id"]
@@ -539,6 +542,40 @@ def source_status(conn: sqlite3.Connection, source: Source) -> dict:
             (source_id,),
         ).fetchone()
         chains, superseded = row["chains"], row["superseded"]
+
+    # FX classification coverage, and whether it is DRIFTING.
+    #
+    # A vocabulary rots silently: when a source renames a committee, its
+    # items stop matching and quietly drop out of the FX filter. Nothing
+    # errors. So the unclassified rate is reported, and compared against
+    # the rate before this window - a rising number is the rename.
+    fx_counts = {"fx": 0, "not_fx": 0, "unclassified": 0}
+    fx_recent = fx_older = None
+    if source_id is not None:
+        for row in conn.execute(
+            """SELECT COALESCE(fx_state, 'unclassified') AS state, COUNT(*) AS n
+               FROM items WHERE source_id = ? GROUP BY state""", (source_id,)
+        ):
+            if row["state"] in fx_counts:
+                fx_counts[row["state"]] = row["n"]
+
+        window = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        def rate(clause, params):
+            row = conn.execute(
+                f"""SELECT COUNT(*) AS n,
+                           SUM(CASE WHEN COALESCE(fx_state,'unclassified')='unclassified'
+                                    THEN 1 ELSE 0 END) AS u
+                    FROM items WHERE source_id = ? AND {clause}""",
+                (source_id, *params)).fetchone()
+            return (row["u"] / row["n"]) if row and row["n"] else None
+        fx_recent = rate("published_at >= ?", (window,))
+        fx_older = rate("published_at < ?", (window,))
+
+    fx_total = sum(fx_counts.values())
+    fx_drift = (
+        fx_recent is not None and fx_older is not None
+        and fx_recent > fx_older + 0.15      # a real jump, not sampling noise
+    )
 
     replaceable = {"none": "NO", "rolling": "PARTIAL",
                    "queryable": "YES", "unknown": "?"}[source.archive]
@@ -570,6 +607,13 @@ def source_status(conn: sqlite3.Connection, source: Source) -> dict:
         "consecutive_failures": consecutive,
         "failure_kinds": kinds,
         "last_error": last_error,
+
+        "fx_counts": fx_counts,
+        "fx_unclassified_pct": (fx_counts["unclassified"] / fx_total * 100) if fx_total else None,
+        "fx_recent_unclassified_pct": (fx_recent * 100) if fx_recent is not None else None,
+        "fx_older_unclassified_pct": (fx_older * 100) if fx_older is not None else None,
+        "fx_drift": fx_drift,
+        "fx_has_vocabulary": bool(source.fx),
 
         "archive": source.archive,
         "replaceable": replaceable,

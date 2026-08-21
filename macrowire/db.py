@@ -43,14 +43,40 @@ STATUS_THROTTLED = "throttled"
 STATUS_ERROR = "error"
 
 STATUS_BACKFILL = "backfill"
+STATUS_REVISION = "revision"
 
-# Rows that mean we reached the source. A backfill page is a real request
-# that got a real answer, so it is evidence of reachability exactly as an
-# ordinary poll is - omitting it made a freshly seeded source report
-# "data current, log incomplete" about data it had just fetched.
-CONTACT_STATUSES = (STATUS_OK, STATUS_NO_CHANGE, STATUS_BACKFILL)
-# Legacy: everything before this distinction existed was written as 'skipped'.
+# Rows that mean WE REACHED THE SOURCE. Every one of these is written only
+# after a real request got a real answer, so each is evidence of
+# reachability. Health is derived from this set, not from a list repeated in
+# a query somewhere - which is how it drifted three times:
+#
+#   no_change  a gated poll DID contact the source and was told nothing
+#              was new. Missing it made CFETS report "never" forever.
+#   backfill   paged seeding requests. Missing it made a freshly seeded
+#              source report "log incomplete" about data it had just
+#              fetched, minutes earlier.
+#   revision   written only after a fetched payload parsed successfully.
+#              Never independently reachable today, but a restore that
+#              clipped the ok row while keeping this one would miscount -
+#              which is exactly the shape of the other two.
+#
+# ADDING A STATUS? Decide here whether it means contact. That decision is
+# the point of this set existing.
+CONTACT_STATUSES = (STATUS_OK, STATUS_NO_CHANGE, STATUS_BACKFILL, STATUS_REVISION)
+
+# Legacy: everything written before the no_change/throttled distinction
+# existed used this. Mostly throttles, so it is NOT counted as contact -
+# guessing otherwise would resurrect the false alarm it was meant to end.
 LEGACY_SKIP = "skipped"
+
+# Not contact: the attempt never reached the source.
+NON_CONTACT_STATUSES = (STATUS_THROTTLED, LEGACY_SKIP)
+
+
+def contact_sql(column: str = "status") -> str:
+    """SQL fragment for `reached the source`, from the one authoritative set."""
+    return f"{column} IN ({', '.join(repr(s) for s in CONTACT_STATUSES)})"
+
 
 # The schema lives in macrowire/migrations.py as an ordered, versioned
 # list. It is deliberately not duplicated here - two copies would drift.

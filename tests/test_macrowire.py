@@ -1019,6 +1019,149 @@ class TestFacets(TempDB):
         self.assertEqual(self.facets()["ticker"], [])
 
 
+class TestFxClassification(unittest.TestCase):
+    """Three states, and the third must never read as a negative."""
+
+    def setUp(self):
+        from macrowire import fx as fxmod
+        self.fx = fxmod
+
+    def cls(self, name):
+        return self.fx.Classifier(SOURCES[name])
+
+    def test_reference_series_are_fx_by_construction(self):
+        for name in ("rba_exchange_rates", "cfets_ccpr", "ecb_fx", "cftc_cot"):
+            self.assertTrue(SOURCES[name].fx.get("always"), name)
+            self.assertEqual(self.cls(name).classify("anything at all"), self.fx.FX)
+
+    def test_a_source_with_no_vocabulary_is_unclassified_not_not_fx(self):
+        """Absence of a rule must never read as a negative."""
+        from dataclasses import replace
+        bare = replace(SOURCES["boe_news"], fx={})
+        self.assertEqual(self.fx.Classifier(bare).classify("Bank Rate maintained"),
+                         self.fx.UNCLASSIFIED)
+
+    def test_an_unmatched_title_is_unclassified_not_not_fx(self):
+        state = self.cls("boe_news").classify("Some entirely novel committee")
+        self.assertEqual(state, self.fx.UNCLASSIFIED)
+
+    def test_the_fxjsc_case_that_defeated_the_first_ruleset(self):
+        """'FXJSC' does not match \\bFX\\b - the miss that settled the design."""
+        self.assertEqual(
+            self.cls("boe_news").classify(
+                "Minutes of the London FXJSC Main Committee Meeting"),
+            self.fx.FX)
+
+    def test_boe_prudential_material_is_not_fx(self):
+        for title in ("PRA fines HDI Global SE £4,165,000",
+                      "PRA and FCA propose new captive insurance regime",
+                      "Banknote imagery advisory group minutes"):
+            self.assertEqual(self.cls("boe_news").classify(title), self.fx.NOT_FX, title)
+
+    def test_boe_policy_material_is_fx(self):
+        for title in ("Bank Rate maintained at 3.75% - July 2026 Monetary Policy Summary",
+                      "Asset Purchase Facility: Gilt Sales - Market Notice"):
+            self.assertEqual(self.cls("boe_news").classify(title), self.fx.FX, title)
+
+    def test_hkma_scam_alerts_are_not_fx_but_exchange_fund_is(self):
+        self.assertEqual(self.cls("hkma_press").classify("Scam alert related to banks"),
+                         self.fx.NOT_FX)
+        self.assertEqual(
+            self.cls("hkma_press").classify(
+                "Exchange Fund Abridged Balance Sheet and Currency Board Account"),
+            self.fx.FX)
+
+    def test_chinese_macro_prints_classify(self):
+        self.assertEqual(
+            self.cls("nbs_releases").classify("2026年7月份居民消费价格同比上涨0.5%"),
+            self.fx.FX)
+        self.assertEqual(
+            self.cls("nbs_releases").classify("国家统计局关于2026年早稻产量数据的公告"),
+            self.fx.NOT_FX)
+
+    def test_exclude_wins_over_include(self):
+        """The ambiguous case keeps out of an FX-only view rather than in."""
+        from dataclasses import replace
+        src = replace(SOURCES["boe_news"],
+                      fx={"include": ["interest rate"], "exclude": ["consult"]})
+        self.assertEqual(
+            self.fx.Classifier(src).classify("PRA consults on interest rate risk"),
+            self.fx.NOT_FX)
+
+    def test_config_rejects_vocabulary_plus_always(self):
+        import yaml
+        from macrowire.config import load_sources
+        from macrowire.errors import ConfigError
+        doc = yaml.safe_load(Path("sources.yaml").read_text())
+        doc["sources"] = [dict(doc["sources"][0])]
+        doc["sources"][0]["config"] = dict(doc["sources"][0]["config"])
+        doc["sources"][0]["config"]["fx"] = {"always": True, "include": ["x"]}
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "s.yaml"
+            p.write_text(yaml.safe_dump(doc, allow_unicode=True))
+            with self.assertRaises(ConfigError):
+                load_sources(p)
+
+    def test_every_source_declares_an_fx_policy(self):
+        for src in SOURCES.values():
+            self.assertTrue(src.fx, f"{src.name} has no fx block, so all its "
+                                    f"items are permanently unclassified")
+
+
+class TestFxDrift(TempDB):
+    """A vocabulary rots silently. Drift must be observable."""
+
+    def setUp(self):
+        super().setUp()
+        self.src = SOURCES["boe_news"]
+        self.sid = db.upsert_source(self.conn, self.src.name, self.src.kind,
+                                    self.src.config)
+        self.conn.commit()
+
+    def add(self, title, state, days_ago):
+        from datetime import datetime, timedelta, timezone
+        when = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+        self.conn.execute(
+            """INSERT INTO items (id, source_id, title, fetched_at, published_at, fx_state)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (f"{title}-{days_ago}", self.sid, title, when, when, state))
+        self.conn.commit()
+
+    def test_counts_are_reported_per_source(self):
+        self.add("a", "fx", 5); self.add("b", "not_fx", 5); self.add("c", "unclassified", 5)
+        st = wire.source_status(self.conn, self.src)
+        self.assertEqual(st["fx_counts"], {"fx": 1, "not_fx": 1, "unclassified": 1})
+        self.assertAlmostEqual(st["fx_unclassified_pct"], 100 / 3, places=1)
+
+    def test_drift_is_flagged_when_unclassified_rises(self):
+        """A renamed committee shows as a rising unclassified rate."""
+        for n in range(10):
+            self.add(f"old{n}", "fx", 60)
+        for n in range(10):
+            self.add(f"new{n}", "unclassified", 5)
+        st = wire.source_status(self.conn, self.src)
+        self.assertTrue(st["fx_drift"])
+        self.assertGreater(st["fx_recent_unclassified_pct"],
+                           st["fx_older_unclassified_pct"])
+
+    def test_no_drift_when_the_rate_is_steady(self):
+        for n in range(10):
+            self.add(f"old{n}", "fx", 60)
+        for n in range(10):
+            self.add(f"new{n}", "fx", 5)
+        self.assertFalse(wire.source_status(self.conn, self.src)["fx_drift"])
+
+    def test_null_fx_state_counts_as_unclassified_not_not_fx(self):
+        self.conn.execute(
+            """INSERT INTO items (id, source_id, title, fetched_at, published_at)
+               VALUES ('legacy', ?, 't', '2026-01-01T00:00:00+00:00',
+                       '2026-01-01T00:00:00+00:00')""", (self.sid,))
+        self.conn.commit()
+        st = wire.source_status(self.conn, self.src)
+        self.assertEqual(st["fx_counts"]["unclassified"], 1)
+        self.assertEqual(st["fx_counts"]["not_fx"], 0)
+
+
 class TestCftcCot(unittest.TestCase):
     """Positioning. Two traps: a net field that isn't, and contract codes."""
 

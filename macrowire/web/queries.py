@@ -96,7 +96,8 @@ def set_flag(conn: sqlite3.Connection, user_id: int, item_id: str, flagged: bool
 def tape(conn: sqlite3.Connection, sources, user_id: int, *, days: int = 30,
          only: list[str] | None = None, jurisdictions: list[str] | None = None,
          tickers: list[str] | None = None, types: list[str] | None = None,
-         collapse: bool = True, limit: int = 400) -> list[dict]:
+         fx_states: list[str] | None = None, collapse: bool = True,
+         limit: int = 400) -> list[dict]:
     """Reverse-chronological items, optionally collapsing repeated titles.
 
     Collapsing groups identical (source, title) pairs into one row carrying
@@ -117,6 +118,17 @@ def tape(conn: sqlite3.Connection, sources, user_id: int, *, days: int = 30,
     if tickers:
         clause += f" AND i.ticker IN ({', '.join('?' * len(tickers))})"
         params.extend([t.upper() for t in tickers])
+    if fx_states:
+        # NULL is unclassified, never not-FX. A row stored before
+        # classification existed must not be silently treated as a negative.
+        parts = []
+        for state in fx_states:
+            if state == "unclassified":
+                parts.append("(i.fx_state IS NULL OR i.fx_state = 'unclassified')")
+            else:
+                parts.append("i.fx_state = ?")
+                params.append(state)
+        clause += f" AND ({' OR '.join(parts)})"
     if types:
         # A type token is "source:primary" or "source:primary:tag". Scoped to
         # its source, because 9 of 10 sources have exactly one type and a
@@ -143,7 +155,7 @@ def tape(conn: sqlite3.Connection, sources, user_id: int, *, days: int = 30,
 
     rows = conn.execute(
         f"""SELECT i.id, i.title, i.url, i.summary, i.published_at,
-                   i.announcement_type, i.type_primary, i.type_tags,
+                   i.announcement_type, i.type_primary, i.type_tags, i.fx_state,
                    i.ticker, i.is_price_sensitive, s.name AS source,
                    (st.read_at IS NOT NULL) AS is_read,
                    COALESCE(st.flagged, 0) AS flagged
@@ -176,6 +188,7 @@ def tape(conn: sqlite3.Connection, sources, user_id: int, *, days: int = 30,
                 "announcement_type": _display_category(r["announcement_type"]),
                 "type_primary": r["type_primary"],
                 "type_tags": r["type_tags"],
+                "fx_state": r["fx_state"] or "unclassified",
                 "ticker": r["ticker"],
                 "price_sensitive": bool(r["is_price_sensitive"]) if r["is_price_sensitive"] is not None else None,
                 "count": 0,
@@ -285,6 +298,15 @@ def facets(conn: sqlite3.Connection, sources, user_id: int, days: int = 30) -> d
                 key = f"{row['primary_type']}:{tag}"
                 group["tags"][key] = group["tags"].get(key, 0) + row["n"]
 
+    fx_axis = []
+    for row in conn.execute(
+        """SELECT COALESCE(i.fx_state, 'unclassified') AS state, COUNT(*) AS n
+           FROM items i WHERE i.published_at >= ? GROUP BY state""", (cutoff,)
+    ):
+        fx_axis.append({"value": row["state"], "count": row["n"]})
+    fx_axis.sort(key=lambda x: ["fx", "not_fx", "unclassified"].index(x["value"])
+                 if x["value"] in ("fx", "not_fx", "unclassified") else 9)
+
     type_axis = []
     for name, group in sorted(groups.items()):
         # A source with a single type adds nothing the source axis does not
@@ -311,6 +333,7 @@ def facets(conn: sqlite3.Connection, sources, user_id: int, days: int = 30) -> d
         "ticker": sorted(({"value": v, "count": c} for v, c in per_ticker.items()
                           if v in held), key=lambda x: x["value"]),
         "type": type_axis,
+        "fx": fx_axis,
     }
 
 

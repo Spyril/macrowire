@@ -44,6 +44,18 @@ TIMING_CLASSES = {"fixed", "tight", "scattered", "date_only"}
 # config time - not a topic judgement, so there is nothing here to rot.
 JURISDICTIONS = {"AU", "US", "CN", "HK", "EU", "UK", "JP"}
 
+# FX relevance. THREE states, and the third is load-bearing:
+#
+#   fx            matches an include pattern
+#   not_fx        matches an exclude pattern
+#   unclassified  matches neither, OR the source declares no fx block
+#
+# Absence of a rule must NEVER read as a negative. A source with no
+# vocabulary is unclassified, not not-FX - otherwise adding a source
+# silently hides it from the filter, and renaming a committee silently
+# drops items out of it. Both are the failure this project keeps catching.
+FX_STATES = ("fx", "not_fx", "unclassified")
+
 # ${NAME} is required; ${NAME:-fallback} has a default. The second form
 # exists so a fork can identify itself without every user having to set a
 # variable, while a genuinely required value still fails loudly.
@@ -82,6 +94,7 @@ class Source:
     archive: str = "unknown"
     jurisdiction: str = ""
     importance: int = 3
+    fx: dict = field(default_factory=dict)
     timing: dict = field(default_factory=dict)
     collapse_repeats: bool = True
     categories: list = field(default_factory=list)
@@ -221,6 +234,24 @@ def load_sources(path: Path | None = None) -> list[Source]:
                 f"of {sorted(JURISDICTIONS)}"
             )
 
+        fx_block = setting("fx", {}) or {}
+        if isinstance(fx_block, bool):
+            # Reference-rate sources are FX by construction; `fx: true` says
+            # so at source level without inventing a vocabulary for numbers
+            # that have no titles to match against.
+            fx_block = {"always": fx_block}
+        if not isinstance(fx_block, dict):
+            raise ConfigError(
+                f"{path}: '{name}' fx must be `true` or a mapping with "
+                f"include/exclude lists")
+        for key in ("include", "exclude"):
+            if key in fx_block and not isinstance(fx_block[key], list):
+                raise ConfigError(f"{path}: '{name}' fx.{key} must be a list")
+        if fx_block.get("always") and (fx_block.get("include") or fx_block.get("exclude")):
+            raise ConfigError(
+                f"{path}: '{name}' sets fx.always AND a vocabulary. Pick one - "
+                f"a source is either FX by construction or classified by title.")
+
         importance = int(setting("importance", 3))
         if not 0 <= importance <= 5:
             raise ConfigError(f"{path}: '{name}' importance must be 0-5")
@@ -284,6 +315,7 @@ def load_sources(path: Path | None = None) -> list[Source]:
                 archive=archive,
                 jurisdiction=jurisdiction,
                 importance=importance,
+                fx=fx_block,
                 timing=timing,
                 collapse_repeats=bool(setting('collapse_repeats', True)),
                 categories=categories,

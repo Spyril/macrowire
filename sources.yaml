@@ -46,6 +46,24 @@
 #                   person's holdings. The ECB publishes 29; unset this to
 #                   take them all.
 #
+#   fx include/exclude
+#                   Which items count as FX-relevant. These lists are
+#                   editorial judgement - but unlike a topic taxonomy they
+#                   have a TESTABLE ANCHOR: does this move a currency.
+#                   "Bank Rate maintained at 3.75%" does; "PRA fines HDI
+#                   Global SE" does not. Nobody needs to adjudicate that.
+#
+#                   THEY NEED MAINTENANCE. A vocabulary rots silently: when
+#                   a source renames a committee, its items stop matching
+#                   and drop out of the FX filter with no error. `status`
+#                   reports the unclassified rate per source and flags a
+#                   rise against the preceding period, so drift is visible
+#                   rather than discovered by noticing an absence.
+#
+#                   An item matching neither list is UNCLASSIFIED, never
+#                   not-FX, and unclassified is offered as a filter chip so
+#                   anything missing from an FX view can still be found.
+#
 #   the source list itself
 #                   Six of thirteen sources are AU, CN or HK. That is a
 #                   point of view about which economies matter, not a
@@ -144,6 +162,23 @@ sources:
     config:
       institution: RBA
       jurisdiction: AU
+      fx:
+        include:
+          - "monetary polic"
+          - "cash rate"
+          - "interest rate"
+          - "exchange rate"
+          - "foreign exchange"
+          - "swap agreement"
+          - "reserves"
+          - "board"
+          - "statement on monetary"
+        exclude:
+          - "appointment"
+          - "conference"
+          - "museum"
+          - "banknote"
+          - "recruit"
       importance: 5
       # No usable schedule (IQR 2-7h measured). Ribbon draws NOTHING - a
       # fixed mark here would be inventing precision the data does not have.
@@ -164,6 +199,8 @@ sources:
     config:
       institution: RBA
       jurisdiction: AU
+      # A reference series: FX by construction, no vocabulary needed.
+      fx: true
       importance: 2
       # Publishes at a known clock time. Measured: single stamp, IQR 0m.
       timing:
@@ -194,6 +231,21 @@ sources:
     config:
       institution: FED
       jurisdiction: US
+      fx:
+        include:
+          - "FOMC"
+          - "monetary polic"
+          - "federal open market"
+          - "discount rate"
+          - "interest rate"
+          - "policy rate"
+          - "balance sheet"
+          - "reserve requirement"
+        exclude:
+          - "enforcement action"
+          - "banking application"
+          - "consumer"
+          - "community reinvestment"
       importance: 5
       # Scheduled with small spread. Ribbon draws a mark plus a window.
       timing:
@@ -214,6 +266,27 @@ sources:
     config:
       institution: FED
       jurisdiction: US
+      fx:
+        include:
+          - "economic outlook"
+          - "outlook"
+          - "inflation"
+          - "monetary polic"
+          - "labor market"
+          - "employment"
+          - "global economic"
+          - "economy"
+          - "interest rate"
+        exclude:
+          - "regulation"
+          - "regulatory"
+          - "supervis"
+          - "financial inclusion"
+          - "innovation"
+          - "cyber"
+          - "community"
+          - "welcome remarks"
+          - "commencement"
       importance: 3
       # No usable schedule (IQR 2-7h measured). Ribbon draws NOTHING - a
       # fixed mark here would be inventing precision the data does not have.
@@ -236,6 +309,30 @@ sources:
     config:
       institution: ECB
       jurisdiction: EU
+      fx:
+        include:
+          - "monetary polic"
+          - "interest rate"
+          - "key ECB"
+          - "governing council"
+          - "inflation"
+          - "euro area economy"
+          - "consumer expectations"
+          - "exchange rate"
+          - "TARGET"
+          - "economic bulletin"
+          - "macroeconomic projection"
+        exclude:
+          - "concert"
+          - "open air"
+          - "payment method"
+          - "digital euro"
+          - "accessibility"
+          - "supervis"
+          - "climate"
+          - "procurement"
+          - "publication of"
+          - "art "
       importance: 4
       # No usable schedule (IQR 2-7h measured). Ribbon draws NOTHING - a
       # fixed mark here would be inventing precision the data does not have.
@@ -270,6 +367,43 @@ sources:
     config:
       institution: BOE
       jurisdiction: UK
+      fx:
+        include:
+          - "Bank Rate"
+          - "monetary polic"
+          - "MPC"
+          - "FXJSC"
+          - "foreign exchange"
+          - "money market"
+          - "asset purchase"
+          - "gilt sales"
+          - "quantitative"
+          - "inflation"
+          - "financial policy committee"
+          - "market notice"
+          - "reserves"
+        exclude:
+          - "PRA"
+          - "FCA"
+          - "insurance"
+          - "captive"
+          - "friendly societ"
+          - "enforcement"
+          - "fine"
+          - "consult"
+          - "banknote"
+          - "imagery"
+          - "court of directors"
+          - "AI Consortium"
+          - "artificial intelligence"
+          - "climate"
+          - "appointment"
+          - "appoints"
+          - "levy"
+          - "questionnaire"
+          - "Critical Third Parties"
+          - "letter from the governor"
+          - "curriculum"
       importance: 3
       # No usable schedule (IQR 2-7h measured). Ribbon draws NOTHING - a
       # fixed mark here would be inventing precision the data does not have.
@@ -291,6 +425,37 @@ sources:
     config:
       institution: BOJ
       jurisdiction: JP
+      fx:
+        include:
+          - "monetary polic"
+          - "policy meeting"
+          - "summary of opinions"
+          - "outlook for economic"
+          - "money stock"
+          - "monetary base"
+          - "market operations"
+          - "bank of japan accounts"
+          - "loans and bills"
+          - "corporate goods price"
+          - "consumption activity"
+          - "real exports"
+          - "real imports"
+          - "principal figures"
+          - "transactions with the government"
+          - "current account"
+          - "balance of payments"
+          - "interest rate"
+        exclude:
+          - "research paper"
+          - "BOJ Review"
+          - "working paper"
+          - "IMES"
+          - "climate"
+          - "survey concerning"
+          - "public relations"
+          - "museum"
+          - "supply chain"
+          - "productivity"
       importance: 3
       # No usable schedule (IQR 2-7h measured). Ribbon draws NOTHING - a
       # fixed mark here would be inventing precision the data does not have.
@@ -312,6 +477,44 @@ sources:
     config:
       institution: HKMA
       jurisdiction: HK
+      fx:
+        include:
+          - "exchange fund"
+          - "currency board"
+          - "foreign currency reserve"
+          - "international reserves"
+          - "monetary polic"
+          - "base rate"
+          - "interest rate"
+          - "renminbi"
+          - "RMB"
+          - "linked exchange rate"
+          - "aggregate balance"
+          - "discount window"
+          - "Fed"
+        exclude:
+          - "scam"
+          - "fraudulent"
+          - "phishing"
+          - "website alert"
+          - "tender"
+          - "issuance schedule"
+          - "appointment"
+          - "vacanc"
+          - "recruit"
+          - "credit card"
+          - "complaints"
+          - "coin collection"
+          - "conference"
+          - "climate"
+          - "fintech"
+          - "distributed ledger"
+          - "regtech"
+          - "insurance"
+          - "consumer"
+          - "bulletin"
+          - "student"
+          - "award"
       importance: 2
       # Feed carries a DATE, not a time - all 683 items stamped 00:00 HKT.
       # Ribbon gives it no time position at all.
@@ -343,6 +546,8 @@ sources:
     config:
       institution: CFETS
       jurisdiction: CN
+      # A reference series: FX by construction, no vocabulary needed.
+      fx: true
       importance: 5
       # Publishes at a known clock time. Measured: single stamp, IQR 0m.
       timing:
@@ -412,6 +617,31 @@ sources:
     config:
       institution: NBS
       jurisdiction: CN
+      fx:
+        include:
+          - "居民消费价格"
+          - "工业生产者"
+          - "采购经理"
+          - "国民经济"
+          - "国内生产总值"
+          - "工业增加值"
+          - "固定资产投资"
+          - "社会消费品零售"
+          - "进出口"
+          - "工业企业利润"
+          - "能源生产"
+          - "产能利用率"
+          - "生产资料市场价格"
+          - "居民收入"
+        exclude:
+          - "早稻"
+          - "夏粮"
+          - "粮食产量"
+          - "文化"
+          - "体育"
+          - "旅游"
+          - "住宅销售价格"
+          - "房地产"
       importance: 4
       # Scheduled with small spread. Ribbon draws a mark plus a window.
       timing:
@@ -442,6 +672,32 @@ sources:
     config:
       institution: NBS
       jurisdiction: CN
+      fx:
+        include:
+          - "居民消费价格"
+          - "工业生产者"
+          - "采购经理"
+          - "国民经济"
+          - "国内生产总值"
+          - "工业增加值"
+          - "固定资产投资"
+          - "社会消费品零售"
+          - "进出口"
+          - "解读.*价格"
+          - "解读.*工业"
+          - "解读.*投资"
+          - "解读.*消费"
+          - "经济运行"
+        exclude:
+          - "成就系列报告"
+          - "早稻"
+          - "夏粮"
+          - "文化"
+          - "体育"
+          - "旅游"
+          - "乡村"
+          - "农业强国"
+          - "科技强国"
       importance: 3
       # No usable schedule (IQR 2-7h measured). Ribbon draws NOTHING - a
       # fixed mark here would be inventing precision the data does not have.
@@ -475,6 +731,25 @@ sources:
     config:
       institution: SEC
       jurisdiction: US
+      fx:
+        exclude:
+          - "8-K"
+          - "10-Q"
+          - "10-K"
+          - "424B"
+          - "SC 13"
+          - "DEF"
+          - "PX14A6G"
+          - "SD"
+          - "11-K"
+          - "S-"
+          - "144"
+          - "3"
+          - "4"
+          - "FWP"
+          - "EFFECT"
+          - "POS"
+          - "D"
       archive: queryable
       importance: 4
       # Filings arrive whenever a company files. No schedule to mark.
@@ -515,6 +790,8 @@ sources:
     config:
       institution: ECB
       jurisdiction: EU
+      # A reference series: FX by construction, no vocabulary needed.
+      fx: true
       # One request seeds ~64 trading days; older history is not offered by
       # this feed, so anything that scrolls off is not re-fetchable.
       archive: rolling
@@ -566,6 +843,8 @@ sources:
     config:
       institution: CFTC
       jurisdiction: US
+      # A reference series: FX by construction, no vocabulary needed.
+      fx: true
       archive: queryable
       importance: 3
       timezone: America/New_York

@@ -463,6 +463,66 @@ Form 4 (insider transactions) is skipped by default — 58% of Apple's 1,001
 most recent filings. The match is exact, not a prefix: `424B2` is an
 unrelated prospectus form and is kept.
 
+## FX relevance: three states, per-source vocabularies
+
+Measured on 90 days of collected items before designing anything. The
+result that shaped it: **eight of ten sources are genuinely mixed**, and
+the split is not a handful of shared patterns.
+
+Not because central banks publish non-FX material, but because several of
+these feeds carry the **whole institution** — and several of these
+institutions are also prudential regulators. `boe_news` is 25% FX because
+the same feed carries the PRA: insurance consultations, enforcement fines,
+banknote imagery advisory group minutes.
+
+And the vocabularies do not transfer. A first rule set missed
+`Minutes of the London FXJSC Main Committee` — the **Foreign Exchange Joint
+Standing Committee** — because `FXJSC` does not match `\bFX\b`. It missed
+every Chinese macro print and all of BoJ's monetary operations. So each
+source carries its own `fx: { include, exclude }` block.
+
+### Unclassified is never not-FX
+
+Three states, and the third is load-bearing:
+
+| state | means |
+|---|---|
+| `fx` | matched an include pattern |
+| `not_fx` | matched an exclude pattern |
+| `unclassified` | matched neither, or the source declares no vocabulary |
+
+A `NULL` `fx_state` — a row stored before classification existed — counts
+as unclassified too. **Absence of a rule must never read as a negative**,
+or adding a source silently hides it and renaming a committee silently
+drops items out. `unclassified` is offered as a filter chip rather than
+hidden, so anything missing from an FX view can still be found.
+
+Where include and exclude both match, **exclude wins**: the ambiguous case
+stays out of an FX-only view rather than in it.
+
+Reference series (`rba_exchange_rates`, `cfets_ccpr`, `ecb_fx`, `cftc_cot`)
+declare `fx: true` — FX by construction, no vocabulary needed for numbers
+that have no titles to match against. Declaring both raises at config load.
+
+### Drift is visible, because a vocabulary rots silently
+
+When a source renames a committee its items stop matching and drop out of
+the filter with no error. `status` reports coverage per source and flags a
+rise against the preceding period:
+
+```
+boe_news
+  fx classification     : 13 fx / 25 not / 13 unclassified (25%)
+                          DRIFT: 61% unclassified in the last 30d vs 12%
+                          before - the source may have renamed something
+                          the vocabulary matches on.
+```
+
+Current coverage, 2,609 stored items: **775 fx / 1,390 not / 444
+unclassified (17%)**. The worst is `nbs_interpretation` at 38%, which is
+mostly retrospective achievement reports the vocabulary deliberately does
+not chase.
+
 ## Positioning: CFTC Commitments of Traders
 
 Weekly non-commercial (speculative) longs and shorts in currency futures —

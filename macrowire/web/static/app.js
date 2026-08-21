@@ -7,10 +7,11 @@
 
 const $ = (id) => document.getElementById(id);
 // One filter model, four axes. OR within an axis, AND across them.
-const AXES = ["jurisdiction", "ticker", "source", "type"];
+const AXES = ["fx", "jurisdiction", "ticker", "source", "type"];
 const state = {
   sources: [], facets: null, tape: [], offsetHours: 10,
-  f: { jurisdiction: new Set(), ticker: new Set(), source: new Set(), type: new Set() },
+  f: { fx: new Set(), jurisdiction: new Set(), ticker: new Set(),
+       source: new Set(), type: new Set() },
 };
 const anyActive = () => AXES.some((a) => state.f[a].size);
 
@@ -170,9 +171,12 @@ function typeLabel(token) {
 }
 
 function tokenHtml({ axis, value }) {
-  const shown = axis === "type" ? typeLabel(value)
+  const FX_LABEL = { fx: "FX-relevant", not_fx: "not FX", unclassified: "unclassified" };
+  const shown = axis === "fx" ? (FX_LABEL[value] || value)
+              : axis === "type" ? typeLabel(value)
               : axis === "source" ? value.replace(/_/g, " ") : value;
-  const ax = { jurisdiction: "JUR", ticker: "TKR", source: "SRC", type: "TYPE" }[axis];
+  const ax = { fx: "FX", jurisdiction: "JUR", ticker: "TKR",
+               source: "SRC", type: "TYPE" }[axis];
   return `<span class="token"><span class="ax">${ax}</span>${esc(shown)}
             <button data-axis="${axis}" data-value="${esc(value)}"
                     aria-label="Remove filter ${esc(shown)}">\u00d7</button></span>`;
@@ -189,6 +193,7 @@ function drawTokens() {
 
 function matches(r) {
   const f = state.f;
+  if (f.fx.size && !f.fx.has(r.fx_state || "unclassified")) return false;
   if (f.jurisdiction.size && !f.jurisdiction.has(r.jurisdiction)) return false;
   if (f.ticker.size && !f.ticker.has(r.ticker)) return false;
   if (f.source.size && !f.source.has(r.source)) return false;
@@ -298,6 +303,14 @@ function drawPanel(unread) {
   const f = state.facets;
   if (!f) return;
   const rows = [];
+
+  // Three states, and unclassified is OFFERED rather than hidden - if you
+  // filter to FX and something is missing, it must be findable.
+  const FXL = { fx: "FX-relevant", not_fx: "not FX", unclassified: "unclassified" };
+  rows.push(["FX", (f.fx || []).length
+    ? f.fx.map((x) => chip("fx", x.value, FXL[x.value] || x.value, x.count)).join("")
+      + `<span class="fsub">unclassified means no rule matched, never "not FX"</span>`
+    : `<span class="fempty">nothing in this window</span>`]);
 
   rows.push(["Jurisdiction", f.jurisdiction.length
     ? f.jurisdiction.map((x) => chip("jurisdiction", x.value, x.value,

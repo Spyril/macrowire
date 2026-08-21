@@ -170,15 +170,16 @@ def ribbon_data(day: str | None = None):
 @app.get("/api/tape")
 def tape(days: int = 30, sources: str | None = None, jurisdictions: str | None = None,
          tickers: str | None = None, types: str | None = None,
-         collapse: bool = True, limit: int = 400):
+         fx: str | None = None, collapse: bool = True, limit: int = 400):
     conn = _conn()
     only = [s for s in sources.split(",") if s] if sources else None
     juris = [j for j in jurisdictions.split(",") if j] if jurisdictions else None
     ticks = [t for t in tickers.split(",") if t] if tickers else None
     kinds = [t for t in types.split("|") if t] if types else None
+    fx_states = [f for f in fx.split(",") if f] if fx else None
     rows = queries.tape(conn, _sources(), USER_ID, days=days, only=only,
                         jurisdictions=juris, tickers=ticks, types=kinds,
-                        collapse=collapse, limit=limit)
+                        fx_states=fx_states, collapse=collapse, limit=limit)
     conn.close()
     return {"items": rows, "collapsed": collapse}
 

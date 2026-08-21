@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS items (
     content             TEXT,
     type_primary        TEXT,
     type_tags           TEXT,
+    fx_state            TEXT,
     published_at        TEXT,
     fetched_at          TEXT NOT NULL,
     ticker              TEXT,
@@ -152,10 +153,20 @@ CREATE INDEX IF NOT EXISTS idx_items_type_primary
     ON items(source_id, type_primary);
 """
 
+# --- 004 -------------------------------------------------------------------
+# FX relevance as a stored, filterable state. Three values: 'fx', 'not_fx',
+# 'unclassified'. NULL means the row predates classification and is treated
+# as unclassified - never as not-FX.
+FX_STATE = """
+ALTER TABLE items ADD COLUMN fx_state TEXT;
+CREATE INDEX IF NOT EXISTS idx_items_fx ON items(source_id, fx_state);
+"""
+
 MIGRATIONS: list[tuple[int, str, str]] = [
     (1, "baseline", BASELINE),
     (2, "fetch_log.error_kind", ERROR_KIND),
     (3, "items type_primary / type_tags", TYPE_FIELDS),
+    (4, "items.fx_state", FX_STATE),
 ]
 
 
