@@ -18,8 +18,46 @@ from datetime import date, timedelta
 from . import db, wire
 from .config import Source
 from .encoding import decode
-from .errors import ConfigError
+from .errors import BackfillInterrupted, ConfigError, FetchError, MacroWireError
 from .parsers import get_parser
+
+# A paced seed runs for tens of minutes against a public server over a link
+# nobody controls. A dropped connection partway through is an expected
+# event, not an exceptional one, so it is retried here rather than ending
+# the run.
+#
+# ONLY the kinds that describe the PATH. db.PATH_KINDS is the one definition
+# of which those are - the same list the health panel uses to decide
+# "unreachable" rather than "failing" - so the two cannot drift apart. An
+# http_404, a decode failure or a parse error is a statement about the
+# source or the payload and will be exactly as wrong on the third attempt as
+# on the first; retrying it would turn a clear failure into a slow one.
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = (5, 15)      # waits BETWEEN attempts, so len == attempts - 1
+
+
+def download(source: Source, *args, attempts: int = RETRY_ATTEMPTS, **kwargs):
+    """wire._download, retried on transport failures and nothing else.
+
+    Returns the response, or re-raises the last error once the attempts are
+    spent. Non-path failures re-raise immediately and untouched.
+    """
+    last: FetchError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return wire._download(source, *args, **kwargs)
+        except FetchError as exc:
+            if exc.kind not in db.PATH_KINDS:
+                raise
+            last = exc
+            if attempt == attempts:
+                break
+            wait = RETRY_BACKOFF_SECONDS[min(attempt - 1,
+                                             len(RETRY_BACKOFF_SECONDS) - 1)]
+            print(f"    {exc.kind} on attempt {attempt}/{attempts}; "
+                  f"retrying in {wait}s")
+            time.sleep(wait)
+    raise last
 
 
 def windows(start: date, end: date, span_days: int) -> list[tuple[date, date]]:
@@ -68,7 +106,7 @@ def run_single(conn: sqlite3.Connection, source: Source, dry_run: bool = False) 
     source_id = db.upsert_source(conn, source.name, source.kind, source.config)
     conn.commit()
 
-    response = wire._download(source, url)
+    response = download(source, url)
     raw_id = db.store_raw_response(
         conn, source.name, str(response.url), response.status_code, response.content)
     conn.commit()
@@ -88,6 +126,126 @@ def run_single(conn: sqlite3.Connection, source: Source, dry_run: bool = False) 
     print(f"    {new} new" + (f", {len(revisions)} REVISED" if revisions else ""))
     return {"requests": 1, "stored": new, "skipped": 0, "dry_run": False,
             "revisions": revisions}
+
+
+def per_date(source: Source) -> bool:
+    """Sources whose API answers ONE date and offers no range.
+
+    SSE's southbound endpoint takes a single `tradeDate`, so the seed is a
+    walk over dates rather than over windows or offsets. Slower per row than
+    either, and there is no faster shape available - the monthly endpoint
+    returns averages, which is different data, not the same data coarser.
+    """
+    return bool(source.config.get("backfill_per_date"))
+
+
+def weekdays(start: date, end: date) -> list[date]:
+    """Candidate dates. Weekends are skipped because no market is open.
+
+    Public holidays are NOT skipped: this tool has no CN/HK holiday
+    calendar, and the endpoint answers a holiday exactly as it answers a
+    weekend - result [None], stored as nothing. Asking and being told
+    nothing was published is honest; guessing a calendar would eventually
+    skip a day that traded.
+    """
+    out, cursor = [], start
+    while cursor <= end:
+        if cursor.weekday() < 5:
+            out.append(cursor)
+        cursor += timedelta(days=1)
+    return out
+
+
+def run_dated(conn: sqlite3.Connection, source: Source, today: date,
+              dry_run: bool = False) -> dict:
+    """One request per candidate date, resumable, strictly sequential."""
+    start = date.fromisoformat(source.config["backfill_start"])
+    delay = float(source.config.get("backfill_delay_seconds", 3))
+    candidates = weekdays(start, today)
+    done = _completed(conn, source.name)
+    remaining = [d for d in candidates if d.isoformat() not in done]
+
+    print(f"  range          : {start} .. {today}")
+    print(f"  requests       : {len(candidates)} weekday(s), one per date")
+    print(f"  already done   : {len(done)} from a previous run")
+    print(f"  to make now    : {len(remaining)}")
+    print(f"  delay          : {delay}s between requests, sequential")
+    print(f"  estimated time : {len(remaining) * delay / 60:.0f} min")
+    print(f"  holidays are asked for and answer 'no data'; nothing is stored")
+    if dry_run:
+        print("\n  dry run - no requests made.")
+        return {"requests": 0, "stored": 0, "skipped": len(done), "dry_run": True}
+
+    source_id = db.upsert_source(conn, source.name, source.kind, source.config)
+    conn.commit()
+    parser = get_parser(source.parser)
+    from .parsers import sse_southbound
+
+    requests_made = stored = empty = 0
+    for index, day in enumerate(remaining):
+        if index:
+            time.sleep(delay)
+        try:
+            response = download(
+                source, source.url, {"tradeDate": day.strftime("%Y%m%d")},
+                headers={"User-Agent": source.user_agent,
+                         "Accept": "application/json",
+                         "Referer": sse_southbound.REFERER})
+        except MacroWireError as exc:
+            # Retries are spent, or this was never retryable. Either way the
+            # run stops HERE, with everything before it already committed
+            # and logged, so resuming costs only the dates not yet reached.
+            db.log_fetch(conn, source.name, status=db.STATUS_ERROR,
+                         error=f"{type(exc).__name__}: {exc}",
+                         error_kind=getattr(exc, "kind", "unknown"),
+                         detail=f"backfill stopped at {day}")
+            conn.commit()
+            raise BackfillInterrupted(
+                source.name, day, len(remaining) - index, exc) from exc
+        requests_made += 1
+
+        raw_id = db.store_raw_response(
+            conn, source.name, str(response.url), response.status_code, response.content)
+        conn.commit()
+        body, encoding_used = decode(
+            source.name, response.content, response.headers.get("content-type"))
+        db.record_raw_encoding(conn, raw_id, encoding_used)
+
+        parsed = parser(source, body)
+        if not parsed.observations:
+            # No figure published for that date. Logged as done so a resumed
+            # run does not ask again, and counted so a run that finds nothing
+            # for weeks is visible rather than quietly successful.
+            empty += 1
+            db.log_fetch(conn, source.name, status=db.STATUS_BACKFILL,
+                         new_item_count=0, detail=day.isoformat())
+            conn.commit()
+            continue
+
+        # The reply carries its own TRADE_DATE. Check it against the date we
+        # asked for: this endpoint answers 200 for anything, and a row filed
+        # under the wrong day is worse than a missing one.
+        got = {o["period"] for o in parsed.observations}
+        if got != {day.isoformat()}:
+            raise ConfigError(
+                f"{source.name}: asked for {day} and the reply carried "
+                f"{sorted(got)}. Refusing to store a figure under a date it "
+                f"does not belong to.")
+
+        new, revisions = wire._store_observations(conn, source, source_id, parsed)
+        stored += new
+        db.log_fetch(conn, source.name, status=db.STATUS_BACKFILL,
+                     new_item_count=new, detail=day.isoformat())
+        conn.commit()
+        net = next((o["value"] for o in parsed.observations
+                    if o["series"].endswith("amount/net")), None)
+        print(f"    {day}  {len(parsed.observations):>2} obs  "
+              f"net {net:>9}  {new:>2} new"
+              + (f", {len(revisions)} REVISED" if revisions else ""))
+
+    print(f"\n  {empty} date(s) had no published figure (weekend or holiday).")
+    return {"requests": requests_made, "stored": stored, "skipped": len(done),
+            "dry_run": False}
 
 
 def paged_query(source: Source):
@@ -122,7 +280,7 @@ def run_paged(conn: sqlite3.Connection, source: Source, dry_run: bool = False) -
         if not first:
             time.sleep(delay)
         first = False
-        response = wire._download(
+        response = download(
             source, source.url,
             cftc_cot.query(source, limit=page_size, offset=offset, order="ASC"))
         requests_made += 1
@@ -194,6 +352,8 @@ def run(conn: sqlite3.Connection, source: Source, today: date, dry_run: bool = F
     """
     if single_url(source):
         return run_single(conn, source, dry_run=dry_run)
+    if per_date(source):
+        return run_dated(conn, source, today, dry_run=dry_run)
     if paged_query(source):
         return run_paged(conn, source, dry_run=dry_run)
 
@@ -235,7 +395,7 @@ def run(conn: sqlite3.Connection, source: Source, today: date, dry_run: bool = F
                 time.sleep(outline["delay"])
             first_request = False
 
-            response = wire._download(
+            response = download(
                 source,
                 source.url,
                 {

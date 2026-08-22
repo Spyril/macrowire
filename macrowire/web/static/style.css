@@ -171,7 +171,9 @@ kbd { font-family: var(--mono); font-size: 12px; color: var(--chrome);
    no second state to drift out of sync - and the bar sits between the ribbon
    and the tape, so an active filter cannot be scrolled past unseen. */
 .tokens { display: flex; flex-wrap: wrap; gap: 5px; flex: 1; min-width: 0; }
-.tokens:empty::before { content: "no filters \2014 showing everything";
+/* Text set from the catalogue by applyStaticStrings(); the fallback here
+   only shows if the page renders before boot(). */
+.tokens:empty::before { content: var(--empty-filters, "…");
                         font-family: var(--mono); font-size: 12px; color: var(--chrome); }
 .token { display: inline-flex; align-items: center; gap: 6px;
          font-family: var(--mono); font-size: 12px; padding: 2px 4px 2px 7px;
@@ -353,3 +355,12 @@ kbd { font-family: var(--mono); font-size: 12px; color: var(--chrome);
         border-bottom: 1px solid var(--edge); }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* A network-wide observation, above the per-source rows it explains. */
+.health .hnote { color: var(--chrome); border-left: 2px solid var(--fault);
+                 padding: 2px 0 2px 7px; margin: 0 0 7px; }
+
+/* Southbound: the net line is the one being read, so it carries weight the
+   context rows do not. Direction is a word, not only a sign. */
+.fx .v.lead { font-weight: 600; }
+.fx .dir { color: var(--chrome); font-weight: 400; font-size: 12px; }

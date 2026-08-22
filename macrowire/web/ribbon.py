@@ -122,8 +122,11 @@ def marks_for(day: date, sources) -> list[dict]:
             out.append({
                 "source": source.name, "class": kind, "position": None,
                 "importance": source.importance,
-                "reason": ("feed carries no time of day" if kind == "date_only"
-                           else "no usable schedule (measured IQR 2-7h)"),
+                # A key, not prose. The ribbon is drawn client-side and
+                # the catalogue is already there; sending English here
+                # would put one untranslatable string on a translated page.
+                "reason": ("ribbon.reason.date_only" if kind == "date_only"
+                           else "ribbon.reason.no_schedule"),
             })
             continue
 
@@ -145,7 +148,7 @@ def marks_for(day: date, sources) -> list[dict]:
             out.append({
                 "source": source.name, "class": kind, "position": None,
                 "importance": source.importance,
-                "reason": "does not land on this date",
+                "reason": "ribbon.reason.not_today",
             })
             continue
 

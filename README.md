@@ -659,6 +659,8 @@ and confirmed to return parseable entries. None were guessed.
 | `boe_news` | bankofengland.co.uk/rss/news | rss20 | 50 | shallow |
 | `boj_whatsnew` | boj.or.jp/en/rss/whatsnew.xml | rss20 | 46 | shallow |
 | `hkma_press` | hkma.gov.hk/eng/other-information/rss/rss_press-release.xml | rss20 | 683 | deep |
+| `cninfo_announcements` | cninfo.com.cn/new/hisAnnouncement/query | json | per code | queryable |
+| `sse_southbound` | query.sse.com.cn/ggt/getQuatationInfo.do | json | 1/day | from 2024-08-19 |
 
 All report `bozo=False`. Directory pages used: Fed `/feeds/feeds.htm`,
 ECB `/home/html/rss.en.html`, BoE `/rss`, HKMA
@@ -692,6 +694,365 @@ The duplicate is easy to collapse on read — the two rows share a `url`.
 If you would rather not carry it at all, drop `fed_press_all` from
 `sources.yaml`; `press_monetary` plus `speeches` covers the decision flow
 with no overlap between them.
+
+## Chinese exchanges: what the terms actually say
+
+Surveyed SSE, SZSE, CNINFO and CFFEX before building anything. The result
+is not the ASX/HKEX pattern.
+
+**SSE and SZSE publish the same 法律声明 clause 三**, word for word apart
+from the exchange's name:
+
+> 在遵守中国有关法律与本声明的前提下，任何机构或者个人可基于**非商业目的
+> 浏览、下载**本网站的内容。未经…书面许可，任何机构或者个人**不得以向他人
+> 出售牟利为目的**，使用本网站的任何内容，此种使用包括但不限于拷贝、下载、
+> 存贮、通过硬拷贝或电子抓取系统获取、发送…
+
+Any organisation or individual may browse and download the content for
+**non-commercial purposes**. The prohibition that follows attaches to a
+**purpose** — use *for the purpose of selling to others for profit* — and
+`电子抓取系统`, "electronic scraping systems", appears inside the list of
+manners of that prohibited use.
+
+The operative question is not what `此种使用包括但不限于` modifies. It is
+what `不得` governs.
+
+**Sentence 2 has exactly one modal.** `不得` is followed by
+`以向他人出售牟利为目的，使用本网站的任何内容`. `以…为目的` is adverbial —
+it cannot stand as a predicate and requires a following verb phrase, and
+the only one available is `使用`. The purpose clause is therefore
+incorporated into the VP that `不得` governs. There is no reading on which
+`不得` reaches a bare, unrestricted `使用`, because that would leave
+`以向他人出售牟利为目的` with nothing to attach to.
+
+**The list clause carries no modal.** `此种使用包括但不限于…` is a copular
+gloss — X *includes* Y — with no `不得` and no `禁止`. A subordinate
+explanatory clause cannot enlarge the scope of a prohibition stated in the
+matrix clause. So it makes no difference whether `此种使用` is read
+restrictively ("use of that kind") or resumptively ("the use just
+mentioned"): either way the list enumerates modalities of *using*, and the
+prohibition on using still carries its purpose restriction. That is why
+this is clear rather than merely dense — the ambiguity in `此种` does not
+change the outcome under either reading.
+
+For the other result the drafter would have had to coordinate the verbs
+directly under `不得`. CFFEX shows exactly that construction
+(`均不得复制、转载或传播`), so it was available and was not used here.
+
+**Sentence 1 confirms it.** `下载` appears on both sides — granted in
+sentence 1, listed in sentence 2. Under a general-prohibition reading
+sentence 2 revokes sentence 1 entirely and the grant is dead letter. Under
+the purpose-scoped reading both do work.
+
+One gap, stated: commercial use that is not resale-for-profit is addressed
+by neither sentence. It does not reach this tool, which is non-commercial
+personal use and sits inside sentence 1's grant. This is a reading of
+grammar, not legal advice.
+
+(SZSE dropped the verb `获取` when it copied SSE's template, leaving
+`电子抓取系统` dangling in a list of verbs. SSE's is the better-drafted
+text.)
+
+**CNINFO publishes no use restriction at all.** Its 免责声明 is three
+paragraphs of warranty and liability disclaimer — nothing about copying,
+automation or redistribution. Its own footer links to
+`webapi.cninfo.com.cn`, an official data service platform.
+
+**robots.txt**: absent at SSE, CNINFO and CFFEX (404). SZSE serves an
+empty one — HTTP 200, zero bytes, `Last-Modified` recent, so maintained
+and deliberately empty. None restricts anything, and all four are
+readable, unlike NDRC's 403.
+
+### CFFEX is out
+
+Its two notices conflict. 版权声明 says *"任何**非私人**使用、转载和传播和
+商业用途必须获得…书面授权"* — any **non-private** use requires written
+authorisation, implying private use does not. But 法律声明 clause 一 says
+flatly *"若未获得…书面同意，…上的所有信息、内容等，**均不得复制**、转载或
+传播"* — no copying without written consent, with no carve-out. Storing to
+a database is `复制`.
+
+Where terms conflict, the prohibition controls. Same call as PBoC, ASX and
+HKEX.
+
+**And its positioning data is not a COT equivalent.** 成交持仓排名 ranks
+the top 20 **member firms** by volume and by long/short open interest —
+`国泰君安(代客)`, "on behalf of clients". It says which brokerage holds
+positions, not whose money it is. COT's entire value is the
+commercial/non-commercial split, and this has no such axis. Not built, and
+not to be called one.
+
+## Where the sources are, and switching them off
+
+Every source ships with `enabled: true`. Set it to `false` in
+`sources.yaml` to stop polling one. Its stored rows stay, its
+configuration stays, and `status` marks it `[DISABLED]` instead of
+reporting it stale — a disabled source cannot be stale, because nothing
+is polling it.
+
+Two of the fourteen are domestic to mainland China and served from
+inside it:
+
+| domestic to China | international |
+|---|---|
+| `cfets_ccpr` (chinamoney.com.cn) | RBA ×2 (AU) |
+| `nbs_releases`, `nbs_interpretation` (stats.gov.cn) | Fed ×2, SEC, CFTC (US) |
+| `cninfo_announcements` (cninfo.com.cn) | ECB ×2 (EU), BoE (UK) |
+| `sse_southbound` (query.sse.com.cn) | BoJ (JP), HKMA (HK) |
+
+That is five source blocks on four Chinese hosts, and eleven abroad.
+Enabling only those four gives a working tool: the CNY fix, the rail
+panel that draws from it, NBS statistical releases, company
+announcements for any mainland code on the watchlist, and the tape. What
+you lose is everything priced off the other eleven — the ECB and RBA
+reference-rate panels, the CFTC positioning panel, and SEC company
+filings.
+
+The tool does not detect where you are and does not change its behaviour
+based on it. It reports what happened: a source whose entire failure
+streak is timeouts or connections that never landed is shown as
+**network unreachable — may be connectivity rather than the source**,
+never as failing, because nothing came back to judge the feed by. If two
+or more sources are in that state at once the rail says so above the
+per-source rows, since most of them unreachable points at the connection
+rather than at fourteen publishers.
+
+If a link is slow rather than blocked, raise `timeout_seconds` —
+globally under `defaults:`, or under one source's `config:`. It is not a
+workaround, it is the setting for the situation.
+
+There is no mirror, no proxy setting and no fallback host in this tool,
+and none is planned.
+
+## Southbound Stock Connect: why history starts in 2024
+
+港股通成交概况 — mainland money trading Hong Kong-listed shares — comes
+from SSE's own site under SSE's terms. HKEX publishes the same class of
+figure and prohibits scripted access; SSE does not.
+
+The endpoint was traced from the page's own module, not guessed. The daily
+tab of `/services/hkexsc/ggtscsj/ggtcjgk/` loads
+`search_southboundStock_2021.js`, which calls **`ggt/getQuatationInfo.do`
+with `tradeDate` and no `sqlId` at all**. The monthly and yearly tabs use
+`commonQuery.do` with `COMMON_SSE_JYFW_HGT_GGTCJXX_*`; northbound uses
+`commonSoaQuery.do` with `FW_HGTZL_*`. Three endpoints, none
+interchangeable. `jsonCallBack` is a JSONP wrapper the page needs and we
+do not — omitting it returns bare JSON.
+
+### The boundary, and why it is enforced in code
+
+The page carries one line, and it is the only place this is recorded
+anywhere — it is **not in the payload**:
+
+> 注：2024年8月19日起，本页面港股通成交金额单位为港元。
+
+Verified either side of it:
+
+| | BUY_AMOUNT | TOTAL_AMOUNT | TOTAL_VOLUME | ETF_TOTAL_AMOUNT |
+|---|---|---|---|---|
+| 2024-08-16 | 84.32 | **null** | **null** | **null** |
+| 2024-08-19 | 73.59 | 182.82 | 38.41 | 48.05 |
+
+It is not only the currency: three fields do not exist before the change.
+`BUY_AMOUNT` is CNY on the 16th and HKD on the 19th — same field, same
+series, nothing marking the switch.
+
+So `sse_southbound.parse()` **raises on any row dated before
+2024-08-19**. A prose note somebody has to remember is not a boundary; a
+series that silently changes denomination is worse than a short one.
+Pulling earlier data is therefore a deliberate decision to handle a
+currency change, not something to discover from a chart that looks wrong.
+
+The monthly aggregates are **not** a substitute for the missing years.
+Their `DAY_*` fields are averages, and averages spliced onto a daily
+series would look continuous and mean something different.
+
+### Northbound is deliberately absent
+
+`commonSoaQuery.do` returns `totalVolume`, `totalAmount`, `etfTotalAmount`
+and `tradeDate` — **no buy/sell split**, so no net can be computed from
+it. Net is the whole signal. Turnover alone did not justify a second
+endpoint, a second sqlId family, a second date format and a second failure
+mode.
+
+### Four replies that look like success
+
+**`result: [None]`** — a list of length one holding null — for a
+non-trading day *and* for `tradeDate=99999999`. Truthy, so `if not result`
+passes. The guard is `result[0] is not None`.
+
+**`quatationInfo: "success"` is not a signal.** It reads `"success"` for
+`tradeDate=99999999`. Nothing reads it, and a test asserts nothing ever
+does — it is named in the parser only so a later reader does not wire it
+in thinking it means something.
+
+**Numbers are display-formatted strings** with thousands separators
+(`"1,258.47"`). Separators are stripped by name and anything still
+unparseable raises. A bare `try/except` would swallow a corrupted digit as
+readily as a comma.
+
+**Three null conventions on one host**: `null` (a field absent for that
+date), `"-"` (the monthly endpoint's marker), `[None]` (no data). Each is
+handled by name.
+
+Worth knowing even though only the first is needed here: a bad `sqlId` on
+`commonQuery.do` returns a silent empty envelope (`result: null`,
+`total: 0`, no error field), while `commonSoaQuery.do` returns HTTP 200
+with `Content-Type: application/json` and a body that is not JSON —
+`\n({"success":"false",…})`, a parenthesised JSONP wrapper with no
+callback name. Two failure modes on one host.
+
+### Units are not in the payload
+
+The scale appears only in rendered column headers, so it is stored on
+every observation rather than implied:
+
+| field | header | stored unit |
+|---|---|---|
+| `BUY_AMOUNT` | 当日买入成交金额（亿元） | `100 million HKD` |
+| `BUY_VOLUME` | 当日买入成交笔数（万笔） | `10,000 trades` |
+
+**`*_VOLUME` is a count of TRADES, not shares.** The field name says
+volume; the column header says 笔数. Storing it as a share count would be
+a silent factual error that the field name actively invites.
+
+Values are stored as published — `647.70`, not `64_770_000_000`.
+
+### Net
+
+Derived as buy − sell and stored beside the two published figures it comes
+from, so the arithmetic stays checkable — the same treatment `cftc_cot`
+gets. It is only emitted when both sides were published: a net against a
+missing half is a number about our own gaps. Positive means mainland money
+into Hong Kong-listed shares.
+
+### Backfill
+
+One request per date — the endpoint answers a single `tradeDate` and
+offers no range. 525 weekdays from the boundary to August 2026, paced at
+3s, resumable: every date is logged to `fetch_log` and a resumed run skips
+what it already asked.
+
+Public holidays are **not** skipped. This tool has no CN/HK holiday
+calendar, and the endpoint answers a holiday exactly as it answers a
+weekend. Asking and being told nothing was published is honest; a guessed
+calendar would eventually skip a day that traded.
+
+Of the 525 weekdays asked, 472 carried a published figure and 53 did not —
+the union of the mainland and Hong Kong holiday calendars, since Connect
+closes when either market is shut.
+
+### Retrying, and what is not retried
+
+A twenty-minute paced run against a public server over a link nobody
+controls will meet a dropped connection eventually. That is an expected
+event, so `backfill.download()` retries **three attempts with a growing
+backoff** — and only on `db.PATH_KINDS`, the same `network`/`timeout` pair
+the health panel uses to say "unreachable" rather than "failing". One
+definition, so the two cannot drift.
+
+An `http_404`, a `decode` failure or a `parse` error is a statement about
+the source or the payload and will be exactly as wrong on the third attempt
+as on the first. Retrying those would turn a clear failure into a slow one,
+so they re-raise immediately.
+
+The ordinary `fetch` cycle deliberately does **not** retry. A poll that
+fails is retried by the next cycle an hour later, and a retry loop there
+would only turn one polite request into three.
+
+When the attempts are spent the run stops with everything before that point
+already committed, and prints the remedy rather than a stack trace:
+
+    sse_southbound: network unreachable at 2025-09-02. 250 date(s) remaining.
+      Everything fetched before that point is stored; resuming re-asks only
+      what is left.
+      Resume with:  python -m macrowire backfill --source sse_southbound
+      Full traceback: re-run with --debug, or see fetch_log.
+
+The traceback is not gone. `--debug` re-raises, and the failure is written
+to `fetch_log` with its `error_kind` and the date it reached either way.
+
+## CNINFO: three replies that look like success
+
+Every one of these was measured against the live API, and each has a guard
+in `macrowire/parsers/cninfo.py`.
+
+**`column` cannot tell the exchanges apart.** Querying 2026-08-20 with
+`column=sse` and with `column=szse` returned **byte-identical** responses —
+23,554 bytes, every `secCode` beginning with `3`, which is Shenzhen
+ChiNext. It is not inert: per ticker, `sse` and `szse` both give 1,284
+while omitting it gives 1,684. So it filters something, just not the venue.
+Nothing here derives a market from it — the exchange comes from the listing
+code's own prefix, and a prefix the table does not know raises rather than
+being filed under a guess.
+
+The guard that matters needs no knowledge of the request: **a per-ticker
+page must describe exactly one company.** When `stock` is not honoured the
+reply is the firehose, and one page carrying several codes is that,
+whatever the status said. Stating it that way means a re-parse of stored
+bytes months later checks the same thing. The fetcher additionally compares
+the actual request against the actual response, because there and only
+there are both halves in hand.
+
+**`pageSize` is capped at 30, silently.** Asking for 50 or 200 returns 30,
+with no error and no field saying so. A loop advancing `pageNum` by one and
+assuming it received `pageSize` rows skips everything past the thirtieth.
+The fetcher asks for exactly the cap — leaving nothing to clamp — reads
+`len(rows)`, follows `hasMore`, and raises if a page ever exceeds the cap,
+because at that point the paging arithmetic is unproven.
+
+**A miss is a well-formed empty envelope.** An unknown code gives HTTP 200
+and `[]`. A query matching nothing gives HTTP 200 with `announcements:
+null`, `totalRecordNum: 0`, and no error field anywhere in the object.
+There is nothing in the status to check, so every check is on structure: a
+missing key raises, a `null` list is an empty window, a bare list is the
+no-such-code reply.
+
+### The orgId is looked up, never constructed
+
+CNINFO addresses a company by both its code and an opaque `orgId`, and the
+announcement query needs the pair. Most follow a pattern — `600519` is
+`gssh0600519`, `000001` is `gssz0000001` — and CATL, `300750`, is
+`GD165627`. Building it would work for most tickers and silently return
+nothing for the rest, which reads exactly like a quiet company. So it is
+resolved once at add time against CNINFO's own listing index, which is the
+same call that validates the code, and cached in
+`data/cninfo_orgids.json`.
+
+### Timestamps are date-only in practice
+
+`announcementTime` is epoch milliseconds, and for most rows it is midnight
+Beijing: 30 of 30 sampled for `600519` and `000001`, 17 of 30 for
+`300750`. Not a recency effect — everything CATL filed on 2026-07-25 is
+midnight-stamped while its 2026-08-12 filings carry 19:22. Batch
+submissions appear to lose the time of day.
+
+A lost time is indistinguishable from a real 00:00, so the source is
+`timing.class: date_only` and gets no position on the ribbon. The value is
+stored exactly as published either way. HKMA's feed already stores midnight
+HKT the same way, and this needed no new machinery.
+
+### Encoding: a host is not consistent with itself
+
+The query API declares UTF-8 and honours it. CNINFO's **own 404 page is
+GB2312**, and CFFEX serves its error page with **HTTP 200**. So a decode
+failure here is treated as a likely error page arriving as a success, and
+said so in the message rather than being retried as if the feed were fine.
+
+### Volume, and why the watchlist is not optional
+
+2,492 announcements on 2026-08-20 across both exchanges — SZSE's own API
+reports 1,235 for its half. That is roughly three and a half times the
+whole rest of the tape per day. `cninfo_announcements` polls per
+watchlisted code and nothing else; with no CN codes on the watchlist it
+returns nothing, which is a skip and not an error.
+
+Add codes as six digits:
+
+    python -m macrowire watchlist add 600519 --market CN
+
+Letters are refused before a request is spent, and an unmatched or delisted
+code fails at add time.
 
 ## CFETS positional alignment
 
@@ -1512,12 +1873,28 @@ identical:
 
 | kind | meaning |
 |---|---|
-| `network` | DNS failure, refused connection, TLS abort, timeout — says nothing about whether the source still exists |
+| `timeout` | the request was not answered in `timeout_seconds` — a slow or congested path, not a statement about the feed |
+| `network` | DNS failure, refused connection, TLS abort — says nothing about whether the source still exists |
 | `http_404`, `http_410` | the shape of a feed that has been withdrawn |
 | `http_5xx`, `http_429` | the shape of a server having a bad day |
 | `decode` / `parse` | the payload arrived and was wrong |
 | `empty` | zero entries from a source that has parsed before |
+| `transport` | the body failed content-decoding |
 
 `status` shows consecutive failures since the last success with a
 breakdown by kind. One `network` failure is a blip; twelve `http_404`s
 in a row is a source that has gone.
+
+`timeout` and `network` are the two that describe the **path** rather
+than the source: the request never got an answer, so nothing has been
+learned about the feed. When a source's entire failure streak is made of
+those two, both `status` and the health panel report **network
+unreachable — may be connectivity rather than the source** at `warn`,
+not `failing` at `bad`. Getting this wrong is the failure this project
+keeps guarding against — a panel that calls a working feed broken is one
+you stop reading, and then it cannot tell you when a feed really has
+gone.
+
+The split is one list, `db.PATH_KINDS`, so "which kinds mean unreachable"
+has exactly one definition. Four separate false alarms came from that
+kind of fact being written down in more than one place.

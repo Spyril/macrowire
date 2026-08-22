@@ -31,7 +31,13 @@ def _age_seconds(timestamp: str | None) -> float | None:
 
 
 def _download(source: Source, url: str | None = None, params: dict | None = None,
-              headers: dict | None = None) -> httpx.Response:
+              headers: dict | None = None, data: dict | None = None) -> httpx.Response:
+    """One request. `data` switches it to a form POST.
+
+    CNINFO's announcement query is POST-only; everything else here is GET.
+    The method is chosen by whether a body was supplied rather than by a
+    separate flag, so there is no way to ask for a POST and forget the body.
+    """
     url = url or source.url
     # A source may override the User-Agent entirely: the SEC requires its own
     # documented 'Name email' form and answers anything else with a 403.
@@ -41,13 +47,16 @@ def _download(source: Source, url: str | None = None, params: dict | None = None
                   "text/xml, application/json",
     }
     try:
-        response = httpx.get(
-            url,
-            params=params,
-            headers=headers,
-            timeout=source.timeout_seconds,
-            follow_redirects=True,
-        )
+        if data is None:
+            response = httpx.get(
+                url, params=params, headers=headers,
+                timeout=source.timeout_seconds, follow_redirects=True,
+            )
+        else:
+            response = httpx.post(
+                url, params=params, data=data, headers=headers,
+                timeout=source.timeout_seconds, follow_redirects=True,
+            )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         # A 404/410 is the shape of a feed that has been withdrawn; a 5xx
@@ -62,12 +71,18 @@ def _download(source: Source, url: str | None = None, params: dict | None = None
             f"{source.name}: response body failed content-decoding: {exc}",
             kind="transport",
         ) from exc
-    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout,
-            httpx.WriteTimeout, httpx.PoolTimeout, httpx.RemoteProtocolError,
-            httpx.ProxyError) as exc:
-        # DNS failure, refused connection, TLS handshake abort, timeout.
-        # Transient by default: these say nothing about whether the source
-        # still exists.
+    except httpx.TimeoutException as exc:
+        # Recorded apart from the rest. A timeout is the signature of a slow
+        # or congested path, not of a source that has gone: on a slow
+        # international link it is the expected failure, and reporting it as
+        # a fault would mean the panel calls a working feed broken.
+        raise FetchError(
+            f"{source.name}: request to {url} timed out after "
+            f"{source.timeout_seconds}s: {exc}", kind="timeout"
+        ) from exc
+    except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ProxyError) as exc:
+        # DNS failure, refused connection, TLS handshake abort. Transient by
+        # default: these say nothing about whether the source still exists.
         raise FetchError(
             f"{source.name}: request to {url} failed: {exc}", kind="network"
         ) from exc
@@ -107,13 +122,18 @@ def _source_state(conn: sqlite3.Connection, source: Source, source_id: int) -> d
     row = conn.execute(
         "SELECT MAX(period) FROM observations WHERE source_id = ?", (source_id,)
     ).fetchone()
-    watch = [
-        r[0] for r in conn.execute(
-            """SELECT ticker FROM watchlists WHERE user_id = ? AND market = 'US'
-               ORDER BY ticker""", (db.LOCAL_USER_ID,))
-    ]
+    # Keyed by market rather than one list per market. A second hardcoded
+    # `market = 'US'` query was the shape this project keeps having to undo:
+    # the same fact written down twice, drifting the moment a third market
+    # arrives.
+    watch: dict[str, list[str]] = {}
+    for ticker, market in conn.execute(
+        """SELECT ticker, market FROM watchlists WHERE user_id = ?
+           ORDER BY market, ticker""", (db.LOCAL_USER_ID,)
+    ):
+        watch.setdefault(market, []).append(ticker)
     return {"latest_period": row[0] if row and row[0] else None,
-            "watchlist_us": watch}
+            "watchlist": watch}
 
 
 def classify(source: Source, parsed: ParsedFeed) -> None:
@@ -304,8 +324,8 @@ def fetch_source(conn: sqlite3.Connection, source: Source, stagger: bool = False
             # decide there is nothing to collect.
             responses, note = fetcher(
                 source,
-                lambda url, params=None, headers=None: _download(
-                    source, url, params, headers),
+                lambda url, params=None, headers=None, data=None: _download(
+                    source, url, params, headers, data),
                 _source_state(conn, source, source_id),
             )
             if not responses:
@@ -387,6 +407,12 @@ def fetch_all(conn: sqlite3.Connection, sources: list[Source]) -> tuple[list[dic
     results, failures = [], []
     fetched_any = False
     for source in sources:
+        if not source.enabled:
+            # Not contacted, and NOT an error. Reported so a cycle that does
+            # nothing says why it did nothing, rather than printing a blank.
+            results.append({"source": source.name, "skipped": True,
+                            "kind": "disabled", "reason": None})
+            continue
         # Space out the cycle. Fetching is already sequential, so servers
         # are never hit simultaneously; this stops nine requests going out
         # inside a second across five different governments.
@@ -493,6 +519,7 @@ def source_status(conn: sqlite3.Connection, source: Source) -> dict:
         (source.name, last_non_error_id),
     ) or 0
     kinds = []
+    kind_counts: dict[str, int] = {}
     for kind, count in conn.execute(
         """SELECT error_kind, COUNT(*) FROM fetch_log
            WHERE source = ? AND status = 'error' AND id > ?
@@ -500,7 +527,13 @@ def source_status(conn: sqlite3.Connection, source: Source) -> dict:
         (source.name, last_non_error_id),
     ):
         label = kind or "unclassified"
+        kind_counts[label] = count
         kinds.append(f"{label}×{count}" if count > 1 else label)
+
+    # Raw counts as well as labels: deciding whether a streak is the network
+    # or the source must not mean parsing "network×4" back out of a display
+    # string. Measured from the ACTUAL rows, never assumed.
+    path_failures = sum(kind_counts.get(k, 0) for k in db.PATH_KINDS)
 
     last_error_row = conn.execute(
         """SELECT id, timestamp, error FROM fetch_log
@@ -606,6 +639,11 @@ def source_status(conn: sqlite3.Connection, source: Source) -> dict:
 
         "consecutive_failures": consecutive,
         "failure_kinds": kinds,
+        "failure_kind_counts": kind_counts,
+        # Every consecutive failure was the path, not an answer from the
+        # source. The caller decides what to call that; this only measures it.
+        "all_failures_are_path": bool(consecutive) and path_failures == consecutive,
+        "path_failures": path_failures,
         "last_error": last_error,
 
         "fx_counts": fx_counts,
@@ -614,12 +652,17 @@ def source_status(conn: sqlite3.Connection, source: Source) -> dict:
         "fx_older_unclassified_pct": (fx_older * 100) if fx_older is not None else None,
         "fx_drift": fx_drift,
         "fx_has_vocabulary": bool(source.fx),
+        "fx_unmeasured": (source.fx or {}).get("unmeasured"),
 
         "archive": source.archive,
         "replaceable": replaceable,
         "at_risk": at_risk,
         "staleness_days": source.staleness_days,
-        "stale": stale,
+        # A disabled source is never stale. Nothing is polling it, so "has
+        # published nothing new" would be a fact about this tool, not about
+        # the publisher - the same false alarm in a new costume.
+        "stale": stale and source.enabled,
+        "enabled": source.enabled,
     }
 
 

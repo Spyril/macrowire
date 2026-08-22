@@ -6,6 +6,39 @@
 // places is how the two drift apart.
 
 const $ = (id) => document.getElementById(id);
+
+// Viewer-facing strings arrive with the bootstrap payload, already resolved
+// against the default locale, so a missing key cannot reach here as
+// `undefined`. If one somehow does, show the key: an ugly label you can see
+// beats an invisible one you cannot.
+let STRINGS = {};
+function t(key, fields) {
+  let node = STRINGS;
+  for (const part of key.split(".")) {
+    if (!node || typeof node !== "object" || !(part in node)) { node = null; break; }
+    node = node[part];
+  }
+  if (typeof node !== "string") { console.error("missing string", key); return key; }
+  return fields
+    ? node.replace(/\{(\w+)\}/g, (m, name) => (name in fields ? fields[name] : m))
+    : node;
+}
+
+// SOURCE FACTS, not interface text. These state when a publisher publishes.
+// The RBA fixes at 4pm Sydney time whether you read this in Sydney or in
+// Stuttgart, so translating them would not localise the page, it would
+// falsify it. They sit here, outside the catalogue, deliberately.
+const FACT = {
+  cfetsFix: "09:15 CST",
+  cotRelease: "15:30 ET",
+  ecbPublish: "~16:00 CET",
+  ecbBase: "EUR",
+  rbaFix: "4pm AEST",
+};
+// The SCHEDULE is the fact - positions as of Tuesday, released Friday
+// 15:30 ET. The weekday NAME is the reader's word for it, so it comes from
+// the catalogue while the clock time does not. 周二 with the schedule
+// intact loses nothing; 周二 with the hour changed would be a lie.
 // One filter model, four axes. OR within an axis, AND across them.
 const AXES = ["fx", "jurisdiction", "ticker", "source", "type"];
 const state = {
@@ -52,7 +85,7 @@ function drawHours() {
 }
 
 function drawRibbon(data) {
-  $("ribbon-day").textContent = data.day + " \u00b7 Sydney";
+  $("ribbon-day").textContent = t("ribbon.day", { day: data.day, zone: t("ribbon.viewer_zone") });
   const colours = { sydney: "--syd", tokyo: "--tyo", hongkong: "--hkg",
                     london: "--lon", newyork: "--nyc" };
 
@@ -64,14 +97,15 @@ function drawRibbon(data) {
         ? `<span class="wrapmark" style="left:calc(${g.end * 100}% - 10px)">\u25b8</span>` : "";
       const wrapFrom = g.continues === "from" || g.continues === "both"
         ? `<span class="wrapmark" style="left:calc(${g.start * 100}% + 3px)">\u25c2</span>` : "";
-      const title = `${s.label} ${g.opens_local}\u2013${g.closes_local} Sydney`
-        + (g.continues ? " (continues across local midnight)" : "");
+      const title = t("ribbon.wrap_title", { label: s.label, open: g.opens_local,
+                                             close: g.closes_local, zone: t("ribbon.viewer_zone") })
+        + (g.continues ? " " + t("ribbon.wrap_continues") : "");
       return `<div class="seg" data-continues="${g.continues || ""}"
                    style="left:${g.start * 100}%;width:${(g.end - g.start) * 100}%;
                           background:var(${colours[s.key]})" title="${esc(title)}"></div>${wrapInto}${wrapFrom}`;
     }).join("");
     const hint = s.segments.length === 0
-      ? `<span class="closed">closed</span>` : "";
+      ? `<span class="closed">${esc(t("ribbon.closed"))}</span>` : "";
     return `<div class="srow${s.weekend ? " weekend" : ""}">
               <span class="lab">${s.label}</span>
               <div class="track">${segs}${hint}</div>
@@ -87,9 +121,10 @@ function drawRibbon(data) {
       ? `<div class="win" style="left:0;width:${Math.max(m.window * 100, 0.4)}%"></div>` : "";
     const label = m.source.replace(/_/g, " ");
     const short = label.split(" ")[0];
-    const tip = `${label} \u2014 ${m.local_time} Sydney, published ${m.origin}`
-      + (m.shifts ? `\nacross the year: ${m.shifts}` : "")
-      + (m.crosses_date ? "\npublished the previous day at origin" : "");
+    const tip = t("ribbon.mark_title", { source: label, local: m.local_time,
+                                         zone: t("ribbon.viewer_zone"), origin: m.origin })
+      + (m.shifts ? "\n" + t("ribbon.mark_shifts", { shifts: m.shifts }) : "")
+      + (m.crosses_date ? "\n" + t("ribbon.mark_prev_day") : "");
     return `<div class="mark imp${m.importance}" data-i="${i}"
                  style="left:${m.position * 100}%" title="${esc(tip)}">
               <div class="stem"></div>${win}
@@ -102,7 +137,8 @@ function drawRibbon(data) {
   const byReason = {};
   unplaced.forEach((m) => { (byReason[m.reason] ||= []).push(m.source.replace(/_/g, " ")); });
   $("untimed").innerHTML = Object.entries(byReason).map(
-    ([reason, names]) => `<b>no mark</b> \u2014 ${esc(reason)}: ${esc(names.join(", "))}`
+    ([reason, names]) => `<b>${esc(t("ribbon.no_mark"))}</b> \u2014 `
+      + esc(t("ribbon.untimed", { reason: t(reason), sources: names.join(", ") }))
   ).join("<br>");
 }
 
@@ -171,15 +207,13 @@ function typeLabel(token) {
 }
 
 function tokenHtml({ axis, value }) {
-  const FX_LABEL = { fx: "FX-relevant", not_fx: "not FX", unclassified: "unclassified" };
-  const shown = axis === "fx" ? (FX_LABEL[value] || value)
+  const shown = axis === "fx" ? t(`filter.fx_state.${value}`)
               : axis === "type" ? typeLabel(value)
               : axis === "source" ? value.replace(/_/g, " ") : value;
-  const ax = { fx: "FX", jurisdiction: "JUR", ticker: "TKR",
-               source: "SRC", type: "TYPE" }[axis];
+  const ax = t(`filter.short.${axis}`);
   return `<span class="token"><span class="ax">${ax}</span>${esc(shown)}
             <button data-axis="${axis}" data-value="${esc(value)}"
-                    aria-label="Remove filter ${esc(shown)}">\u00d7</button></span>`;
+                    aria-label="${esc(t("filter.remove", { label: shown }))}">\u00d7</button></span>`;
 }
 
 function drawTokens() {
@@ -217,14 +251,19 @@ function drawTape() {
     // alike. Restate the filters that produced the emptiness.
     $("tape").innerHTML = anyActive()
       ? `<div class="nomatch">
-           <h3>No items match these filters</h3>
+           <h3>${esc(t("tape.no_match_title"))}</h3>
            <div class="tokens">${activeFilters().map(tokenHtml).join("")}</div>
-           <p>Filters combine as OR within a row and AND across rows,
-              so narrowing two axes at once can leave nothing.</p>
-           <p><button class="fbtn" id="nm-clear">clear all filters</button></p>
+           <p>${esc(t("tape.no_match_body"))}</p>
+           <p><button class="fbtn" id="nm-clear">${esc(t("tape.no_match_clear"))}</button></p>
          </div>`
-      : `<div class="nomatch"><h3>Nothing in this window</h3>
-           <p>No filters are active \u2014 the last 30 days are genuinely empty.</p></div>`;
+      : state.sources.every((s) => !s.enabled)
+      // Nothing enabled and nothing on the tape are the same picture and
+      // completely different problems. Waiting for a fetch that will never
+      // contact anything is the worse one, so it gets said out loud.
+      ? `<div class="nomatch"><h3>${esc(t("tape.no_sources_title"))}</h3>
+           <p>${esc(t("tape.no_sources_body"))}</p></div>`
+      : `<div class="nomatch"><h3>${esc(t("tape.empty_title"))}</h3>
+           <p>${esc(t("tape.empty_body"))}</p></div>`;
     const nm = $("nm-clear");
     if (nm) nm.onclick = clearFilters;
     $("tape").querySelectorAll(".token button").forEach((b) => {
@@ -306,16 +345,15 @@ function drawPanel(unread) {
 
   // Three states, and unclassified is OFFERED rather than hidden - if you
   // filter to FX and something is missing, it must be findable.
-  const FXL = { fx: "FX-relevant", not_fx: "not FX", unclassified: "unclassified" };
-  rows.push(["FX", (f.fx || []).length
-    ? f.fx.map((x) => chip("fx", x.value, FXL[x.value] || x.value, x.count)).join("")
-      + `<span class="fsub">unclassified means no rule matched, never "not FX"</span>`
-    : `<span class="fempty">nothing in this window</span>`]);
+  rows.push([t("filter.axis.fx"), (f.fx || []).length
+    ? f.fx.map((x) => chip("fx", x.value, t(`filter.fx_state.${x.value}`), x.count)).join("")
+      + `<span class="fsub">${esc(t("filter.fx_caveat"))}</span>`
+    : `<span class="fempty">${esc(t("filter.empty_window"))}</span>`]);
 
-  rows.push(["Jurisdiction", f.jurisdiction.length
+  rows.push([t("filter.axis.jurisdiction"), f.jurisdiction.length
     ? f.jurisdiction.map((x) => chip("jurisdiction", x.value, x.value,
         (unread.per_jurisdiction || {})[x.value] || 0)).join("")
-    : `<span class="fempty">nothing in this window</span>`]);
+    : `<span class="fempty">${esc(t("filter.empty_window"))}</span>`]);
 
   // Watchlist: filter chips for tickers with items, plus the held-but-quiet
   // ones so they can be removed, plus an add form. Editing lives here rather
@@ -327,47 +365,50 @@ function drawPanel(unread) {
     const count = (f.ticker.find((x) => x.value === e.ticker) || {}).count || 0;
     const inner = hasItems
       ? chip("ticker", e.ticker, e.ticker, count)
-      : `<button class="chip" disabled title="held, but nothing in this window"
+      : `<button class="chip" disabled title="${esc(t("watchlist.held_quiet"))}"
                  style="opacity:.62;cursor:default">${esc(e.ticker)}</button>`;
     return `<span class="wl-chip">${inner}<button class="wl-del"
               data-ticker="${esc(e.ticker)}" data-market="${esc(e.market)}"
-              aria-label="Remove ${esc(e.ticker)} from watchlist"
-              title="Remove ${esc(e.ticker)} (${esc(e.market)}) from the watchlist"
+              aria-label="${esc(t("watchlist.remove", { ticker: e.ticker }))}"
+              title="${esc(t("watchlist.remove_title", { ticker: e.ticker, market: e.market }))}"
               >\u2212</button></span>`;
   }).join("");
   const wlForm = `
     <form class="wl-add" id="wl-add">
-      <input id="wl-ticker" name="ticker" maxlength="12" placeholder="ticker"
-             aria-label="Ticker to add" autocomplete="off" spellcheck="false">
-      <select id="wl-market" aria-label="Market">
-        <option value="US">US</option><option value="AU">AU</option>
+      <input id="wl-ticker" name="ticker" maxlength="12"
+             placeholder="${esc(t("watchlist.ticker_placeholder"))}"
+             aria-label="${esc(t("watchlist.ticker_label"))}" autocomplete="off" spellcheck="false">
+      <select id="wl-market" aria-label="${esc(t("watchlist.market_label"))}">
+        <option value="US">US</option><option value="CN">CN</option>
+        <option value="AU">AU</option>
         <option value="HK">HK</option><option value="JP">JP</option>
         <option value="UK">UK</option><option value="EU">EU</option>
       </select>
-      <button class="fbtn" type="submit">add</button>
+      <button class="fbtn" type="submit">${esc(t("watchlist.add"))}</button>
       <span class="wl-msg" id="wl-msg" role="status" aria-live="polite"></span>
     </form>`;
-  rows.push(["Watchlist", (wlChips || `<span class="fempty">watchlist is empty</span>`) + wlForm]);
+  rows.push([t("filter.axis.ticker"),
+    (wlChips || `<span class="fempty">${esc(t("filter.empty_watchlist"))}</span>`) + wlForm]);
 
-  rows.push(["Source", f.source.map((x) => chip("source", x.value,
+  rows.push([t("filter.axis.source"), f.source.map((x) => chip("source", x.value,
       x.value.replace(/_/g, " "), (unread.per_source || {})[x.value] || 0)).join("")]);
 
   // Type is scoped to its owning source. Sources with a single type are not
   // offered at all - their type IS their source, and a chip for it would
   // just duplicate the row above.
-  rows.push(["Type", f.type.length
+  rows.push([t("filter.axis.type"), f.type.length
     ? f.type.map((g) => {
         const head = `<span class="fsub">${esc(g.source.replace(/_/g, " "))}</span>`;
         const prim = g.primary.map((x) =>
           chip("type", `${g.source}:${x.value}`, x.value, x.count)).join("");
         const tags = g.tags.length
-          ? `<span class="fsub">8-K items</span>` + g.tags.map((x) =>
+          ? `<span class="fsub">${esc(t("filter.type_items"))}</span>` + g.tags.map((x) =>
               chip("type", `${g.source}:${x.value}`,
                    `${x.value.split(":")[1]} ${x.label}`, x.count)).join("")
           : "";
         return head + prim + tags;
       }).join("")
-    : `<span class="fempty">no source in this window has more than one type</span>`]);
+    : `<span class="fempty">${esc(t("filter.empty_type"))}</span>`]);
 
   $("fgrid").innerHTML = rows.map(
     ([label, body]) => `<div class="faxis">${label}</div><div class="fgroup">${body}</div>`
@@ -396,7 +437,7 @@ function wireWatchlistControls() {
         // A removed ticker must stop filtering too, or the tape silently
         // narrows to a ticker no longer on the list.
         state.f.ticker.delete(ticker);
-        await reloadAfterWatchlistChange(`removed ${ticker}`);
+        await reloadAfterWatchlistChange(t("watchlist.removed", { ticker }));
       } catch (e) {
         setWlMessage(e.message, true);
         b.disabled = false;
@@ -410,14 +451,18 @@ function wireWatchlistControls() {
     event.preventDefault();
     const ticker = $("wl-ticker").value.trim().toUpperCase();
     const market = $("wl-market").value;
-    if (!ticker) { setWlMessage("enter a ticker", true); return; }
-    setWlMessage("checking\u2026", false);
+    if (!ticker) { setWlMessage(t("watchlist.need_ticker"), true); return; }
+    setWlMessage(t("watchlist.checking"), false);
     try {
       const r = await post("/api/watchlist/add", { ticker, market });
       state.watchlist = r.entries;
       $("wl-ticker").value = "";
-      const name = r.added && r.added.name ? ` \u2014 ${r.added.name}` : "";
-      await reloadAfterWatchlistChange(`added ${market} ${ticker}${name}`);
+      // The company name is what the SEC published; it is a source fact
+      // and passes through untranslated.
+      const name = r.added && r.added.name;
+      await reloadAfterWatchlistChange(name
+        ? t("watchlist.added_named", { market, ticker, name })
+        : t("watchlist.added", { market, ticker }));
     } catch (e) {
       // The identical message the CLI prints, in front of the user.
       setWlMessage(e.message, true);
@@ -437,7 +482,7 @@ async function reloadAfterWatchlistChange(message) {
   drawTokens();
   drawTape();
   drawPanel(state.unread || {});
-  setWlMessage(message + ". Filings appear after the next fetch.", false);
+  setWlMessage(t("watchlist.after_change", { message }), false);
   const input = $("wl-ticker");
   if (input) input.focus();
 }
@@ -502,7 +547,11 @@ function wireKeyboard() {
 async function refreshUnread() {
   const u = await get("/api/unread?days=30");
   state.unread = u;
-  $("unread-total").innerHTML = u.total ? `<b>${u.total}</b> unread` : "all read";
+  // The catalogue is our own file, so a marked-up field is safe here; the
+  // number is the only substitution and it comes from our own API.
+  $("unread-total").innerHTML = u.total
+    ? t("app.unread_some", { n: `<b>${u.total}</b>` })
+    : esc(t("app.unread_none"));
   if (panelOpen()) drawPanel(u);
 }
 
@@ -517,7 +566,31 @@ function drawRail(d) {
         : sign(f.change) + f.change.toFixed(4) + " (" + sign(f.change_pct) + f.change_pct.toFixed(2) + "%)"}</div>`
   ).join("");
   $("fx-asof").textContent = d.fx.length
-    ? `fix ${d.fx[0].period} 09:15 CST · change vs ${d.fx[0].prior_period}` : "no data";
+    ? t("rail.cny_asof", { period: d.fx[0].period, time: FACT.cfetsFix,
+                           prior: d.fx[0].prior_period })
+    : t("rail.no_data");
+
+  // Southbound. Net leads because the direction is the signal; the level
+  // is context. Sign is spelled out in words as well as shown, because a
+  // minus sign in a dense rail is easy to miss and the two readings are
+  // opposite.
+  const sb = d.southbound;
+  if (sb && sb.rows.length) {
+    $("sb").innerHTML = sb.rows.map((r) => {
+      const dir = r.key !== "net" ? ""
+        : ` <span class="dir">${esc(t(r.value >= 0 ? "rail.sb_into" : "rail.sb_out"))}</span>`;
+      return `
+      <div class="k">${esc(t(`rail.sb.${r.key}`))}</div>
+      <div class="v${r.key === "net" ? " lead" : ""}">${sign(r.value)}${r.value.toFixed(2)}${dir}</div>
+      <div class="d">${r.change === null || r.change === undefined ? "\u2014"
+        : sign(r.change) + r.change.toFixed(2)}</div>`;
+    }).join("");
+    $("sb-asof").textContent = t("rail.sb_asof", {
+      period: sb.period, unit: sb.rows[0].unit, prior: sb.prior_period || "\u2014" });
+  } else {
+    $("sb").innerHTML = "";
+    $("sb-asof").textContent = t("rail.no_data");
+  }
 
   const thou = (v) => (v === undefined || v === null) ? "\u2014"
     : (v > 0 ? "+" : "") + Math.round(v).toLocaleString("en-AU");
@@ -525,11 +598,13 @@ function drawRail(d) {
       <div class="k">${esc(p.currency)}</div>
       <div class="v">${thou(p.net)}</div>
       <div class="d">${p.change_net === undefined ? "\u2014"
-        : thou(p.change_net) + " wk"}</div>`
+        : thou(p.change_net) + " " + t("rail.week")}</div>`
   ).join("");
   $("cot-asof").textContent = (d.cot && d.cot.length)
-    ? `CFTC non-commercial net, contracts \u00b7 as of ${d.cot[0].period} (Tue), `
-      + `released Fri 15:30 ET` : "no data";
+    ? t("rail.cot_asof", { period: d.cot[0].period,
+                           day: t("rail.weekday.tue"),
+                           release: `${t("rail.weekday.fri")} ${FACT.cotRelease}` })
+    : t("rail.no_data");
 
   $("ecb").innerHTML = (d.ecb || []).map((f) => `
       <div class="k">${esc(f.series)}</div>
@@ -538,55 +613,61 @@ function drawRail(d) {
         : sign(f.change) + f.change.toFixed(4) + " (" + sign(f.change_pct) + f.change_pct.toFixed(2) + "%)"}</div>`
   ).join("");
   $("ecb-asof").textContent = (d.ecb && d.ecb.length)
-    ? `reference rate ${d.ecb[0].period} \u00b7 ~16:00 CET \u00b7 base EUR` : "no data";
+    ? t("rail.ecb_asof", { period: d.ecb[0].period, time: FACT.ecbPublish,
+                           base: FACT.ecbBase })
+    : t("rail.no_data");
 
   $("rba").innerHTML = d.rba.map((r) => `
       <div class="k">${esc(r.series)}</div><div class="v">${r.value}</div>`
   ).join("");
-  $("rba-asof").textContent = d.rba.length ? `4pm AEST · ${d.rba[0].period}` : "no data";
+  $("rba-asof").textContent = d.rba.length
+    ? t("rail.rba_asof", { time: FACT.rbaFix, period: d.rba[0].period })
+    : t("rail.no_data");
 
   const order = ["AU", "CN", "HK", "JP", "US", "EU", "UK"];
   const grouped = {};
   d.health.forEach((h) => { (grouped[h.jurisdiction] ||= []).push(h); });
-  const sinceText = (iso) => {
-    if (!iso) return "at an unknown time";
-    const secs = (Date.now() - new Date(iso).getTime()) / 1000;
-    return secs < 90 ? "just now"
-      : secs < 3600 ? `${Math.floor(secs / 60)}m ago`
-      : secs < 86400 ? `${Math.floor(secs / 3600)}h ago`
-      : `${Math.floor(secs / 86400)}d ago`;
-  };
   const ago = (s) => s === null ? null
-    : s < 90 ? "just now"
-    : s < 3600 ? `${Math.floor(s / 60)}m ago`
-    : s < 86400 ? `${Math.floor(s / 3600)}h ago`
-    : `${Math.floor(s / 86400)}d ago`;
+    : s < 90 ? t("time.just_now")
+    : s < 3600 ? t("time.minutes", { n: Math.floor(s / 60) })
+    : s < 86400 ? t("time.hours", { n: Math.floor(s / 3600) })
+    : t("time.days", { n: Math.floor(s / 86400) });
+  const sinceText = (iso) => iso === null || iso === undefined
+    ? t("time.unknown")
+    : ago((Date.now() - new Date(iso).getTime()) / 1000);
   const row = (h) => {
     // Contact, not store. A gated source polling and finding nothing new is
     // alive; calling that "no success logged" was a false alarm on healthy
     // data, and false alarms teach you to ignore the real ones.
     const contact = ago(h.seconds_since_contact);
     // The state label now carries the meaning; this is just the timing.
-    const parts = [contact === null ? "never" : contact];
+    const parts = [contact === null ? t("time.never") : contact];
     // failure_kinds arrive already formatted; a null error_kind reads as
     // "unclassified" rather than leaking the string "None".
     const bad = h.state_severity === "bad" || h.state_severity === "warn";
     if (h.consecutive_failures) parts.push(`${h.failure_kinds.join(", ")}`);
-    if (h.stale) parts.push("stale");
+    // The state label alone reads as a verdict on the source. For an
+    // unreachable one it is not, so the qualification travels with it.
+    if (h.state === "unreachable") parts.push(t("health.unreachable.short"));
+    if (h.stale) parts.push(t("health.stale_flag"));
     const tip = [h.state_meaning, h.state_action].filter(Boolean).join("\n\n");
     return `<div><span class="nm">${esc(h.name.replace(/_/g, " "))}</span>
-                 <span class="${bad ? "warn" : "ok"} st" title="${esc(h.state_label)} \u2014 ${esc(tip)}"
+                 <span class="${bad ? "warn" : "ok"} st"
+                       title="${esc(t("health.tip", { label: h.state_label, detail: tip }))}"
                  >${esc(h.state_label)} \u00b7 ${esc(parts.join(" \u00b7 "))}</span></div>`;
   };
-  $("health").innerHTML = order.filter((j) => grouped[j]).map(
+  const note = d.health_note
+    ? `<div class="hnote">${esc(d.health_note)}</div>` : "";
+  $("health").innerHTML = note + order.filter((j) => grouped[j]).map(
     (j) => `<span class="jgroup">${esc(j)}</span>` + grouped[j].map(row).join("")
   ).join("");
 
   const risk = d.health.filter((h) => h.replaceable === "NO");
   const rows = risk.reduce((a, h) => a + h.at_risk, 0);
   $("risk").innerHTML =
-    `<b>${rows}</b> row(s) exist only here — ${esc(risk.map((h) => h.name.replace(/_/g, " ")).join(", "))}.<br>` +
-    `Everything else is re-fetchable: losing it costs polling time, not data.`;
+    t("risk.only_here", { n: `<b>${rows}</b>`,
+                          sources: esc(risk.map((h) => h.name.replace(/_/g, " ")).join(", ")) })
+    + "<br>" + esc(t("risk.rest_refetchable"));
 
   // MEASURE, never warn unconditionally. If the rows are written off this
   // disk and up to date, say so - a panel that nags at a solved problem is
@@ -595,33 +676,56 @@ function drawRail(d) {
   const el = $("export-state");
   if (x.error) {
     el.className = "risk unsolved";
-    el.innerHTML = `<b>export misconfigured</b> — ${esc(x.error)}`;
+    el.innerHTML = t("risk.export_misconfigured", { error: esc(x.error) });
   } else if (!x.exists) {
     el.className = "risk unsolved";
-    el.innerHTML = `<b>not exported yet</b> — run <b>macrowire export</b>, or `
-      + `set <b>export.path</b> in sources.yaml to a synced folder and it happens automatically.`;
+    el.innerHTML = t("risk.export_never", { command: "<b>macrowire export</b>",
+                                            setting: "<b>export.path</b>" });
   } else if (x.external && x.current) {
     el.className = "risk solved";
-    el.innerHTML = `Exporting to <b>${esc(x.directory)}</b> — `
-      + `<b>${x.rows}</b> row(s) protected ${esc(sinceText(x.written_at))}. `
-      + `Off this disk, so a drive failure costs nothing.`;
+    el.innerHTML = t("risk.export_protected", { path: `<b>${esc(x.directory)}</b>`,
+                                                n: `<b>${x.rows}</b>`,
+                                                when: esc(sinceText(x.written_at)) });
   } else if (x.external) {
     el.className = "risk unsolved";
-    el.innerHTML = `Exporting to <b>${esc(x.directory)}</b>, but the file is `
-      + `<b>out of date</b> — run <b>macrowire fetch</b> or <b>macrowire export</b>.`;
+    el.innerHTML = t("risk.export_stale", { path: `<b>${esc(x.directory)}</b>`,
+                                            fetch: "<b>macrowire fetch</b>",
+                                            export: "<b>macrowire export</b>" });
   } else {
     el.className = "risk unsolved";
-    el.innerHTML = `<b>${x.rows}</b> row(s) exported to <b>${esc(x.directory)}</b>`
-      + `${x.current ? "" : " (out of date)"} — that is the same disk as the `
-      + `database, so it protects against a mistake but not a drive failure. `
-      + `Set <b>export.path</b> in sources.yaml to a synced folder.`;
+    el.innerHTML = t("risk.export_local", { n: `<b>${x.rows}</b>`,
+                                            path: `<b>${esc(x.directory)}</b>`,
+                                            stale: x.current ? "" : t("risk.export_local_stale"),
+                                            setting: "<b>export.path</b>" });
   }
 }
 
 /* ---------------- boot ---------------- */
 
+// Static chrome in index.html carries a key, not a sentence, so the markup
+// has one language and the catalogue has the rest. The elements ship empty
+// and are filled here, before anything else draws.
+function applyStaticStrings() {
+  document.title = t("app.title");
+  // The empty-filter hint is drawn by CSS on `.tokens:empty`, which cannot
+  // reach the catalogue. Hand it the string as a custom property instead of
+  // leaving one sentence stranded in the stylesheet.
+  document.documentElement.style.setProperty(
+    "--empty-filters", JSON.stringify(t("filter.none_active")));
+  document.querySelectorAll("[data-i18n]").forEach((el) => {
+    el.textContent = t(el.dataset.i18n);
+  });
+  document.querySelectorAll("[data-i18n-label]").forEach((el) => {
+    el.setAttribute("aria-label", t(el.dataset.i18nLabel));
+  });
+}
+
 async function boot() {
   const b = await get("/api/bootstrap");
+  // Strings first: everything drawn below reads from them.
+  STRINGS = b.strings || {};
+  document.documentElement.lang = b.locale || "en";
+  applyStaticStrings();
   state.sources = b.sources;
   state.offsetHours = b.now.offset;
   state.facets = b.facets;
@@ -633,8 +737,7 @@ async function boot() {
     if (swept && swept.marked) {
       const n = $("firstrun");
       n.hidden = false;
-      n.textContent = `first run \u2014 ${swept.marked} existing items marked read. `
-        + `Only what arrives from now on will show as unread.`;
+      n.textContent = t("app.first_run", { n: swept.marked });
     }
   }
   wireKeyboard(); drawTokens();
@@ -654,4 +757,8 @@ async function boot() {
   window.addEventListener("resize", () => { drawHours(); layoutMarkLanes(); });
 }
 
-boot().catch((e) => { $("tape").innerHTML = `<div class="note">failed: ${esc(e.message)}</div>`; });
+boot().catch((e) => {
+  // t() is safe before the catalogue loads: it falls back to the key, which
+  // is still more use than a blank page.
+  $("tape").innerHTML = `<div class="note">${esc(t("app.failed", { message: e.message }))}</div>`;
+});

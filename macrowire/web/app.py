@@ -18,7 +18,8 @@ from pydantic import BaseModel
 from .. import db
 from .. import export as export_mod
 from .. import watchlist as wl
-from ..config import load_export_settings, load_sources
+from .. import i18n
+from ..config import load_export_settings, load_locale, load_sources
 from ..errors import ConfigError, MacroWireError
 from . import queries, ribbon
 
@@ -46,8 +47,37 @@ def _cik_map_for_ui():
     return wl.load_cik_map(
         fetch=download if (age is None or age > wl.CIK_MAX_AGE_DAYS) else None)
 
+def _cninfo_fetch_for_ui(url: str, form: dict) -> bytes:
+    """CN code validation from the UI, on the same terms as the CLI.
+
+    A bad code must fail at add time in the browser exactly as it does in the
+    terminal: an unmatched one returns nothing forever and reads as a quiet
+    company.
+    """
+    import httpx
+
+    sources = {s.name: s for s in load_sources()}
+    source = sources.get("cninfo_announcements")
+    if source is None:
+        raise MacroWireError(
+            "cninfo_announcements is not in sources.yaml, so CN codes cannot "
+            "be validated.")
+    response = httpx.post(url, data=form,
+                          headers={"User-Agent": source.user_agent,
+                                   "Accept": "application/json"},
+                          timeout=60, follow_redirects=True)
+    response.raise_for_status()
+    return response.content
+
+
 STATIC = Path(__file__).resolve().parent / "static"
 USER_ID = db.LOCAL_USER_ID
+
+# One translator for the process. The locale is a config decision, not a
+# per-request one: there is a single local user and no Accept-Language to
+# negotiate with.
+LOCALE = load_locale()
+T = i18n.Translator(LOCALE)
 
 app = FastAPI(title="MacroWire", docs_url=None, redoc_url=None)
 
@@ -100,6 +130,12 @@ def bootstrap():
         "unread": queries.unread_counts(conn, sources, USER_ID),
         "facets": queries.facets(conn, sources, USER_ID),
         "watchlist": wl.entries(conn, USER_ID),
+        # The whole catalogue, once, on load. It is a few kilobytes and it
+        # means the page never renders a label before its text arrives.
+        "locale": LOCALE,
+        # Without `cli`: ninety terminal strings the page can never render,
+        # sent on every load.
+        "strings": T.merged(exclude=("cli",)),
     }
     conn.close()
     return payload
@@ -134,7 +170,7 @@ def watchlist_add(request: WatchlistRequest):
     conn = _conn()
     try:
         added = wl.add(conn, USER_ID, request.ticker, request.market,
-                       cik_map=_cik_map_for_ui())
+                       cik_map=_cik_map_for_ui(), cn_fetch=_cninfo_fetch_for_ui)
     except ConfigError as exc:
         conn.close()
         raise HTTPException(status_code=400, detail=str(exc))
@@ -188,7 +224,7 @@ def tape(days: int = 30, sources: str | None = None, jurisdictions: str | None =
 def rail():
     conn = _conn()
     sources = _sources()
-    payload = queries.rail(conn, sources)
+    payload = queries.rail(conn, sources, T)
     # Measured, not assumed: whether the irreplaceable rows are actually
     # written somewhere, and whether that somewhere is off this disk.
     payload["export"] = _export_state(conn, sources)

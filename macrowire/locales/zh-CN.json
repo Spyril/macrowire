@@ -1,0 +1,385 @@
+{
+  "_meta": {
+    "name": "简体中文",
+    "note": "Source facts (fixing times, timezones, exchange codes) are interpolated at render time and are never translated."
+  },
+  "app": {
+    "title": "MacroWire",
+    "unread_some": "{n} 条未读",
+    "unread_none": "全部已读",
+    "first_run": "首次运行 — 已将 {n} 条既有条目标记为已读。此后新到达的才会显示为未读。",
+    "loading": "加载中…",
+    "failed": "失败：{message}",
+    "aria_ribbon": "交易时段带"
+  },
+  "ribbon": {
+    "note": "本地时间按时刻实时换算 — 不存储时区偏移",
+    "closed": "休市",
+    "no_mark": "无标记",
+    "wrap_title": "{label} {open}–{close} {zone}",
+    "wrap_continues": "（跨越本地午夜，接续显示）",
+    "mark_title": "{source} — {local} {zone}，发布于 {origin}",
+    "mark_shifts": "全年变化：{shifts}",
+    "mark_prev_day": "按来源当地时间为前一日发布",
+    "day": "{day} · {zone}",
+    "viewer_zone": "悉尼",
+    "untimed": "{reason}：{sources}",
+    "reason": {
+      "date_only": "订阅源不提供具体时间",
+      "no_schedule": "无可用发布规律（实测四分位距 2–7 小时）",
+      "not_today": "当日不落在此区间内"
+    }
+  },
+  "filter": {
+    "button": "筛选",
+    "clear": "全部清除",
+    "close": "关闭",
+    "none_active": "未设筛选 — 显示全部",
+    "hint": "Esc 关闭 · c 清除 · 同一行为「或」，跨行为「且」",
+    "remove": "移除筛选条件 {label}",
+    "axis": {
+      "fx": "外汇",
+      "jurisdiction": "法域",
+      "ticker": "自选",
+      "source": "来源",
+      "type": "类型"
+    },
+    "short": {
+      "fx": "外汇",
+      "jurisdiction": "法域",
+      "ticker": "自选",
+      "source": "来源",
+      "type": "类型"
+    },
+    "fx_state": {
+      "fx": "与外汇相关",
+      "not_fx": "与外汇无关",
+      "unclassified": "未分类"
+    },
+    "fx_caveat": "「未分类」表示没有规则匹配，并不等于「与外汇无关」",
+    "empty_window": "此时间范围内无内容",
+    "empty_watchlist": "自选列表为空",
+    "empty_ticker": "此时间范围内自选标的均无条目",
+    "empty_type": "此时间范围内没有来源具有一种以上类型",
+    "type_items": "8-K 条款",
+    "aria_panel": "筛选条件"
+  },
+  "watchlist": {
+    "add": "添加",
+    "ticker_placeholder": "代码",
+    "ticker_label": "要添加的股票代码",
+    "market_label": "市场",
+    "remove": "将 {ticker} 从自选列表移除",
+    "remove_title": "将 {ticker}（{market}）从自选列表移除",
+    "held_quiet": "已持有，但此时间范围内无条目",
+    "checking": "校验中…",
+    "need_ticker": "请输入股票代码",
+    "added": "已添加 {market} {ticker}",
+    "removed": "已移除 {ticker}",
+    "after_change": "{message}。下次抓取后将出现相关备案文件。",
+    "added_named": "已添加 {market} {ticker} — {name}"
+  },
+  "tape": {
+    "no_match_title": "没有条目符合当前筛选条件",
+    "no_match_body": "筛选条件在同一行内为「或」，跨行为「且」，因此同时收窄两个维度可能导致结果为空。",
+    "no_match_clear": "清除全部筛选条件",
+    "empty_title": "此时间范围内无内容",
+    "empty_body": "未设任何筛选 — 最近 30 天确实没有内容。",
+    "no_sources_title": "没有启用任何来源",
+    "no_sources_body": "sources.yaml 中所有来源都设为 enabled: false，因此没有采集任何内容。请将需要的来源设为 enabled: true，然后运行一次抓取。"
+  },
+  "rail": {
+    "cot_heading": "投机性持仓",
+    "ecb_heading": "欧洲央行参考汇率",
+    "cny_heading": "人民币汇率中间价",
+    "rba_heading": "澳洲联储参考汇率",
+    "health_heading": "来源状态",
+    "risk_heading": "若此硬盘损坏",
+    "no_data": "暂无数据",
+    "week": "周",
+    "cot_asof": "CFTC 非商业净持仓（合约张数）· 截至 {period}（{day}），{release} 发布",
+    "cny_asof": "中间价 {period} {time} · 较 {prior} 变动",
+    "ecb_asof": "参考汇率 {period} · {time} · 基准货币 {base}",
+    "rba_asof": "{time} · {period}",
+    "health_unreachable_many": "{total} 个来源中有 {n} 个不可达。若占了大多数，问题更可能出在本机网络连接，而不是这些来源。",
+    "weekday": {
+      "tue": "周二",
+      "fri": "周五"
+    },
+    "sb_heading": "港股通资金流向",
+    "sb_asof": "{period} · 净额 = 买入 − 卖出 · {unit} · 较 {prior} 变动",
+    "sb": {
+      "net": "净额",
+      "buy": "买入",
+      "sell": "卖出",
+      "turnover": "成交总额"
+    },
+    "sb_into": "流入港股",
+    "sb_out": "流出港股"
+  },
+  "risk": {
+    "only_here": "有 {n} 条记录仅存在于本机 — {sources}。",
+    "rest_refetchable": "其余内容均可重新抓取：丢失只需重新轮询，不会损失数据。",
+    "export_misconfigured": "导出配置有误 — {error}",
+    "export_never": "尚未导出 — 请运行 {command}，或在 sources.yaml 中将 {setting} 指向同步文件夹，即可自动完成。",
+    "export_protected": "正在导出至 {path} — 已保护 {n} 条记录，{when}。位于本硬盘之外，硬盘损坏不会造成损失。",
+    "export_stale": "正在导出至 {path}，但文件已过期 — 请运行 {fetch} 或 {export}。",
+    "export_local": "已将 {n} 条记录导出至 {path}{stale} — 该位置与数据库同处一块硬盘，可防误操作但无法防硬盘损坏。请在 sources.yaml 中将 {setting} 指向同步文件夹。",
+    "export_local_stale": "（已过期）"
+  },
+  "health": {
+    "never_polled": {
+      "label": "尚未轮询",
+      "meaning": "此来源从未被抓取过。这不是故障。",
+      "action": "运行 `python -m macrowire fetch` 即可开始采集。"
+    },
+    "healthy": {
+      "label": "已轮询",
+      "meaning": "上次轮询成功，并已存储抓取到的内容。",
+      "action": ""
+    },
+    "no_change": {
+      "label": "已轮询，无新内容",
+      "meaning": "已连接到来源，来源反馈没有新内容。这是一次成功的轮询 — 对每日发布一次的来源而言属于正常结果。",
+      "action": ""
+    },
+    "throttled": {
+      "label": "等待轮询间隔",
+      "meaning": "为遵守对来源的礼貌轮询间隔，限流在发出请求前拦截了本轮抓取。",
+      "action": ""
+    },
+    "log_incomplete": {
+      "label": "数据最新，日志不完整",
+      "meaning": "此来源持有的数据比任何已记录的抓取都新 — 通常是从该次抓取之前的备份恢复所致。数据本身无误，仅缺少日志。",
+      "action": "无害。下次成功抓取后即会消除。"
+    },
+    "failing": {
+      "label": "抓取失败",
+      "meaning": "自上次正常周期以来连续失败。",
+      "action": "查看错误类型：`network` 通常是暂时性的；`http_404` 表明订阅源可能已迁移或撤下。"
+    },
+    "stale": {
+      "label": "内容陈旧",
+      "meaning": "轮询正常，但该来源在超过所配置阈值的时间内未发布任何新内容。",
+      "action": "通常只是来源本身安静。在判定为故障前，请先在其官网确认。"
+    },
+    "never": "从未",
+    "stale_flag": "内容陈旧",
+    "tip": "{label} — {detail}",
+    "unreachable": {
+      "label": "网络不可达",
+      "meaning": "自上次正常周期以来的每一次尝试都超时或未能建立连接。没有收到任何响应，因此这并不能说明来源本身有问题 — 可能是网络连接而非来源的问题。",
+      "action": "如果其他来源都能连通，那么差别就在这个来源的网络路径上。若线路较慢，可在 sources.yaml 中提高该来源的 timeout_seconds；或设置 enabled: false 停止轮询。",
+      "short": "网络不可达 — 可能是网络连接问题，而非来源本身"
+    },
+    "disabled": {
+      "label": "未轮询",
+      "meaning": "sources.yaml 中设为 enabled: false。该来源完全不会被连接。此前已采集的内容仍会保留，并继续显示在时间线上。",
+      "action": "在 sources.yaml 中设为 enabled: true 即可开始轮询。"
+    }
+  },
+  "time": {
+    "just_now": "刚刚",
+    "minutes": "{n} 分钟前",
+    "hours": "{n} 小时前",
+    "days": "{n} 天前",
+    "never": "从未",
+    "unknown": "时间不详"
+  },
+  "cli": {
+    "fetch": {
+      "ok": "成功",
+      "no_change": "无新内容",
+      "throttled": "已限流",
+      "throttled_detail": "未发出请求；距下次允许还有 {seconds} 秒",
+      "entries": "{n} 条",
+      "new_items": "新增 {n} 条条目",
+      "new_observations": "新增 {n} 条观测值",
+      "nothing_new": "无新内容",
+      "revised": "已修订",
+      "failed": "{n} 个来源抓取失败，已记入 fetch_log。",
+      "unknown_sources": "未知来源：{names}",
+      "export_ok": "{items} 条条目，{observations} 条观测值 -> {path}，{where}",
+      "where_external": "位于本硬盘之外",
+      "where_local": "位于本硬盘上",
+      "backup_ok": "{name}，{mb} MB，已校验",
+      "disabled": "已停用",
+      "disabled_detail": "sources.yaml 中 enabled: false；未进行连接",
+      "none_enabled": "sources.yaml 中所有来源都设为 enabled: false，因此本轮未连接任何来源。请将需要轮询的来源设为 enabled: true。",
+      "some_disabled": "{total} 个来源中有 {n} 个已停用，未进行连接。"
+    },
+    "first_run": {
+      "data_location": "你的数据存放在 {path}",
+      "gitignored": "该目录已被 gitignore：克隆本仓库只会得到代码，不含数据。每次安装都通过自行轮询建立各自的历史。",
+      "outside": "该目录在项目目录之外，因此不受仓库操作影响。每次安装都建立各自的历史。",
+      "refetchable": "积累的内容大多可重新抓取 — SEC、国家统计局、CFETS、欧洲央行以及各新闻源都会按请求提供近期历史，因此丢失数据库只需花时间重新轮询，并不会损失数据。",
+      "irreplaceable": "例外是 {sources}：这些订阅源只提供一条最新内容且没有存档，因此你所采集的就是世上仅存的副本。",
+      "export_auto": "这些记录会自动导出至 {path}。",
+      "export_hint": "在 sources.yaml 中将 export.path 指向同步文件夹，不可再获取的记录即会自动备份。"
+    },
+    "status": {
+      "last_contact": "最近一次连接",
+      "no_contact": "（无连接记录）",
+      "contacted_nothing_new": "（已连接；无新内容，故未记录存储）",
+      "log_incomplete": "数据最新，日志不完整 — 存储于 {when}，比任何已记录的连接都新。通常是从该次抓取之前的备份恢复所致。",
+      "last_stored": "最近一次存入新内容",
+      "newest_content": "最新内容",
+      "no_content": "无内容",
+      "days_ago": "{n} 天前",
+      "stored": "已存储",
+      "rows": "{n} 行",
+      "rows_split": "（{items} 条条目，{observations} 条观测值）",
+      "rows_items": "（条目）",
+      "rows_observations": "（观测值）",
+      "raw_payloads": "{n} 份原始报文",
+      "refetchable": "可重新抓取",
+      "risk_no": "本机副本是唯一副本",
+      "risk_partial": "仅当前窗口内的内容可重新抓取",
+      "risk_yes": "可从来源完整重新抓取",
+      "risk_unknown": "未分类",
+      "only_here": "仅存在于本机的行数",
+      "consecutive": "连续失败次数",
+      "consecutive_detail": "自上次正常周期以来 {n} 次",
+      "fx_none": "无 — 所有条目均未分类",
+      "fx_counts": "{fx} 条相关 / {not_fx} 条无关 / {unclassified} 条未分类（{pct}%）",
+      "fx_drift": "规则漂移：最近 30 天有 {recent}% 未分类，此前为 {older}% — 该来源可能重命名了词表所匹配的内容。",
+      "fx_label": "外汇相关性分类",
+      "staleness": "陈旧阈值",
+      "staleness_off": "未启用",
+      "staleness_days": "{n} 天",
+      "staleness_note": "（按已发布内容衡量 — 仅作参考，不构成告警）",
+      "superseded": "被取代的版本",
+      "superseded_detail": "{items} 条条目，分布于 {chains} 条修订链",
+      "revisions": "数值修订次数",
+      "last_error": "最近一次错误",
+      "error_resolved": "（已恢复 — 其后已成功连接）",
+      "stale_flag": "[陈旧]",
+      "seconds_ago": "{n} 秒前",
+      "hours_minutes_ago": "{h} 小时 {m} 分钟前",
+      "days_hours_ago": "{d} 天 {h} 小时前",
+      "stored_line": "{counts}，{raw}",
+      "unreachable": "网络不可达 — 可能是网络连接问题，而非来源本身。自上次正常周期以来的每一次尝试都超时或未能建立连接，因此没有任何可用于判断该来源的响应。",
+      "unreachable_hint": "若线路较慢，可提高该来源的 timeout_seconds；或设置 enabled: false 停止轮询。",
+      "disabled_flag": "[已停用]",
+      "fx_unmeasured": "尚未测定 — {reason}"
+    },
+    "watchlist": {
+      "empty": "自选列表为空",
+      "empty_hint": "添加方式：  python -m macrowire watchlist add AAPL",
+      "empty_note": "在添加之前，公司备案文件不会进行任何轮询。",
+      "added": "已添加 {market} {ticker}",
+      "removed": "已移除 {ticker} 的 {n} 条记录",
+      "not_present": "{ticker} 不在自选列表中",
+      "refreshed": "已刷新 SEC 代码表：{n} 个代码 -> {path}",
+      "added_named": "已添加 {market} {ticker} — {name}（CIK {cik}）",
+      "empty_markets_cn": "美国市场代码通过 SEC EDGAR 采集，中国内地代码（六位数字）通过巨潮资讯网采集 —— 后者是证监会指定的信息披露平台，覆盖沪深两市。两者在添加时都会校验。其他市场可用 --market 记录，但尚无轮询：澳交所与港交所均禁止自动化访问，因此都未作为来源。",
+      "added_name_only": "已添加 {market} {ticker} — {name}"
+    },
+    "serve": {
+      "running": "MacroWire 运行于 http://{host}:{port}  （仅 {host}，无鉴权）",
+      "stop_hint": "停止方式：  python -m macrowire stop",
+      "port_in_use": "端口 {port} 已被占用。",
+      "held_by": "占用进程 pid {pid}：{cmdline}",
+      "stop_it": "停止方式：  python -m macrowire stop --port {port}",
+      "not_ours": "该进程不是 macrowire 服务 — 请自行停止，或使用 --port 临时改用其他端口。",
+      "uninspectable": "占用者为当前用户无法查看的进程。",
+      "closing": "该端口上没有监听 — 套接字可能仍在上次运行后关闭中。请稍候重试。",
+      "stopped": "已停止端口 {port} 上的进程 pid {pid}（{signal}）",
+      "not_stopped": "未停止：{reason}",
+      "pid_line": "pid {pid}：{cmdline}",
+      "stop_not_listening": "端口 {port} 上没有监听",
+      "stop_uninspectable": "端口 {port} 被当前用户无法查看的进程占用",
+      "stop_self": "那正是当前进程",
+      "stop_not_ours": "端口 {port} 上的 pid {pid} 不是 macrowire 服务；拒绝终止",
+      "stop_survived": "SIGKILL 之后 pid {pid} 仍占用端口 {port}"
+    },
+    "export": {
+      "header": "导出：{path}",
+      "counts": "{sources} 个来源，{items} 条条目，{observations} 条观测值，{bytes} 字节",
+      "unchanged": "无变化 — 未重写文件",
+      "external": "已写入项目目录之外的 {path} — 硬盘损坏不会造成损失",
+      "local": "已写入 {path}，与数据库同处一块硬盘。",
+      "local_hint": "在 sources.yaml 中将 export.path 指向同步文件夹，这些记录即会自动备份。",
+      "repo_hint": "（此目录是 git 仓库，提交该文件是把它移出本硬盘的一种方式）"
+    },
+    "backup": {
+      "verified": "备份已校验：{path}",
+      "same_disk": "与数据库同处一块硬盘 — 可防误操作，但无法防硬盘损坏。",
+      "move_hint": "在 sources.yaml 中设置 backup.path 可将备份移出本硬盘。",
+      "counts": "行数与源库一致：{counts}",
+      "pruned": "已清理旧备份：{name}",
+      "none": "暂无备份",
+      "failed": "失败",
+      "size": "{mb} MB"
+    },
+    "errors": {
+      "prefix": "错误：{message}",
+      "unknown_source": "未知来源 {name}。已知来源：{known}",
+      "sec_contact": "SEC_CONTACT 未设置。美国证交会要求 User-Agent 采用 '姓名 邮箱' 的形式，否则以 403 拒绝。",
+      "kind_network": "网络不可达",
+      "kind_timeout": "请求超时",
+      "kind_other": "{kind} 错误"
+    },
+    "backfill": {
+      "header": "历史回填：{source}",
+      "done": "已发出 {requests} 次请求，存储 {stored} 条观测值，{skipped} 页已有数据。",
+      "no_history": "{source} 在 sources.yaml 中没有 backfill_start、backfill_url 或 backfill_page_size — 该来源没有可获取的历史数据",
+      "interrupted": "{source}：{date} 处{kind}。剩余 {remaining} 个日期。",
+      "resume": "恢复方式：  {command}",
+      "kept": "此前已抓取的内容均已存储；恢复时只会重新请求剩余部分。",
+      "debug_hint": "完整堆栈信息：加 --debug 重新运行，或查看 fetch_log。"
+    },
+    "restore": {
+      "header": "恢复 {name}  ->  {path}",
+      "warning": "当前数据库将被移至一旁保留，而非删除。",
+      "prompt": "输入 '{word}' 以继续：",
+      "aborted": "已取消",
+      "none": "未找到任何备份",
+      "done": "已恢复。行数：{counts}",
+      "displaced": "原数据库保留于：{name}"
+    },
+    "migrate": {
+      "before": "迁移前 schema 版本：{version}",
+      "after": "迁移后 schema 版本：{version}",
+      "up_to_date": "已是最新，无需迁移"
+    },
+    "import": {
+      "header": "导入：{path}",
+      "added": "新增  ：{items} 条条目，{observations} 条观测值",
+      "present": "已存在：{items} 条条目，{observations} 条观测值",
+      "missing": "{path} 处没有导出文件"
+    },
+    "help": {
+      "description": "面向宏观与市场公告的个人新闻线。",
+      "fetch": "运行一轮抓取",
+      "fetch_source": "仅限于指定来源",
+      "backfill": "对 API 来源做一次性历史回填",
+      "backfill_source": "sources.yaml 中的来源名称",
+      "backfill_dry": "只显示计划，不发出任何请求",
+      "backup": "带时间戳并经校验的备份",
+      "backup_keep": "保留多少个备份",
+      "backup_list": "列出现有备份",
+      "restore": "从备份恢复",
+      "restore_backup": "备份文件路径（默认：最新的一个）",
+      "restore_yes": "跳过确认提示",
+      "migrate": "应用尚未执行的 schema 迁移",
+      "export": "将不可再获取的记录写入 export.path",
+      "export_force": "即使本数据库行数少于文件也强制覆盖",
+      "import": "将导出文件载回数据库",
+      "import_file": "导出文件路径（默认：export/irreplaceable.jsonl）",
+      "serve": "运行本地网页界面",
+      "serve_host": "覆盖 sources.yaml 中的 web.host",
+      "serve_port": "覆盖 sources.yaml 中的 web.port",
+      "stop": "停止服务（按端口定位，而非按名称匹配）",
+      "stop_port": "默认：sources.yaml 中的 web.port",
+      "watchlist": "用于跟踪公司备案文件的股票代码",
+      "watchlist_add": "添加一个代码（美国市场会对照 SEC 代码表校验）",
+      "watchlist_market": "US、AU、HK ...（默认 US）",
+      "watchlist_remove": "移除一个代码",
+      "watchlist_list": "显示自选列表",
+      "watchlist_refresh": "重新下载 SEC 代码表",
+      "status": "各来源的健康状态",
+      "debug": "显示完整堆栈信息，而非摘要"
+    }
+  }
+}

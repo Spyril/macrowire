@@ -28,6 +28,20 @@
 # They were chosen by one reader with one set of interests, and several of
 # them will be wrong for you. They are all editable and none is load-bearing:
 #
+#   enabled         Whether a source is polled at all. Defaults to true, is
+#                   set per source at the top level of its block, and is the
+#                   supported way to switch one off - commenting the block
+#                   out loses the configuration and turning it back on
+#                   becomes an editing job. A disabled source keeps
+#                   everything already collected from it; it is simply not
+#                   contacted, and `status` marks it [DISABLED] rather than
+#                   reporting it stale.
+#
+#                   Sources are shipped ENABLED, so a first fetch reaches
+#                   fourteen servers on four continents. If most of them are
+#                   not reachable from where you are, switch those off
+#                   rather than living with a panel full of failures.
+#
 #   importance      Drives type scale in the tape - what shouts and what
 #                   whispers. RBA media releases and the CFETS fix are 5;
 #                   HKMA press releases are 2. That is a reading priority,
@@ -97,6 +111,14 @@ defaults:
   # Per-source, overridable under a source's config. 30s was too tight:
   # the NBS feeds are ~4.5MB and take ~50s to arrive, and a timeout
   # mid-download is exactly what produced a truncated, mojibaked feed.
+  #
+  # ON A SLOW OR CONGESTED INTERNATIONAL LINK, RAISE IT - here for every
+  # source, or under one source's `config:` for just that one. A timeout is
+  # recorded as error_kind='timeout', and a source whose entire failure
+  # streak is timeouts or connections that never landed is reported as
+  # "network unreachable - may be connectivity rather than the source",
+  # never as failing: nothing came back, so nothing has been learned about
+  # the feed. 300 is not unreasonable where 120 is marginal.
   timeout_seconds: 120
   # Pause between sources within one cycle. Fetching is sequential, so
   # servers are never hit simultaneously anyway; this spaces them out
@@ -115,6 +137,12 @@ defaults:
   # `serve` uses these unless --port / --host override for a one-off, and it
   # never falls back to a different port: a silently relocated server is how
   # you end up with three of them running.
+
+  # Interface language. Labels, buttons and health explanations only - item
+  # titles are stored and shown as published, never translated. An unknown
+  # value falls back to en and logs it. Shipped: en, zh-CN.
+  locale: en
+
   web:
     host: 127.0.0.1
     port: 8917
@@ -156,6 +184,7 @@ defaults:
 
 sources:
   - name: rba_media_releases
+    enabled: true
     kind: cb_news
     parser: cb_news
     url: https://www.rba.gov.au/rss/rss-cb-media-releases.xml
@@ -193,6 +222,7 @@ sources:
       staleness_days: null
 
   - name: rba_exchange_rates
+    enabled: true
     kind: cb_statistics
     parser: cb_statistics
     url: https://www.rba.gov.au/rss/rss-cb-exchange-rates.xml
@@ -225,6 +255,7 @@ sources:
   # release appears in both. Dedupe is per source_id, so such a release
   # is stored once per feed. See README, "Overlapping feeds".
   - name: fed_press_monetary
+    enabled: true
     kind: rss_news
     parser: rss_news
     url: https://www.federalreserve.gov/feeds/press_monetary.xml
@@ -260,6 +291,7 @@ sources:
 
 
   - name: fed_speeches
+    enabled: true
     kind: rss_news
     parser: rss_news
     url: https://www.federalreserve.gov/feeds/speeches.xml
@@ -303,6 +335,7 @@ sources:
   # The ECB publishes no press-release-only feed. No <category> element,
   # so announcement_type below applies to every entry.
   - name: ecb_press
+    enabled: true
     kind: rss_news
     parser: rss_news
     url: https://www.ecb.europa.eu/rss/press.html
@@ -361,6 +394,7 @@ sources:
   # From /rss. guid is an opaque GUID with isPermaLink="false" - stable
   # and unique, but not a URL; the link field carries the URL.
   - name: boe_news
+    enabled: true
     kind: rss_news
     parser: rss_news
     url: https://www.bankofengland.co.uk/rss/news
@@ -419,6 +453,7 @@ sources:
   # "What's New" stream - policy releases, statistics and research papers
   # together. There is no releases-only English feed. See README.
   - name: boj_whatsnew
+    enabled: true
     kind: rss_news
     parser: rss_news
     url: https://www.boj.or.jp/en/rss/whatsnew.xml
@@ -471,6 +506,7 @@ sources:
   # Ships <guid/> empty on every entry, so identity falls back to link.
   # Carries a deep archive (~680 entries), unlike the RBA feeds.
   - name: hkma_press
+    enabled: true
     kind: rss_news
     parser: rss_news
     url: https://www.hkma.gov.hk/eng/other-information/rss/rss_press-release.xml
@@ -540,6 +576,7 @@ sources:
   # entirely plausible. The parser aligns against data.head and refuses
   # to guess. See README, "CFETS positional alignment".
   - name: cfets_ccpr
+    enabled: true
     kind: cfets_ccpr
     parser: cfets_ccpr
     url: https://www.chinamoney.com.cn/ags/ms/cm-u-bk-ccpr/CcprHisNew
@@ -611,6 +648,7 @@ sources:
   # parser refuses to guess, so China Standard Time is declared here
   # explicitly. It is a fixed +08:00 year-round; the PRC observes no DST.
   - name: nbs_releases
+    enabled: true
     kind: rss_news
     parser: rss_news
     url: https://www.stats.gov.cn/sj/zxfb/rss.xml
@@ -666,6 +704,7 @@ sources:
       staleness_days: null
 
   - name: nbs_interpretation
+    enabled: true
     kind: rss_news
     parser: rss_news
     url: https://www.stats.gov.cn/sj/sjjd/rss.xml
@@ -725,6 +764,7 @@ sources:
   # because polling in a way that gets the address blocked is worse than
   # not polling.
   - name: sec_edgar
+    enabled: true
     kind: sec_edgar
     parser: sec_edgar
     url: https://data.sec.gov/submissions/
@@ -770,6 +810,151 @@ sources:
       timeout_seconds: 120
       staleness_days: null
 
+  # --- SSE Southbound Stock Connect turnover -----------------------------
+  # 港股通成交概况 - mainland money trading Hong Kong-listed shares, from the
+  # Shanghai Stock Exchange's own site under SSE's terms. HKEX publishes the
+  # same class of figure and prohibits scripted access; SSE does not.
+  #
+  # The signal is the DIRECTION. Net = buy - sell is derived and stored
+  # beside the published buy and sell so the arithmetic stays checkable,
+  # the same treatment cftc_cot gets.
+  #
+  # ENDPOINT. Observed from the page's own module rather than guessed:
+  # /services/hkexsc/ggtscsj/ggtcjgk/ loads search_southboundStock_2021.js,
+  # whose daily tab calls `ggt/getQuatationInfo.do` with `tradeDate` and NO
+  # sqlId. The monthly and yearly tabs use commonQuery.do with different
+  # sqlIds, and northbound uses commonSoaQuery.do with a third family.
+  #
+  # NORTHBOUND IS DELIBERATELY ABSENT. Its endpoint returns totalVolume,
+  # totalAmount and etfTotalAmount with no buy/sell split, so no net can be
+  # computed from it - and net is the whole point. Turnover alone did not
+  # justify a second endpoint, a second sqlId family, a second date format
+  # and a second failure mode.
+  #
+  # ===================================================================
+  # HISTORY STARTS AT 2024-08-19, AND NOT AT THE 2014 LAUNCH.
+  #
+  # The page carries this notice, and it is the only place the fact is
+  # recorded anywhere - it is not in the payload:
+  #
+  #   "注：2024年8月19日起，本页面港股通成交金额单位为港元。"
+  #   (From 19 August 2024, the turnover amounts on this page are in
+  #   Hong Kong dollars.)
+  #
+  # Verified either side of that date:
+  #
+  #             BUY_AMOUNT  TOTAL_AMOUNT  TOTAL_VOLUME  ETF_TOTAL_AMOUNT
+  #   2024-08-16     84.32          null          null              null
+  #   2024-08-19     73.59        182.82         38.41             48.05
+  #
+  # So it is not only the currency: three fields do not exist before the
+  # change. BUY_AMOUNT is CNY on the 16th and HKD on the 19th, same field,
+  # same series, with nothing in the JSON marking the switch.
+  #
+  # Backfilling across it would produce a series that looks continuous and
+  # means two different things. The parser REFUSES any row dated before
+  # UNIT_BREAK, so this is enforced rather than remembered.
+  #
+  # Pulling earlier data is therefore a deliberate decision to handle a
+  # currency change - a second series, or a stored conversion - and not
+  # something to discover later from a chart that looks wrong.
+  #
+  # The monthly aggregates are NOT a substitute for the missing years.
+  # Their DAY_* fields are averages; splicing averages onto a daily series
+  # would look continuous and mean something different again.
+  # ===================================================================
+  - name: sse_southbound
+    enabled: true
+    kind: sse_southbound
+    parser: sse_southbound
+    url: https://query.sse.com.cn/ggt/getQuatationInfo.do
+    config:
+      institution: SSE
+      jurisdiction: CN
+      # A flow measure between two currencies' markets, by construction.
+      fx: true
+      archive: queryable
+      importance: 4
+      # One figure per trading day, published after the HK close. The
+      # payload carries a date and no time, so no mark on the ribbon.
+      timing:
+        class: date_only
+      # See the boundary note above. Do not lower this without deciding
+      # what to do about the currency change.
+      backfill_start: "2024-08-19"
+      # One request per date - this endpoint answers a single tradeDate and
+      # offers no range. ~525 weekdays from the boundary to Aug 2026.
+      backfill_per_date: true
+      backfill_delay_seconds: 3
+      min_interval_seconds: 3600
+      timeout_seconds: 60
+      # Daily on trading days. Two clear days of silence is a long weekend
+      # plus a holiday, which is normal for a market this one tracks.
+      staleness_days: 5
+
+  # --- CNINFO: mainland China company announcements ----------------------
+  # 巨潮资讯网, the CSRC-designated disclosure portal for BOTH mainland
+  # exchanges, so one source covers Shanghai and Shenzhen. Watchlist-driven
+  # per code, like sec_edgar: the unfiltered feed ran 2,492 announcements on
+  # 2026-08-20, about three and a half times the whole rest of the tape.
+  #
+  # TERMS. SSE and SZSE publish the same 法律声明 clause 三: "任何机构或者
+  # 个人可基于非商业目的浏览、下载本网站的内容" - any organisation or
+  # individual may browse and download for non-commercial purposes - and the
+  # prohibition that follows is scoped to 以向他人出售牟利为目的, use for the
+  # purpose of selling to others for profit. CNINFO itself publishes no use
+  # restriction; its only notice is a warranty disclaimer. robots.txt is
+  # absent at SSE and CNINFO, and served empty by SZSE.
+  #
+  # Codes are six digits and are validated against CNINFO's own listing index
+  # when added, which also yields the opaque orgId the query needs. That id
+  # is NOT derivable from the code - 600519 is gssh0600519 but 300750 is
+  # GD165627 - so it is looked up and cached, never constructed.
+  - name: cninfo_announcements
+    enabled: true
+    kind: cninfo
+    parser: cninfo
+    url: http://www.cninfo.com.cn/new/hisAnnouncement/query
+    config:
+      institution: CNINFO
+      jurisdiction: CN
+      # DECLARED, not omitted. Every other source's vocabulary was written
+      # after measuring 90 days of its own corpus, and 30 announcements from
+      # two companies is not a measurement. Writing an include list now would
+      # be the guessing this project keeps refusing - and unlike a wrong
+      # threshold, a wrong FX vocabulary fails silently.
+      #
+      # Every item is therefore unclassified, which is the honest third
+      # state and never reads as "not FX". Measure first, then write a list.
+      fx:
+        unmeasured: >-
+          corpus not yet measured; 30 announcements from two companies is
+          not a sample, and a guessed vocabulary fails silently
+      archive: queryable
+      importance: 3
+      # announcementTime is midnight Beijing for most rows - 30 of 30 sampled
+      # for 600519 and 000001, 17 of 30 for 300750, and not a recency effect:
+      # everything CATL filed on 2026-07-25 is midnight-stamped while its
+      # 2026-08-12 filings carry 19:22. Batch submissions appear to lose the
+      # time. Since a lost time is indistinguishable from a real 00:00, this
+      # source gets no position on the ribbon.
+      timing:
+        class: date_only
+      announcement_type: Announcement
+      # How far back each poll looks. Overlap is free - items dedupe on
+      # content hash - and it means a few days offline costs nothing.
+      window_days: 30
+      # Refuses to keep paging past this. 30 rows a page, so 20 pages is 600
+      # announcements for one company in one window; more than that is a
+      # runaway, not a busy month.
+      max_pages_per_ticker: 20
+      # Between requests within a cycle. Slower than the SEC's because
+      # CNINFO publishes no rate limit and silence is not permission.
+      request_interval_seconds: 2.0
+      min_interval_seconds: 3600
+      timeout_seconds: 120
+      staleness_days: null
+
   # --- ECB euro foreign exchange reference rates --------------------------
   # Published directly by the ECB as gesmes/XML. Frankfurter and similar
   # services are convenience layers over this exact 1.5KB file, so there is
@@ -784,6 +969,7 @@ sources:
   # applied explicitly below and resolved per-instant so the CET/CEST switch
   # lands correctly.
   - name: ecb_fx
+    enabled: true
     kind: ecb_fx
     parser: ecb_fx
     url: https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml
@@ -837,6 +1023,7 @@ sources:
   # so a reassigned code raises rather than silently changing what is
   # tracked.
   - name: cftc_cot
+    enabled: true
     kind: cftc_cot
     parser: cftc_cot
     url: https://publicreporting.cftc.gov/resource/6dca-aqww.json

@@ -29,8 +29,35 @@ class ConfigError(MacroWireError):
     kind = "config"
 
 
+class BackfillInterrupted(MacroWireError):
+    """A bulk seed stopped on something retrying could not fix.
+
+    Carries where it got to and how to resume, because that is what the
+    operator needs and a traceback is not. A twenty-minute paced run
+    meeting a network blip is an EXPECTED condition, not an exceptional
+    one, and printing a stack trace for it buries the one line that
+    matters. The traceback is still raised under --debug and still
+    recorded in fetch_log either way.
+    """
+
+    kind = "interrupted"
+
+    def __init__(self, source: str, reached, remaining: int, cause: Exception):
+        self.source = source
+        self.reached = reached
+        self.remaining = remaining
+        self.cause = cause
+        super().__init__(str(cause))
+
+
 class FetchError(MacroWireError):
-    """Transport failure: non-2xx, timeout, connection reset."""
+    """Transport failure: non-2xx, timeout, connection reset.
+
+    The kind is narrowed at the raise site. `network` and `timeout` both
+    describe the path rather than the source, and are the two that must
+    never be reported as "this feed is broken" - on a slow or filtered
+    international link they are what a perfectly healthy feed looks like.
+    """
 
     kind = "network"
 

@@ -7,11 +7,13 @@ set before macrowire is imported, so a test that forgets to pass a path
 fails loudly rather than writing fabricated rows into collected history.
 """
 
+import dataclasses
 import json
 import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 os.environ["MACROWIRE_REFUSE_DEFAULT_DB"] = "1"
@@ -21,11 +23,12 @@ from macrowire import backup, db, export, wire                    # noqa: E402
 from macrowire.config import load_sources                         # noqa: E402
 from macrowire.encoding import decode                             # noqa: E402
 from macrowire.errors import (                                    # noqa: E402
-    ConfigError, DecodeError, EmptyFeedError, MacroWireError, MalformedEntryError,
-    ParseError,
+    ConfigError, DecodeError, EmptyFeedError, FetchError, MacroWireError,
+    MalformedEntryError, ParseError,
 )
 from macrowire.parsers import get_parser                          # noqa: E402
 
+ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SOURCES = {s.name: s for s in load_sources()}
 
@@ -546,7 +549,12 @@ class TestRibbonGeometry(unittest.TestCase):
         from datetime import date
         marks = {m["source"]: m for m in ribbon.marks_for(date(2026, 7, 15), list(SOURCES.values()))}
         self.assertIsNone(marks["hkma_press"]["position"])
-        self.assertIn("no time of day", marks["hkma_press"]["reason"])
+        # The reason is now a key resolved on the client, so assert on both
+        # the key and the sentence it resolves to.
+        from macrowire import i18n
+        reason = marks["hkma_press"]["reason"]
+        self.assertEqual(reason, "ribbon.reason.date_only")
+        self.assertIn("no time of day", i18n.Translator("en")(reason))
 
     def test_sessions_crossing_midnight_split_into_two_segments(self):
         from macrowire.web import ribbon
@@ -854,7 +862,8 @@ class TestJurisdiction(unittest.TestCase):
 
     def test_china_groups_the_three_expected_sources(self):
         cn = {s.name for s in SOURCES.values() if s.jurisdiction == "CN"}
-        self.assertEqual(cn, {"cfets_ccpr", "nbs_releases", "nbs_interpretation"})
+        self.assertEqual(cn, {"cfets_ccpr", "nbs_releases", "nbs_interpretation",
+                              "cninfo_announcements", "sse_southbound"})
 
     def test_jurisdiction_carries_no_colour(self):
         """Seven hues would compete with the one accent that means unread."""
@@ -1103,9 +1112,36 @@ class TestFxClassification(unittest.TestCase):
                 load_sources(p)
 
     def test_every_source_declares_an_fx_policy(self):
+        # A source may honestly have no vocabulary yet - but it has to SAY
+        # so, with a reason. The failure this rules out is a block nobody
+        # wrote, which looks identical from the data side to a deliberate
+        # absence and leaves every item permanently unclassified.
         for src in SOURCES.values():
             self.assertTrue(src.fx, f"{src.name} has no fx block, so all its "
                                     f"items are permanently unclassified")
+            declared = (src.fx.get("always") or src.fx.get("include")
+                        or src.fx.get("exclude") or src.fx.get("unmeasured"))
+            self.assertTrue(declared,
+                            f"{src.name} has an fx block that decides nothing")
+
+    def test_an_unmeasured_declaration_must_carry_its_reason(self):
+        import yaml
+        doc = yaml.safe_load((ROOT / "sources.yaml").read_text())
+        doc["sources"][0]["config"]["fx"] = {"unmeasured": "   "}
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "s.yaml"
+            p.write_text(yaml.safe_dump(doc, allow_unicode=True))
+            with self.assertRaises(ConfigError):
+                load_sources(p)
+
+    def test_unmeasured_leaves_every_item_unclassified_never_not_fx(self):
+        from macrowire import fx as fxmod
+        src = SOURCES["cninfo_announcements"]
+        self.assertTrue(src.fx.get("unmeasured"))
+        classifier = fxmod.Classifier(src)
+        self.assertFalse(classifier.has_vocabulary)
+        self.assertEqual(classifier.classify("关于外汇套期保值业务的公告"),
+                         fxmod.UNCLASSIFIED)
 
 
 class TestFxDrift(TempDB):
@@ -1520,12 +1556,19 @@ class TestUsableByAnyone(unittest.TestCase):
 
     def test_watchlist_hint_suggests_a_supported_market(self):
         """It suggested an ASX ticker for a market that is not a source."""
-        cli = (self.ROOT / "macrowire/__main__.py").read_text()
-        block = cli[cli.index('print("watchlist is empty")'):]
-        block = block[:block.index("conn.close()")]
+        from macrowire import i18n
+        t = i18n.Translator("en")
+        block = "\n".join(t(f"cli.watchlist.{k}")
+                          for k in ("empty", "empty_hint", "empty_note",
+                                    "empty_markets_cn"))
         self.assertNotIn("BHP", block)
         self.assertIn("AAPL", block)
-        self.assertIn("Only US tickers", block)
+        # Both markets that actually poll are named, and the two that cannot
+        # are named as prohibited rather than merely absent.
+        self.assertIn("SEC EDGAR", block)
+        self.assertIn("CNINFO", block)
+        self.assertIn("ASX", block)
+        self.assertIn("HKEX", block)
 
     def test_backup_path_is_configurable_like_export(self):
         from macrowire.config import load_backup_settings, load_export_settings
@@ -1581,32 +1624,52 @@ class TestNeverWarnUnconditionally(unittest.TestCase):
         self.assertIn("_repo_present()", block,
                       "commit hint is not gated on a repo actually existing")
         # and it is a parenthetical, never the primary instruction
-        self.assertIn("one way to get it off the disk", block)
+        from macrowire import i18n
+        self.assertIn("cli.export.repo_hint", block)
+        self.assertIn("one way to get it off the disk",
+                      i18n.Translator("en")("cli.export.repo_hint"))
 
     def test_every_health_state_has_meaning_and_severity(self):
-        from macrowire.web.queries import HEALTH_STATES
-        for key, spec in HEALTH_STATES.items():
-            self.assertTrue(spec["label"], f"{key} has no label")
-            self.assertTrue(spec["meaning"], f"{key} has no plain-language meaning")
-            self.assertIn(spec["severity"], {"ok", "info", "warn", "bad"})
+        # Severity is a rendering decision and stays in Python; the prose
+        # lives in the locale catalogues. Both halves must exist for every
+        # state, or a source renders with a colour and no explanation.
+        from macrowire.web.queries import HEALTH_SEVERITY
+        from macrowire import i18n
+        t = i18n.Translator("en")
+        for key, severity in HEALTH_SEVERITY.items():
+            self.assertIn(severity, {"ok", "info", "warn", "bad"})
+            self.assertTrue(t(f"health.{key}.label"), f"{key} has no label")
+            self.assertTrue(t(f"health.{key}.meaning"),
+                            f"{key} has no plain-language meaning")
 
     def test_never_polled_is_not_a_failure(self):
         """It read like an error. It is a new source nobody has fetched."""
-        from macrowire.web.queries import HEALTH_STATES
-        state = HEALTH_STATES["never_polled"]
-        self.assertEqual(state["severity"], "info")
-        self.assertIn("fetch", state["action"])
-        self.assertIn("Nothing is wrong", state["meaning"])
+        from macrowire.web.queries import HEALTH_SEVERITY
+        from macrowire import i18n
+        t = i18n.Translator("en")
+        self.assertEqual(HEALTH_SEVERITY["never_polled"], "info")
+        self.assertIn("fetch", t("health.never_polled.action"))
+        self.assertIn("Nothing is wrong", t("health.never_polled.meaning"))
 
     def test_log_incomplete_is_not_a_failure(self):
-        from macrowire.web.queries import HEALTH_STATES
-        self.assertEqual(HEALTH_STATES["log_incomplete"]["severity"], "info")
+        from macrowire.web.queries import HEALTH_SEVERITY
+        self.assertEqual(HEALTH_SEVERITY["log_incomplete"], "info")
 
     def test_health_state_selection(self):
         from macrowire.web.queries import health_state
         base = {"consecutive_failures": 0, "stale": False, "log_incomplete": False,
-                "last_contact": None, "last_success": None}
+                "last_contact": None, "last_success": None, "enabled": True}
         self.assertEqual(health_state(base), "never_polled")
+        # Switched off outranks everything: nothing else measured about it
+        # is a statement about the source.
+        self.assertEqual(health_state({**base, "enabled": False}), "disabled")
+        self.assertEqual(health_state({**base, "enabled": False,
+                                       "consecutive_failures": 2}), "disabled")
+        # A streak made only of timeouts is the path, not the feed.
+        self.assertEqual(health_state({**base, "consecutive_failures": 3,
+                                       "all_failures_are_path": True}), "unreachable")
+        self.assertEqual(health_state({**base, "consecutive_failures": 3,
+                                       "all_failures_are_path": False}), "failing")
         self.assertEqual(health_state({**base, "last_contact": "x"}), "no_change")
         self.assertEqual(health_state({**base, "last_contact": "x",
                                        "last_success": "x"}), "healthy")
@@ -1775,8 +1838,14 @@ class TestFilterUI(unittest.TestCase):
             self.assertIn(key, self.js, f"no handler for {key}")
 
     def test_zero_result_state_is_distinct_from_empty(self):
-        self.assertIn("No items match these filters", self.js)
-        self.assertIn("Nothing in this window", self.js)
+        # The sentences moved to the catalogue; the two states must still be
+        # separately worded, which is the thing this test was protecting.
+        from macrowire import i18n
+        t = i18n.Translator("en")
+        self.assertIn("tape.no_match_title", self.js)
+        self.assertIn("tape.empty_title", self.js)
+        self.assertNotEqual(t("tape.no_match_title"), t("tape.empty_title"))
+        self.assertNotEqual(t("tape.no_match_body"), t("tape.empty_body"))
 
     def test_clear_all_exists_and_hides_when_inactive(self):
         self.assertIn("function clearFilters", self.js)
@@ -1957,3 +2026,942 @@ class TestTapeCollapsing(TempDB):
             "Media Releases")
         self.assertEqual(self.queries._display_category("Monetary Policy"), "Monetary Policy")
         self.assertIsNone(self.queries._display_category(None))
+
+
+class LocaleTests(unittest.TestCase):
+    """Every locale is checked against `en`, which is the source of truth.
+
+    The point of the completeness test is that adding a string cannot
+    silently break another language: a new key in en.json fails here until
+    every shipped locale has it.
+    """
+
+    def setUp(self):
+        from macrowire import i18n
+        self.i18n = i18n
+        self.en = {k: v for k, v in i18n.flatten(i18n.load("en")).items()
+                   if not k.startswith("_meta")}
+
+    def test_english_catalogue_is_not_empty(self):
+        self.assertGreater(len(self.en), 100)
+
+    def test_every_key_in_the_default_exists_in_every_other_locale(self):
+        others = [loc for loc in self.i18n.available() if loc != "en"]
+        self.assertTrue(others, "no second locale is shipped")
+        for locale in others:
+            with self.subTest(locale=locale):
+                keys = {k for k in self.i18n.flatten(self.i18n.load(locale))
+                        if not k.startswith("_meta")}
+                self.assertFalse(set(self.en) - keys,
+                                 f"{locale} is missing keys present in en")
+
+    def test_no_locale_carries_a_key_english_does_not(self):
+        # A key with no English original cannot fall back, so it can only
+        # ever render in one language or as the raw key.
+        for locale in self.i18n.available():
+            if locale == "en":
+                continue
+            with self.subTest(locale=locale):
+                keys = {k for k in self.i18n.flatten(self.i18n.load(locale))
+                        if not k.startswith("_meta")}
+                self.assertFalse(keys - set(self.en),
+                                 f"{locale} has keys absent from en")
+
+    def test_placeholders_match_the_english_original(self):
+        # A translation that drops {path} silently loses the one piece of
+        # information the sentence existed to carry.
+        import re
+        fields = lambda s: set(re.findall(r"\{(\w+)\}", s))
+        for locale in self.i18n.available():
+            if locale == "en":
+                continue
+            other = self.i18n.flatten(self.i18n.load(locale))
+            for key, text in self.en.items():
+                with self.subTest(locale=locale, key=key):
+                    self.assertEqual(fields(text), fields(other[key]))
+
+    def test_missing_key_falls_back_to_english_and_logs_it(self):
+        translator = self.i18n.Translator("en")
+        translator.catalogue = {"app": {}}       # simulate a gap in a locale
+        translator.locale = "test"
+        self.i18n._warned.clear()
+        with self.assertLogs("macrowire.i18n", level="WARNING") as captured:
+            self.assertEqual(translator("app.title"), self.en["app.title"])
+        self.assertIn("app.title", captured.output[0])
+
+    def test_a_key_missing_everywhere_renders_the_key_not_an_empty_string(self):
+        translator = self.i18n.Translator("en")
+        self.i18n._warned.clear()
+        with self.assertLogs("macrowire.i18n", level="ERROR"):
+            shown = translator("no.such.key")
+        self.assertEqual(shown, "no.such.key")
+        self.assertTrue(shown)
+
+    def test_an_unknown_locale_falls_back_rather_than_failing(self):
+        self.i18n._cache.pop("nonexistent", None)
+        with self.assertLogs("macrowire.i18n", level="WARNING"):
+            translator = self.i18n.Translator("nonexistent")
+        self.assertEqual(translator("app.title"), self.en["app.title"])
+
+    def test_merged_catalogue_is_complete_for_every_locale(self):
+        # The client gets one object and never does fallback itself.
+        for locale in self.i18n.available():
+            with self.subTest(locale=locale):
+                merged = self.i18n.flatten(self.i18n.Translator(locale).merged())
+                self.assertEqual(set(merged), set(self.en))
+
+    def test_the_browser_is_not_sent_terminal_strings(self):
+        merged = self.i18n.flatten(
+            self.i18n.Translator("en").merged(exclude=("cli",)))
+        self.assertFalse([k for k in merged if k.startswith("cli.")])
+        # and everything the page DOES use is still there
+        self.assertIn("rail.health_heading", merged)
+
+    def test_source_facts_are_not_in_the_catalogue(self):
+        # Publication times belong to the publisher, not to the reader. If
+        # one of these turns up in a locale file, someone has translated a
+        # fact instead of the label around it.
+        facts = ("4pm AEST", "09:15 CST", "16:00 CET", "15:30 ET")
+        for locale in self.i18n.available():
+            blob = "\n".join(self.i18n.flatten(self.i18n.load(locale)).values())
+            for fact in facts:
+                with self.subTest(locale=locale, fact=fact):
+                    self.assertNotIn(fact, blob)
+
+
+class ConnectivityHonestyTests(TempDB):
+    """A source that cannot be reached has not been shown to be broken.
+
+    On a slow or filtered international link, timeouts are what a perfectly
+    healthy feed looks like. Reporting that as a fault is the same class of
+    false alarm this project has already fixed four times.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from macrowire.web import queries
+        self.queries = queries
+        self.base = {"consecutive_failures": 0, "stale": False,
+                     "log_incomplete": False, "last_contact": "x",
+                     "last_success": "x", "enabled": True}
+
+    def test_timeout_is_its_own_error_kind(self):
+        # Lumped in with DNS failure it cannot be counted separately, and
+        # "raise timeout_seconds" stops being derivable from the log.
+        from macrowire import db
+        self.assertIn("timeout", db.PATH_KINDS)
+        self.assertIn("network", db.PATH_KINDS)
+        wire_src = (ROOT
+                    / "macrowire/wire.py").read_text()
+        self.assertIn('kind="timeout"', wire_src)
+        self.assertIn("httpx.TimeoutException", wire_src)
+
+    def test_a_streak_of_timeouts_is_unreachable_not_failing(self):
+        st = {**self.base, "consecutive_failures": 5, "all_failures_are_path": True}
+        self.assertEqual(self.queries.health_state(st), "unreachable")
+        self.assertEqual(self.queries.HEALTH_SEVERITY["unreachable"], "warn")
+
+    def test_one_real_error_in_the_streak_makes_it_failing_again(self):
+        # A 404 among the timeouts IS a statement about the source.
+        st = {**self.base, "consecutive_failures": 5, "all_failures_are_path": False}
+        self.assertEqual(self.queries.health_state(st), "failing")
+        self.assertEqual(self.queries.HEALTH_SEVERITY["failing"], "bad")
+
+    def test_unreachable_wording_names_connectivity_as_the_alternative(self):
+        from macrowire import i18n
+        t = i18n.Translator("en")
+        self.assertIn("may be connectivity rather than the source",
+                      t("health.unreachable.short"))
+        self.assertIn("connectivity", t("health.unreachable.meaning"))
+
+    def test_all_failures_are_path_is_measured_not_assumed(self):
+        from macrowire import db, wire
+        conn = db.connect(Path(self._dir.name) / "test.db")
+        source = load_sources()[0]
+        for kind in ("timeout", "timeout", "network"):
+            db.log_fetch(self.conn, source.name, status=db.STATUS_ERROR,
+                         error="x", error_kind=kind)
+        st = wire.source_status(self.conn, source)
+        self.assertEqual(st["consecutive_failures"], 3)
+        self.assertTrue(st["all_failures_are_path"])
+
+        db.log_fetch(self.conn, source.name, status=db.STATUS_ERROR,
+                     error="gone", error_kind="http_404")
+        st = wire.source_status(self.conn, source)
+        self.assertEqual(st["consecutive_failures"], 4)
+        self.assertFalse(st["all_failures_are_path"],
+                         "a 404 in the streak is evidence about the source")
+
+    def test_a_success_resets_the_path_judgement(self):
+        from macrowire import db, wire
+        conn = db.connect(Path(self._dir.name) / "test.db")
+        source = load_sources()[0]
+        db.log_fetch(self.conn, source.name, status=db.STATUS_ERROR,
+                     error="x", error_kind="timeout")
+        db.log_fetch(self.conn, source.name, status=db.STATUS_OK)
+        st = wire.source_status(self.conn, source)
+        self.assertEqual(st["consecutive_failures"], 0)
+        self.assertFalse(st["all_failures_are_path"])
+
+
+class SourceEnablementTests(TempDB):
+    """Switching a source off must be one word, not a deletion."""
+
+    def test_sources_ship_enabled_and_say_so_explicitly(self):
+        sources = load_sources()
+        self.assertTrue(all(s.enabled for s in sources))
+        # Written out per block rather than left to the default, so it is
+        # visible where you would look for it.
+        # Directly under `- name:`, so it is the first line of every block
+        # rather than a default you have to know about.
+        import re
+        yaml_text = (ROOT / "sources.yaml").read_text()
+        declared = re.findall(r"^  - name: \S+\n    enabled: (\S+)$",
+                              yaml_text, re.M)
+        self.assertEqual(declared, ["true"] * len(sources))
+
+    def test_enabled_false_is_honoured_and_is_not_an_error(self):
+        from macrowire import db, wire
+        conn = db.connect(Path(self._dir.name) / "test.db")
+        sources = [dataclasses.replace(s, enabled=False) for s in load_sources()[:2]]
+        results, failures = wire.fetch_all(self.conn, sources)
+        self.assertEqual(failures, [])
+        self.assertEqual([r["kind"] for r in results], ["disabled", "disabled"])
+        self.assertTrue(all(r["skipped"] for r in results))
+
+    def test_a_disabled_source_is_never_reported_stale(self):
+        # Nothing is polling it, so "has published nothing new" would be a
+        # fact about this tool wearing the costume of a fact about the feed.
+        from macrowire import db, wire
+        conn = db.connect(Path(self._dir.name) / "test.db")
+        stale_candidate = next(s for s in load_sources() if s.staleness_days)
+        off = dataclasses.replace(stale_candidate, enabled=False)
+        self.assertFalse(wire.source_status(self.conn, off)["stale"])
+
+    def test_disabled_outranks_every_other_health_state(self):
+        from macrowire.web import queries
+        st = {"consecutive_failures": 9, "stale": True, "log_incomplete": True,
+              "last_contact": None, "last_success": None, "enabled": False,
+              "all_failures_are_path": False}
+        self.assertEqual(queries.health_state(st), "disabled")
+        self.assertEqual(queries.HEALTH_SEVERITY["disabled"], "info")
+
+    def test_an_invalid_enabled_value_fails_at_config_load(self):
+        import yaml as pyyaml
+        from macrowire.config import ConfigError
+        doc = pyyaml.safe_load(
+            (ROOT / "sources.yaml").read_text())
+        doc["sources"][0]["enabled"] = "yes please"
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as handle:
+            pyyaml.safe_dump(doc, handle)
+            temp = Path(handle.name)
+        try:
+            with self.assertRaises(ConfigError):
+                load_sources(temp)
+        finally:
+            temp.unlink()
+
+    def test_the_empty_state_names_the_cause(self):
+        from macrowire import i18n
+        t = i18n.Translator("en")
+        js = (ROOT
+              / "macrowire/web/static/app.js").read_text()
+        self.assertIn("tape.no_sources_title", js)
+        self.assertIn("every((s) => !s.enabled)", js)
+        self.assertIn("enabled: true", t("tape.no_sources_body"))
+        cli = (ROOT
+               / "macrowire/__main__.py").read_text()
+        self.assertIn("cli.fetch.none_enabled", cli)
+
+
+class CninfoTests(unittest.TestCase):
+    """CNINFO answers 200 to things that did not work.
+
+    Every fixture here is a real payload or a real payload with one field
+    changed. The three failure modes were measured against the live API, not
+    imagined: a per-ticker query that comes back as the firehose, a page size
+    silently clamped to 30, and a miss that arrives as a well-formed empty
+    envelope with no error field anywhere in it.
+    """
+
+    def setUp(self):
+        from macrowire.parsers import cninfo
+        self.cninfo = cninfo
+        self.source = SOURCES["cninfo_announcements"]
+
+    def body(self, name):
+        return (FIXTURES / name).read_text(encoding="utf-8")
+
+    # --- trap 1: what came back must be what was asked for ---------------
+
+    def test_a_firehose_page_is_refused(self):
+        # `column=sse` and `column=szse` returned byte-identical firehose
+        # pages for the same date. If `stock` is ever ignored the same way,
+        # storing the result would file other companies' filings under a
+        # watchlisted ticker - the CFETS misalignment, one table over.
+        with self.assertRaises(ParseError) as caught:
+            self.cninfo.parse(self.source, self.body("cninfo_firehose.json"))
+        self.assertIn("not honoured", str(caught.exception))
+
+    def test_the_guard_does_not_need_to_know_the_request(self):
+        # It has to survive a re-parse of stored bytes months later, when
+        # the original request is long gone.
+        page = self.cninfo.read_page(self.body("cninfo_300750.json"))
+        self.assertEqual(page["code"], "300750")
+        with self.assertRaises(ParseError):
+            self.cninfo.read_page(self.body("cninfo_firehose.json"))
+
+    def test_a_page_for_the_wrong_company_is_refused(self):
+        with self.assertRaises(ParseError) as caught:
+            self.cninfo.read_page(self.body("cninfo_300750.json"), "600519")
+        self.assertIn("600519", str(caught.exception))
+
+    def test_the_same_code_under_a_different_entity_is_refused(self):
+        with self.assertRaises(ParseError) as caught:
+            self.cninfo.read_page(self.body("cninfo_300750.json"),
+                                  "300750", "gssz0300750")
+        self.assertIn("different entity", str(caught.exception))
+
+    def test_the_exchange_comes_from_the_code_never_from_column(self):
+        self.assertEqual(self.cninfo.venue("600519"), "SSE")
+        self.assertEqual(self.cninfo.venue("688981"), "SSE")
+        self.assertEqual(self.cninfo.venue("000001"), "SZSE")
+        self.assertEqual(self.cninfo.venue("300750"), "SZSE")
+        self.assertEqual(self.cninfo.venue("920819"), "BSE")
+        # An unknown prefix is not filed under a guessed venue.
+        with self.assertRaises(MalformedEntryError):
+            self.cninfo.venue("123456")
+        # and `column` is nowhere in the parser
+        src = (ROOT / "macrowire/parsers/cninfo.py").read_text()
+        self.assertNotIn('"column"', src)
+
+    # --- trap 2: structure guards, not status checks ---------------------
+
+    def test_an_empty_envelope_is_read_as_empty_not_as_an_error(self):
+        page = self.cninfo.read_page(self.body("cninfo_empty.json"))
+        self.assertEqual(page["rows"], [])
+        self.assertIsNone(page["code"])
+        self.assertFalse(page["has_more"])
+        # and parse() turns it into no items rather than raising
+        self.assertEqual(self.cninfo.parse(self.source,
+                                           self.body("cninfo_empty.json")).entry_count, 0)
+
+    def test_a_changed_envelope_shape_raises_rather_than_returning_nothing(self):
+        # The dangerous version of a rename: the field goes, the status stays
+        # 200, and a parser reading with .get() quietly stores zero rows
+        # forever.
+        payload = json.loads(self.body("cninfo_300750.json"))
+        del payload["announcements"]
+        with self.assertRaises(ParseError) as caught:
+            self.cninfo.read_page(json.dumps(payload))
+        self.assertIn("changed shape", str(caught.exception))
+
+    def test_the_no_such_code_reply_is_a_bare_list_and_is_caught(self):
+        # CNINFO answers an unknown code with HTTP 200 and `[]`.
+        with self.assertRaises(ParseError) as caught:
+            self.cninfo.read_page("[]")
+        self.assertIn("no such code", str(caught.exception))
+
+    def test_a_row_without_a_code_is_refused(self):
+        payload = json.loads(self.body("cninfo_300750.json"))
+        del payload["announcements"][0]["secCode"]
+        with self.assertRaises(MalformedEntryError):
+            self.cninfo.read_page(json.dumps(payload))
+
+    def test_a_row_without_an_id_cannot_be_deduplicated_and_is_refused(self):
+        payload = json.loads(self.body("cninfo_300750.json"))
+        payload["announcements"][0]["announcementId"] = None
+        with self.assertRaises(MalformedEntryError) as caught:
+            self.cninfo.parse(self.source, json.dumps(payload))
+        self.assertIn("deduplicated", str(caught.exception))
+
+    def test_a_non_numeric_timestamp_is_refused(self):
+        payload = json.loads(self.body("cninfo_300750.json"))
+        payload["announcements"][0]["announcementTime"] = "2026-08-12"
+        with self.assertRaises(MalformedEntryError) as caught:
+            self.cninfo.parse(self.source, json.dumps(payload))
+        self.assertIn("epoch milliseconds", str(caught.exception))
+
+    # --- trap 3: the page size cap ---------------------------------------
+
+    def test_the_page_size_cap_is_named_once_and_asked_for_exactly(self):
+        # Measured: asking 50 or 200 returns 30, silently. Asking for exactly
+        # the cap leaves nothing to clamp.
+        self.assertEqual(self.cninfo.MAX_PAGE_SIZE, 30)
+        src = (ROOT / "macrowire/parsers/cninfo.py").read_text()
+        self.assertIn('"pageSize": MAX_PAGE_SIZE', src)
+        self.assertIn("len(rows) > MAX_PAGE_SIZE", src)
+
+    def test_paging_follows_hasMore_and_never_assumes_a_row_count(self):
+        src = (ROOT / "macrowire/parsers/cninfo.py").read_text()
+        self.assertIn('page["has_more"]', src)
+        self.assertNotIn("pageSize * ", src)
+
+    # --- the record ------------------------------------------------------
+
+    def test_titles_are_stored_as_published(self):
+        feed = self.cninfo.parse(self.source, self.body("cninfo_300750.json"))
+        self.assertTrue(feed.items)
+        for item in feed.items:
+            self.assertTrue(any("一" <= ch <= "鿿" for ch in item["title"]),
+                            "a Chinese announcement title came back without Chinese in it")
+            self.assertEqual(item["ticker"], "300750")
+            self.assertEqual(item["type_primary"], "SZSE")
+            self.assertEqual(item["institution_abbrev"], "CNINFO")
+            # Same restraint as SEC: nothing on the face of a title supports
+            # asserting price sensitivity.
+            self.assertIsNone(item["is_price_sensitive"])
+            self.assertTrue(item["url"].startswith("http://static.cninfo.com.cn/"))
+
+    def test_midnight_beijing_is_stored_as_published_not_repaired(self):
+        # A batch submission loses its time of day and arrives as 00:00 CST.
+        # It is stored exactly as it came; `date_only` keeps the source off
+        # the ribbon, which is the same treatment HKMA already gets.
+        payload = json.loads(self.body("cninfo_300750.json"))
+        payload["announcements"][0]["announcementTime"] = 1785945600000
+        feed = self.cninfo.parse(self.source, json.dumps(payload))
+        self.assertTrue(feed.items[0]["published_at"].endswith("T16:00:00+00:00"))
+        self.assertEqual(SOURCES["cninfo_announcements"].timing["class"], "date_only")
+
+    def test_undecoded_category_codes_are_not_shown_as_filter_chips(self):
+        feed = self.cninfo.parse(self.source, self.body("cninfo_300750.json"))
+        for item in feed.items:
+            self.assertIsNone(item["type_tags"])
+
+
+class LiveConfigPathTests(unittest.TestCase):
+    """No test may reach a path the user's real installation writes to.
+
+    The watchlist is live config, not scratch data: a stray write puts a
+    ticker on someone's list that they did not choose, and it looks exactly
+    like a decision they made. It is already covered, because the watchlist
+    lives in the database and db.connect() refuses the default path while
+    MACROWIRE_REFUSE_DEFAULT_DB is set - but "already covered" is a property
+    worth failing on rather than a fact worth remembering, so it is asserted
+    here alongside the paths that needed a guard adding.
+    """
+
+    LIVE_PATHS = ("the database (watchlists, items, fetch_log)",
+                  "the CNINFO orgId cache")
+
+    def test_the_suite_cannot_open_the_default_database(self):
+        self.assertTrue(os.environ.get("MACROWIRE_REFUSE_DEFAULT_DB"),
+                        "the suite must set this before importing macrowire")
+        with self.assertRaises(MacroWireError) as caught:
+            db.connect()
+        self.assertIn("refusing", str(caught.exception))
+
+    def test_the_suite_cannot_reach_the_live_watchlist(self):
+        # There is no separate watchlist file - it is a table - so this is
+        # the database guard, asserted from the watchlist's side so that
+        # removing the guard fails a test that names the watchlist.
+        from macrowire import watchlist as wl
+        with self.assertRaises(MacroWireError):
+            wl.entries(db.connect(), 1)
+
+    def test_the_suite_cannot_reach_the_live_orgid_cache(self):
+        from macrowire import watchlist as wl
+        for call in (wl.load_orgid_cache,
+                     lambda: wl._save_orgid_cache({"000001": {}})):
+            with self.assertRaises(MacroWireError) as caught:
+                call()
+            self.assertIn("refusing", str(caught.exception))
+
+    def test_every_default_write_path_is_named_in_this_test(self):
+        # A new module writing to a new default path must add itself here.
+        # The failure this rules out is a guard nobody thought to add,
+        # which is how the orgId cache got written to in the first place.
+        import macrowire.db as dbmod
+        import macrowire.watchlist as wl
+        defaults = {dbmod.db_path.__name__, wl._orgid_path.__name__}
+        self.assertEqual(defaults, {"db_path", "_orgid_path"},
+                         "a new default-path resolver exists and is not "
+                         "asserted above")
+
+
+class CninfoWatchlistTests(TempDB):
+    """CN codes are validated on add, and the orgId is looked up not built."""
+
+    def setUp(self):
+        super().setUp()
+        from macrowire import watchlist as wl
+        self.wl = wl
+        self.hits = {
+            "600519": [{"code": "600519", "orgId": "gssh0600519",
+                        "zwjc": "贵州茅台", "category": "A股",
+                        "delisted": "false"}],
+            "300750": [{"code": "300750", "orgId": "GD165627",
+                        "zwjc": "宁德时代", "category": "A股",
+                        "delisted": "false"}],
+            "999999": [],
+        }
+
+    def fetch(self, url, form):
+        return json.dumps(self.hits[form["keyWord"]], ensure_ascii=False).encode("utf-8")
+
+    def test_the_orgid_is_never_constructed_from_the_code(self):
+        # 600519 -> gssh0600519 follows a pattern; 300750 -> GD165627 does
+        # not. Building it would work for most tickers and silently return
+        # nothing for the rest.
+        cache = {}
+        resolve = lambda code: self.wl.resolve_cn(
+            code, fetch=self.fetch, cache=cache, persist=False)
+        self.assertEqual(resolve("600519")["orgId"], "gssh0600519")
+        self.assertEqual(resolve("300750")["orgId"], "GD165627")
+        src = (ROOT / "macrowire/parsers/cninfo.py").read_text()
+        self.assertNotIn("gssh", src, "an orgId is being constructed in the parser")
+
+    def test_an_unknown_code_is_none_not_an_exception(self):
+        self.assertIsNone(self.wl.resolve_cn("999999", fetch=self.fetch, cache={}, persist=False))
+
+    def test_a_letter_ticker_is_rejected_before_a_request_is_spent(self):
+        def explode(*_a, **_k):
+            self.fail("a request went out for a code that is not six digits")
+        with self.assertRaises(ConfigError) as caught:
+            self.wl.add(self.conn, 1, "BABA", "CN", cn_fetch=explode, cn_cache={})
+        self.assertIn("six digits", str(caught.exception))
+
+    def test_an_unmatched_code_fails_at_add_time(self):
+        with self.assertRaises(ConfigError) as caught:
+            self.wl.add(self.conn, 1, "999999", "CN", cn_fetch=self.fetch, cn_cache={})
+        self.assertIn("quiet company", str(caught.exception))
+
+    def test_a_delisted_code_is_refused(self):
+        self.hits["600519"][0]["delisted"] = "true"
+        with self.assertRaises(ConfigError) as caught:
+            self.wl.add(self.conn, 1, "600519", "CN", cn_fetch=self.fetch,
+                        cn_cache={})
+        self.assertIn("delisted", str(caught.exception))
+
+    def test_the_suite_cannot_write_to_the_live_orgid_cache(self):
+        # The same guard the database has. A test that reached this file
+        # would overwrite real, hand-verified lookups with fixture values.
+        with self.assertRaises(MacroWireError) as caught:
+            self.wl.load_orgid_cache()
+        self.assertIn("refusing", str(caught.exception))
+
+    def test_a_non_list_search_reply_raises(self):
+        def wrong(url, form):
+            return b'{"error":"nope"}'
+        with self.assertRaises(MacroWireError) as caught:
+            self.wl.resolve_cn("600519", fetch=wrong, cache={}, persist=False)
+        self.assertIn("changed shape", str(caught.exception))
+
+    def test_an_entry_with_no_orgid_raises_rather_than_being_stored(self):
+        self.hits["600519"][0]["orgId"] = ""
+        with self.assertRaises(MacroWireError) as caught:
+            self.wl.resolve_cn("600519", fetch=self.fetch, cache={}, persist=False)
+        self.assertIn("no orgId", str(caught.exception))
+
+    def test_an_empty_cn_watchlist_is_a_skip_not_a_failure(self):
+        from macrowire.parsers import cninfo
+        responses, note = cninfo.fetch(SOURCES["cninfo_announcements"], None,
+                                       {"watchlist": {"US": ["AAPL"]}})
+        self.assertEqual(responses, [])
+        self.assertIn("no CN tickers", note)
+
+
+class SseSouthboundTests(unittest.TestCase):
+    """The endpoint answers 200 to a nonsense date and calls it success.
+
+    Every fixture is a real reply captured from query.sse.com.cn.
+    """
+
+    def setUp(self):
+        from macrowire.parsers import sse_southbound
+        self.sb = sse_southbound
+        self.source = SOURCES["sse_southbound"]
+
+    def body(self, name):
+        return (FIXTURES / name).read_text(encoding="utf-8")
+
+    def code(self):
+        """The module with its docstrings removed.
+
+        These tests assert what the parser DOES. The docstring deliberately
+        names every trap, so matching against the raw file would fail on the
+        warnings rather than on the behaviour.
+        """
+        import ast
+        tree = ast.parse((ROOT / "macrowire/parsers/sse_southbound.py").read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef)):
+                if (node.body and isinstance(node.body[0], ast.Expr)
+                        and isinstance(node.body[0].value, ast.Constant)
+                        and isinstance(node.body[0].value.value, str)):
+                    node.body.pop(0)
+        return ast.unparse(tree)
+
+    # --- the boundary -----------------------------------------------------
+
+    def test_a_row_before_the_currency_change_is_refused(self):
+        # 2024-08-16 amounts are CNY; 2024-08-19 onward they are HKD. Same
+        # field, same series, nothing in the payload marking the switch.
+        # This is enforced in code, not left to the comment in sources.yaml.
+        with self.assertRaises(ParseError) as caught:
+            self.sb.parse(self.source, self.body("sse_sb_20240816.json"))
+        message = str(caught.exception)
+        self.assertIn("2024-08-19", message)
+        self.assertIn("CNY", message)
+
+    def test_the_boundary_date_itself_is_accepted(self):
+        feed = self.sb.parse(self.source, self.body("sse_sb_20240819.json"))
+        self.assertTrue(feed.observations)
+        self.assertEqual({o["period"] for o in feed.observations}, {"2024-08-19"})
+
+    def test_the_backfill_start_matches_the_enforced_boundary(self):
+        # If one moves without the other, history either gains a silently
+        # mixed year or loses days for no stated reason.
+        self.assertEqual(self.source.config["backfill_start"],
+                         self.sb.UNIT_BREAK.isoformat())
+
+    def test_sources_yaml_records_the_notice_verbatim(self):
+        # The reason history starts here is one line of Chinese on a
+        # rendered page and nowhere in any payload. If it is not written
+        # down, a future reader sees an arbitrary start date.
+        text = (ROOT / "sources.yaml").read_text(encoding="utf-8")
+        self.assertIn("2024年8月19日起", text)
+        self.assertIn("单位为港元", text)
+
+    def test_monthly_aggregates_are_not_offered_as_a_substitute(self):
+        # Their DAY_* fields are averages. Spliced onto a daily series they
+        # would look continuous and mean something different.
+        self.assertNotIn("LSGYCJXX", self.code())
+        self.assertNotIn("commonQuery", self.code())
+
+    # --- result[0] is not None -------------------------------------------
+
+    def test_a_non_trading_date_yields_nothing_and_is_not_an_error(self):
+        feed = self.sb.parse(self.source, self.body("sse_sb_20260823.json"))
+        self.assertEqual(feed.observations, [])
+
+    def test_the_list_of_one_null_is_caught(self):
+        # [None] is truthy and passes every emptiness check that does not
+        # look inside it. This is the single most likely way to store a row
+        # of garbage.
+        self.assertIsNone(self.sb.read_row('{"result":[null]}'))
+        self.assertIsNone(self.sb.read_row('{"result":null}'))
+        self.assertIsNone(self.sb.read_row('{"result":[]}'))
+
+    def test_quatationInfo_is_never_read_as_a_signal(self):
+        # It says "success" for tradeDate=99999999.
+        self.assertNotIn('["quatationInfo"]', self.code())
+        self.assertNotIn('.get("quatationInfo")', self.code())
+        self.assertIn("quatationInfo",
+                      (ROOT / "macrowire/parsers/sse_southbound.py").read_text(),
+                      "the trap should still be named in a comment")
+
+    def test_a_missing_result_key_raises(self):
+        with self.assertRaises(ParseError) as caught:
+            self.sb.read_row('{"actionErrors":[],"pageHelp":{}}')
+        self.assertIn("changed shape", str(caught.exception))
+
+    def test_the_parenthesised_wrapper_from_the_sibling_endpoint_raises(self):
+        # commonSoaQuery.do serves this as application/json with HTTP 200.
+        body = '\n({"jsonCallBack":"null","success":"false","errorMsg":"SOA service is null"})'
+        with self.assertRaises(ParseError) as caught:
+            self.sb.read_row(body)
+        self.assertIn("not JSON", str(caught.exception))
+
+    def test_more_than_one_row_for_a_single_date_raises(self):
+        with self.assertRaises(ParseError) as caught:
+            self.sb.read_row('{"result":[{"TRADE_DATE":"2026-08-21"},'
+                             '{"TRADE_DATE":"2026-08-20"}]}')
+        self.assertIn("one date at a time", str(caught.exception))
+
+    # --- numbers ----------------------------------------------------------
+
+    def test_thousands_separators_are_stripped(self):
+        self.assertEqual(self.sb.number("1,258.47", "F", "ctx"), 1258.47)
+        self.assertEqual(self.sb.number("647.70", "F", "ctx"), 647.70)
+
+    def test_a_malformed_number_raises_rather_than_being_swallowed(self):
+        # A bare try/except would treat a corrupted digit exactly like a
+        # comma and store nothing, silently.
+        for bad in ("12.3.4", "1,2x8.47", "十二", "NaN%"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(MalformedEntryError):
+                    self.sb.number(bad, "BUY_AMOUNT", "2026-08-21")
+
+    def test_all_three_null_conventions_are_handled_by_name(self):
+        for empty in (None, "-", "", "--"):
+            with self.subTest(empty=empty):
+                self.assertIsNone(self.sb.number(empty, "F", "ctx"))
+
+    def test_a_field_the_source_did_not_publish_is_omitted_not_zeroed(self):
+        payload = json.loads(self.body("sse_sb_20260821.json"))
+        payload["result"][0]["ETF_TOTAL_AMOUNT"] = None
+        feed = self.sb.parse(self.source, json.dumps(payload))
+        series = {o["series"] for o in feed.observations}
+        self.assertNotIn("SOUTHBOUND/amount/etf", series)
+        self.assertNotIn(0.0, [o["value"] for o in feed.observations
+                               if o["series"].endswith("etf")])
+
+    # --- units ------------------------------------------------------------
+
+    def test_the_unit_is_stored_on_every_observation(self):
+        # The scale appears only in a rendered column header, never in the
+        # payload, so it cannot be left implicit.
+        feed = self.sb.parse(self.source, self.body("sse_sb_20260821.json"))
+        for o in feed.observations:
+            self.assertTrue(o["unit"], f"{o['series']} has no unit")
+        amounts = [o for o in feed.observations if o["series"].startswith("SOUTHBOUND/amount")]
+        trades = [o for o in feed.observations if o["series"].startswith("SOUTHBOUND/trades")]
+        self.assertTrue(amounts and trades)
+        for o in amounts:
+            self.assertEqual(o["unit"], "100 million HKD")
+            self.assertEqual(o["base_currency"], "HKD")
+        for o in trades:
+            # 万笔 is a COUNT OF TRADES. The field is named *_VOLUME, which
+            # invites storing it as shares.
+            self.assertEqual(o["unit"], "10,000 trades")
+            self.assertIsNone(o["base_currency"])
+            self.assertIn("NOT of shares", o["rate_type"])
+
+    def test_nothing_is_silently_normalised(self):
+        # The published figure is stored as published: 647.70, not
+        # 64_770_000_000.
+        feed = self.sb.parse(self.source, self.body("sse_sb_20260821.json"))
+        total = next(o for o in feed.observations
+                     if o["series"] == "SOUTHBOUND/amount/total")
+        self.assertEqual(total["value"], 647.70)
+
+    # --- net --------------------------------------------------------------
+
+    def test_net_is_derived_and_stored_beside_what_it_came_from(self):
+        feed = self.sb.parse(self.source, self.body("sse_sb_20260821.json"))
+        by = {o["series"]: o["value"] for o in feed.observations}
+        self.assertEqual(by["SOUTHBOUND/amount/buy"], 298.18)
+        self.assertEqual(by["SOUTHBOUND/amount/sell"], 349.52)
+        self.assertEqual(by["SOUTHBOUND/amount/net"], -51.34)
+        self.assertAlmostEqual(
+            by["SOUTHBOUND/amount/net"],
+            by["SOUTHBOUND/amount/buy"] - by["SOUTHBOUND/amount/sell"], places=2)
+
+    def test_net_says_it_is_derived(self):
+        feed = self.sb.parse(self.source, self.body("sse_sb_20260821.json"))
+        net = next(o for o in feed.observations
+                   if o["series"] == "SOUTHBOUND/amount/net")
+        self.assertIn("derived", net["rate_type"])
+
+    def test_no_net_when_only_one_side_was_published(self):
+        # A net against a missing half is a number about our gaps.
+        payload = json.loads(self.body("sse_sb_20260821.json"))
+        payload["result"][0]["SELL_AMOUNT"] = None
+        feed = self.sb.parse(self.source, json.dumps(payload))
+        self.assertNotIn("SOUTHBOUND/amount/net",
+                         {o["series"] for o in feed.observations})
+
+    # --- northbound stays out --------------------------------------------
+
+    def test_northbound_is_not_built(self):
+        # Turnover with no buy/sell split cannot produce a net, and net is
+        # the signal.
+        self.assertNotIn("sse_northbound", SOURCES)
+        self.assertNotIn("commonSoaQuery", self.code())
+        self.assertNotIn("FW_HGTZL", self.code())
+
+
+class SseSouthboundBackfillTests(TempDB):
+    def test_weekends_are_skipped_and_holidays_are_not_guessed(self):
+        from macrowire import backfill
+        from datetime import date as D
+        days = backfill.weekdays(D(2024, 8, 19), D(2024, 8, 25))
+        self.assertEqual(days, [D(2024, 8, 19), D(2024, 8, 20), D(2024, 8, 21),
+                                D(2024, 8, 22), D(2024, 8, 23)])
+        # No holiday calendar anywhere: the endpoint is asked and answers.
+        src = (ROOT / "macrowire/backfill.py").read_text()
+        self.assertNotIn("holidays = ", src)
+
+    def test_the_per_date_walk_is_selected_by_config(self):
+        from macrowire import backfill
+        self.assertTrue(backfill.per_date(SOURCES["sse_southbound"]))
+        self.assertFalse(backfill.per_date(SOURCES["cfets_ccpr"]))
+
+    def test_each_date_is_logged_so_a_resumed_run_skips_it(self):
+        from macrowire import backfill
+        db.log_fetch(self.conn, "sse_southbound", status=db.STATUS_BACKFILL,
+                     detail="2024-08-19")
+        self.assertIn("2024-08-19", backfill._completed(self.conn, "sse_southbound"))
+
+
+class BackfillRetryTests(unittest.TestCase):
+    """A network blip in a twenty-minute paced run is expected, not exceptional.
+
+    Retrying is only safe because the taxonomy already distinguishes a
+    failure of the PATH from a failure of the SOURCE. Retrying an http_404
+    would turn a clear answer into a slow one.
+    """
+
+    def setUp(self):
+        from macrowire import backfill
+        self.backfill = backfill
+        self._real = backfill.wire._download
+        self._backoff = backfill.RETRY_BACKOFF_SECONDS
+        backfill.RETRY_BACKOFF_SECONDS = (0, 0)
+        self.calls = []
+
+    def tearDown(self):
+        self.backfill.wire._download = self._real
+        self.backfill.RETRY_BACKOFF_SECONDS = self._backoff
+
+    def failing(self, kind, succeed_on=None):
+        def call(source, *a, **k):
+            self.calls.append(kind)
+            if succeed_on is not None and len(self.calls) >= succeed_on:
+                return "OK"
+            raise FetchError(f"simulated {kind}", kind=kind)
+        self.backfill.wire._download = call
+
+    def test_a_transient_network_failure_is_retried_and_recovers(self):
+        self.failing("network", succeed_on=3)
+        self.assertEqual(self.backfill.download(object()), "OK")
+        self.assertEqual(len(self.calls), 3)
+
+    def test_it_gives_up_after_three_attempts(self):
+        self.failing("network")
+        with self.assertRaises(FetchError):
+            self.backfill.download(object())
+        self.assertEqual(len(self.calls), self.backfill.RETRY_ATTEMPTS)
+        self.assertEqual(self.backfill.RETRY_ATTEMPTS, 3)
+
+    def test_only_path_kinds_are_retried(self):
+        # The list is db.PATH_KINDS, shared with the health panel, so
+        # "which kinds mean the path" has exactly one definition.
+        for kind in ("network", "timeout", "http_404", "http_500", "decode",
+                     "parse", "empty", "transport", "config"):
+            with self.subTest(kind=kind):
+                self.calls.clear()
+                self.failing(kind)
+                with self.assertRaises(FetchError):
+                    self.backfill.download(object())
+                retried = len(self.calls) > 1
+                self.assertEqual(retried, kind in db.PATH_KINDS,
+                                 f"{kind}: retried={retried}")
+
+    def test_a_404_is_not_retried_even_once(self):
+        # It will be exactly as absent on the third attempt.
+        self.failing("http_404")
+        with self.assertRaises(FetchError):
+            self.backfill.download(object())
+        self.assertEqual(len(self.calls), 1)
+
+    def test_the_backoff_grows(self):
+        real = self._backoff
+        self.assertEqual(len(real), self.backfill.RETRY_ATTEMPTS - 1,
+                         "one wait between each pair of attempts")
+        self.assertEqual(list(real), sorted(real))
+        self.assertTrue(all(w > 0 for w in real))
+
+
+class BackfillInterruptionTests(TempDB):
+    """Giving up must produce the remedy, not a stack trace."""
+
+    def setUp(self):
+        super().setUp()
+        from macrowire import backfill
+        self.backfill = backfill
+        self._real = backfill.wire._download
+        self._backoff = backfill.RETRY_BACKOFF_SECONDS
+        backfill.RETRY_BACKOFF_SECONDS = (0, 0)
+
+    def tearDown(self):
+        self.backfill.wire._download = self._real
+        self.backfill.RETRY_BACKOFF_SECONDS = self._backoff
+        super().tearDown()
+
+    def test_it_raises_a_typed_interruption_carrying_the_resume_facts(self):
+        from datetime import date as D
+        from macrowire.errors import BackfillInterrupted
+
+        def down(source, *a, **k):
+            raise FetchError("[Errno 101] Network is unreachable", kind="network")
+        self.backfill.wire._download = down
+
+        with self.assertRaises(BackfillInterrupted) as caught:
+            self.backfill.run_dated(self.conn, SOURCES["sse_southbound"],
+                                    D(2024, 8, 23))
+        exc = caught.exception
+        self.assertEqual(exc.source, "sse_southbound")
+        self.assertEqual(exc.reached, D(2024, 8, 19))
+        self.assertEqual(exc.remaining, 5)     # 19,20,21,22,23 all weekdays
+        self.assertEqual(exc.cause.kind, "network")
+
+    def test_the_stopping_point_is_recorded_in_fetch_log(self):
+        # "in the log" is half of what was asked for; the traceback being
+        # available is the other half.
+        from datetime import date as D
+        from macrowire.errors import BackfillInterrupted
+
+        def down(source, *a, **k):
+            raise FetchError("[Errno 101] Network is unreachable", kind="network")
+        self.backfill.wire._download = down
+        with self.assertRaises(BackfillInterrupted):
+            self.backfill.run_dated(self.conn, SOURCES["sse_southbound"],
+                                    D(2024, 8, 20))
+        row = self.conn.execute(
+            """SELECT status, error_kind, detail, error FROM fetch_log
+               WHERE source = 'sse_southbound' AND status = 'error'""").fetchone()
+        self.assertEqual(row["error_kind"], "network")
+        self.assertIn("2024-08-19", row["detail"])
+        self.assertIn("Errno 101", row["error"])
+
+    def test_a_non_retryable_failure_still_stops_and_still_reports_cleanly(self):
+        # A 404 mid-backfill is not retried, but the operator still gets the
+        # date and the resume line rather than a traceback.
+        from datetime import date as D
+        from macrowire.errors import BackfillInterrupted
+
+        def gone(source, *a, **k):
+            raise FetchError("HTTP 404", kind="http_404")
+        self.backfill.wire._download = gone
+        with self.assertRaises(BackfillInterrupted) as caught:
+            self.backfill.run_dated(self.conn, SOURCES["sse_southbound"],
+                                    D(2024, 8, 20))
+        self.assertEqual(caught.exception.cause.kind, "http_404")
+
+    def test_the_cli_prints_the_remedy_and_not_a_traceback(self):
+        import argparse, io, contextlib
+        from datetime import date as D
+        from macrowire import __main__ as cli
+        from macrowire.errors import BackfillInterrupted
+
+        exc = BackfillInterrupted("sse_southbound", D(2025, 9, 2), 250,
+                                  FetchError("boom", kind="network"))
+
+        def explode(args):
+            raise exc
+        parser_args = argparse.Namespace(debug=False, func=explode)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), \
+             unittest.mock.patch("argparse.ArgumentParser.parse_args",
+                                 return_value=parser_args):
+            code = cli.main([])
+        text = err.getvalue()
+        self.assertEqual(code, 1)
+        self.assertIn("network unreachable", text)
+        self.assertIn("2025-09-02", text)
+        self.assertIn("250", text)
+        self.assertIn("python -m macrowire backfill --source sse_southbound", text)
+        self.assertNotIn("Traceback", text)
+
+    def test_debug_re_raises_so_the_traceback_is_still_reachable(self):
+        import argparse
+        from datetime import date as D
+        from macrowire import __main__ as cli
+        from macrowire.errors import BackfillInterrupted
+
+        exc = BackfillInterrupted("sse_southbound", D(2025, 9, 2), 250,
+                                  FetchError("boom", kind="network"))
+
+        def explode(args):
+            raise exc
+        parser_args = argparse.Namespace(debug=True, func=explode)
+        with unittest.mock.patch("argparse.ArgumentParser.parse_args",
+                                 return_value=parser_args):
+            with self.assertRaises(BackfillInterrupted):
+                cli.main([])
+
+    def test_the_debug_flag_is_global_not_per_subcommand(self):
+        cli = (ROOT / "macrowire/__main__.py").read_text()
+        self.assertIn('parser.add_argument("--debug"', cli)

@@ -1,0 +1,385 @@
+{
+  "_meta": {
+    "name": "English",
+    "note": "Source of truth. Every other locale is checked against this file."
+  },
+  "app": {
+    "title": "MacroWire",
+    "unread_some": "{n} unread",
+    "unread_none": "all read",
+    "first_run": "first run — {n} existing items marked read. Only what arrives from now on will show as unread.",
+    "loading": "loading…",
+    "failed": "failed: {message}",
+    "aria_ribbon": "Session ribbon"
+  },
+  "ribbon": {
+    "note": "local time computed per instant — offsets are never stored",
+    "closed": "closed",
+    "no_mark": "no mark",
+    "wrap_title": "{label} {open}–{close} {zone}",
+    "wrap_continues": "(continues across local midnight)",
+    "mark_title": "{source} — {local} {zone}, published {origin}",
+    "mark_shifts": "across the year: {shifts}",
+    "mark_prev_day": "published the previous day at origin",
+    "day": "{day} · {zone}",
+    "viewer_zone": "Sydney",
+    "untimed": "{reason}: {sources}",
+    "reason": {
+      "date_only": "feed carries no time of day",
+      "no_schedule": "no usable schedule (measured IQR 2-7h)",
+      "not_today": "does not land on this date"
+    }
+  },
+  "filter": {
+    "button": "Filter",
+    "clear": "clear all",
+    "close": "close",
+    "none_active": "no filters — showing everything",
+    "hint": "Esc closes · c clears · OR within a row, AND across rows",
+    "remove": "Remove filter {label}",
+    "axis": {
+      "fx": "FX",
+      "jurisdiction": "Jurisdiction",
+      "ticker": "Watchlist",
+      "source": "Source",
+      "type": "Type"
+    },
+    "short": {
+      "fx": "FX",
+      "jurisdiction": "JUR",
+      "ticker": "TKR",
+      "source": "SRC",
+      "type": "TYPE"
+    },
+    "fx_state": {
+      "fx": "FX-relevant",
+      "not_fx": "not FX",
+      "unclassified": "unclassified"
+    },
+    "fx_caveat": "unclassified means no rule matched, never \"not FX\"",
+    "empty_window": "nothing in this window",
+    "empty_watchlist": "watchlist is empty",
+    "empty_ticker": "no watchlisted ticker has items in this window",
+    "empty_type": "no source in this window has more than one type",
+    "type_items": "8-K items",
+    "aria_panel": "Filters"
+  },
+  "watchlist": {
+    "add": "add",
+    "ticker_placeholder": "ticker",
+    "ticker_label": "Ticker to add",
+    "market_label": "Market",
+    "remove": "Remove {ticker} from watchlist",
+    "remove_title": "Remove {ticker} ({market}) from the watchlist",
+    "held_quiet": "held, but nothing in this window",
+    "checking": "checking…",
+    "need_ticker": "enter a ticker",
+    "added": "added {market} {ticker}",
+    "removed": "removed {ticker}",
+    "after_change": "{message}. Filings appear after the next fetch.",
+    "added_named": "added {market} {ticker} — {name}"
+  },
+  "tape": {
+    "no_match_title": "No items match these filters",
+    "no_match_body": "Filters combine as OR within a row and AND across rows, so narrowing two axes at once can leave nothing.",
+    "no_match_clear": "clear all filters",
+    "empty_title": "Nothing in this window",
+    "empty_body": "No filters are active — the last 30 days are genuinely empty.",
+    "no_sources_title": "No sources are enabled",
+    "no_sources_body": "Every source in sources.yaml has enabled: false, so nothing is being collected. Set enabled: true on the ones you want, then run a fetch."
+  },
+  "rail": {
+    "cot_heading": "Speculative positioning",
+    "ecb_heading": "ECB reference rates",
+    "cny_heading": "CNY central parity",
+    "rba_heading": "RBA reference rates",
+    "health_heading": "Source health",
+    "risk_heading": "If this disk dies",
+    "no_data": "no data",
+    "week": "wk",
+    "cot_asof": "CFTC non-commercial net, contracts · as of {period} ({day}), released {release}",
+    "cny_asof": "fix {period} {time} · change vs {prior}",
+    "ecb_asof": "reference rate {period} · {time} · base {base}",
+    "rba_asof": "{time} · {period}",
+    "health_unreachable_many": "{n} of {total} sources are unreachable. When it is most of them, the connection is the more likely cause than the sources.",
+    "weekday": {
+      "tue": "Tue",
+      "fri": "Fri"
+    },
+    "sb_heading": "Southbound Connect",
+    "sb_asof": "{period} · net = buy − sell · {unit} · change vs {prior}",
+    "sb": {
+      "net": "net",
+      "buy": "buy",
+      "sell": "sell",
+      "turnover": "turnover"
+    },
+    "sb_into": "into HK",
+    "sb_out": "out of HK"
+  },
+  "risk": {
+    "only_here": "{n} row(s) exist only here — {sources}.",
+    "rest_refetchable": "Everything else is re-fetchable: losing it costs polling time, not data.",
+    "export_misconfigured": "export misconfigured — {error}",
+    "export_never": "not exported yet — run {command}, or set {setting} in sources.yaml to a synced folder and it happens automatically.",
+    "export_protected": "Exporting to {path} — {n} row(s) protected {when}. Off this disk, so a drive failure costs nothing.",
+    "export_stale": "Exporting to {path}, but the file is out of date — run {fetch} or {export}.",
+    "export_local": "{n} row(s) exported to {path}{stale} — that is the same disk as the database, so it protects against a mistake but not a drive failure. Set {setting} in sources.yaml to a synced folder.",
+    "export_local_stale": " (out of date)"
+  },
+  "health": {
+    "never_polled": {
+      "label": "not polled yet",
+      "meaning": "This source has never been fetched. Nothing is wrong.",
+      "action": "Run `python -m macrowire fetch` to collect from it."
+    },
+    "healthy": {
+      "label": "polled",
+      "meaning": "Last poll succeeded and stored what it found.",
+      "action": ""
+    },
+    "no_change": {
+      "label": "polled, nothing new",
+      "meaning": "The source was contacted and reported nothing new. A successful poll - this is the normal outcome for a source that publishes once a day.",
+      "action": ""
+    },
+    "throttled": {
+      "label": "waiting on interval",
+      "meaning": "The rate limiter blocked this cycle before any request went out, to stay inside the source's polite interval.",
+      "action": ""
+    },
+    "log_incomplete": {
+      "label": "data current, log incomplete",
+      "meaning": "This source holds data newer than any fetch it has logged - usually a restore from a backup taken before that fetch. The data is fine; only the log is missing.",
+      "action": "Harmless. The next successful fetch clears it."
+    },
+    "failing": {
+      "label": "failing",
+      "meaning": "Consecutive failures since the last good cycle.",
+      "action": "Check the error kind: `network` is usually transient, `http_404` suggests the feed has moved or been withdrawn."
+    },
+    "stale": {
+      "label": "stale",
+      "meaning": "Polling works, but the source has published nothing new for longer than its configured threshold.",
+      "action": "Usually the source being quiet. Confirm on its website before assuming a fault."
+    },
+    "never": "never",
+    "stale_flag": "stale",
+    "tip": "{label} — {detail}",
+    "unreachable": {
+      "label": "network unreachable",
+      "meaning": "Every attempt since the last good cycle timed out or never connected. Nothing came back, so this says nothing about the source - it may be connectivity rather than the source.",
+      "action": "If other sources are reaching their servers, this one's route is the difference. Raise timeout_seconds for it in sources.yaml if the link is slow, or set enabled: false to stop polling it.",
+      "short": "network unreachable — may be connectivity rather than the source"
+    },
+    "disabled": {
+      "label": "not polled",
+      "meaning": "enabled: false in sources.yaml. This source is not contacted at all. Anything already collected from it is kept and still shows on the tape.",
+      "action": "Set enabled: true in sources.yaml to start polling it."
+    }
+  },
+  "time": {
+    "just_now": "just now",
+    "minutes": "{n}m ago",
+    "hours": "{n}h ago",
+    "days": "{n}d ago",
+    "never": "never",
+    "unknown": "at an unknown time"
+  },
+  "cli": {
+    "fetch": {
+      "ok": "ok",
+      "no_change": "no change",
+      "throttled": "throttled",
+      "throttled_detail": "not contacted; {seconds}s until next allowed",
+      "entries": "{n} entries",
+      "new_items": "{n} new item(s)",
+      "new_observations": "{n} new observation(s)",
+      "nothing_new": "nothing new",
+      "revised": "REVISED",
+      "failed": "{n} source(s) failed. Logged to fetch_log.",
+      "unknown_sources": "unknown source(s): {names}",
+      "export_ok": "{items} item(s), {observations} observation(s) -> {path}, {where}",
+      "where_external": "off this disk",
+      "where_local": "on this disk",
+      "backup_ok": "{name}, {mb} MB, verified",
+      "disabled": "disabled",
+      "disabled_detail": "enabled: false in sources.yaml; not contacted",
+      "none_enabled": "Every source in sources.yaml has enabled: false, so this cycle contacted nothing. Set enabled: true on the ones you want polled.",
+      "some_disabled": "{n} of {total} sources are disabled and were not contacted."
+    },
+    "first_run": {
+      "data_location": "Your data lives in {path}",
+      "gitignored": "That directory is gitignored: cloning this repo gives you the code, not the data. Every install builds its own history by polling.",
+      "outside": "That is outside the project directory, so it is not affected by anything the repository does. Every install builds its own history.",
+      "refetchable": "Most of what accumulates is re-fetchable - SEC, NBS, CFETS, ECB and the news feeds all serve their recent history on request, so losing the database costs polling time rather than data.",
+      "irreplaceable": "The exception is {sources}: those feeds carry one item and no archive, so what you collect is the only copy in existence.",
+      "export_auto": "Those rows export automatically to {path}.",
+      "export_hint": "Set export.path in sources.yaml to a synced folder and your irreplaceable rows are backed up automatically."
+    },
+    "status": {
+      "last_contact": "last contact",
+      "no_contact": "(no contact logged)",
+      "contacted_nothing_new": "(contacted; nothing new, so no store logged)",
+      "log_incomplete": "DATA CURRENT, LOG INCOMPLETE — stored {when}, newer than any logged contact. A restore from a backup predating that fetch is the usual cause.",
+      "last_stored": "last stored new",
+      "newest_content": "newest content",
+      "no_content": "no content",
+      "days_ago": "{n} days ago",
+      "stored": "stored",
+      "rows": "{n} rows",
+      "rows_split": "({items} items, {observations} observations)",
+      "rows_items": "(items)",
+      "rows_observations": "(observations)",
+      "raw_payloads": "{n} raw payloads",
+      "refetchable": "re-fetchable",
+      "risk_no": "our copy is the only one",
+      "risk_partial": "only the live window is re-fetchable",
+      "risk_yes": "fully re-fetchable from the source",
+      "risk_unknown": "unclassified",
+      "only_here": "rows that exist ONLY here",
+      "consecutive": "consecutive failures",
+      "consecutive_detail": "{n} since the last good cycle",
+      "fx_none": "none - every item unclassified",
+      "fx_counts": "{fx} fx / {not_fx} not / {unclassified} unclassified ({pct}%)",
+      "fx_drift": "DRIFT: {recent}% unclassified in the last 30d vs {older}% before - the source may have renamed something the vocabulary matches on.",
+      "fx_label": "fx classification",
+      "staleness": "staleness threshold",
+      "staleness_off": "off",
+      "staleness_days": "{n} days",
+      "staleness_note": "(measured on published content - information only)",
+      "superseded": "superseded versions",
+      "superseded_detail": "{items} item(s) across {chains} revision chain(s)",
+      "revisions": "value revisions",
+      "last_error": "last error",
+      "error_resolved": "(RESOLVED - a successful contact followed)",
+      "stale_flag": "[STALE]",
+      "seconds_ago": "{n}s ago",
+      "hours_minutes_ago": "{h}h {m}m ago",
+      "days_hours_ago": "{d}d {h}h ago",
+      "stored_line": "{counts}, {raw}",
+      "unreachable": "network unreachable - may be connectivity rather than the source. Every attempt since the last good cycle timed out or never connected, so nothing has come back to judge the source by.",
+      "unreachable_hint": "Raise timeout_seconds for this source if the link is slow, or set enabled: false to stop polling it.",
+      "disabled_flag": "[DISABLED]",
+      "fx_unmeasured": "not measured yet - {reason}"
+    },
+    "watchlist": {
+      "empty": "watchlist is empty",
+      "empty_hint": "add one with:  python -m macrowire watchlist add AAPL",
+      "empty_note": "Company filings poll nothing until you do.",
+      "added": "added {market} {ticker}",
+      "removed": "removed {n} entry(ies) for {ticker}",
+      "not_present": "{ticker} was not on the watchlist",
+      "refreshed": "SEC ticker map refreshed: {n} tickers -> {path}",
+      "added_named": "added {market} {ticker} — {name} (CIK {cik})",
+      "empty_markets_cn": "US tickers are collected via SEC EDGAR and mainland China codes (six digits) via CNINFO, the CSRC-designated disclosure portal covering both Shanghai and Shenzhen. Both are validated on add. Other markets can be recorded with --market but nothing polls them yet: ASX and HKEX both prohibit automated access, so neither is a source.",
+      "added_name_only": "added {market} {ticker} — {name}"
+    },
+    "serve": {
+      "running": "MacroWire on http://{host}:{port}  ({host} only, no auth)",
+      "stop_hint": "stop with:  python -m macrowire stop",
+      "port_in_use": "port {port} is already in use.",
+      "held_by": "held by pid {pid}: {cmdline}",
+      "stop_it": "stop it with:  python -m macrowire stop --port {port}",
+      "not_ours": "that is not a macrowire server - stop it yourself, or use --port for a one-off.",
+      "uninspectable": "held by a process this user cannot inspect.",
+      "closing": "nothing is listening on it - the socket is probably still closing from a previous run. Try again in a moment.",
+      "stopped": "stopped pid {pid} on port {port} ({signal})",
+      "not_stopped": "not stopped: {reason}",
+      "pid_line": "pid {pid}: {cmdline}",
+      "stop_not_listening": "nothing is listening on port {port}",
+      "stop_uninspectable": "port {port} is held by a process this user cannot inspect",
+      "stop_self": "that is this process",
+      "stop_not_ours": "pid {pid} on port {port} is not a macrowire server; refusing to kill it",
+      "stop_survived": "pid {pid} still holds port {port} after SIGKILL"
+    },
+    "export": {
+      "header": "export: {path}",
+      "counts": "{sources} source(s), {items} item(s), {observations} observation(s), {bytes} bytes",
+      "unchanged": "unchanged - file not rewritten",
+      "external": "written outside the project to {path} - a drive failure costs nothing",
+      "local": "written to {path}, the same disk as the database.",
+      "local_hint": "Set export.path in sources.yaml to a synced folder and these rows are backed up automatically.",
+      "repo_hint": "(this directory is a git repo, so committing the file is one way to get it off the disk)"
+    },
+    "backup": {
+      "verified": "backup verified: {path}",
+      "same_disk": "same disk as the database - protects against a mistake, not a drive failure.",
+      "move_hint": "Set backup.path in sources.yaml to move them off it.",
+      "counts": "row counts match source: {counts}",
+      "pruned": "pruned old backup: {name}",
+      "none": "no backups yet",
+      "failed": "FAILED",
+      "size": "{mb} MB"
+    },
+    "errors": {
+      "prefix": "error: {message}",
+      "unknown_source": "unknown source {name}. Known: {known}",
+      "sec_contact": "SEC_CONTACT is not set. The SEC requires a User-Agent of the form 'Name email' and enforces it with a 403.",
+      "kind_network": "network unreachable",
+      "kind_timeout": "request timed out",
+      "kind_other": "{kind} error"
+    },
+    "backfill": {
+      "header": "backfill: {source}",
+      "done": "{requests} request(s) made, {stored} observation(s) stored, {skipped} page(s) already had.",
+      "no_history": "{source} has no backfill_start, backfill_url or backfill_page_size in sources.yaml - this source has no retrievable history",
+      "interrupted": "{source}: {kind} at {date}. {remaining} date(s) remaining.",
+      "resume": "Resume with:  {command}",
+      "kept": "Everything fetched before that point is stored; resuming re-asks only what is left.",
+      "debug_hint": "Full traceback: re-run with --debug, or see fetch_log."
+    },
+    "restore": {
+      "header": "restore {name}  ->  {path}",
+      "warning": "the current database will be moved aside, not deleted.",
+      "prompt": "type '{word}' to proceed: ",
+      "aborted": "aborted",
+      "none": "no backups found",
+      "done": "restored. rows: {counts}",
+      "displaced": "previous database kept at: {name}"
+    },
+    "migrate": {
+      "before": "schema version before: {version}",
+      "after": "schema version after : {version}",
+      "up_to_date": "already up to date"
+    },
+    "import": {
+      "header": "import: {path}",
+      "added": "added          : {items} item(s), {observations} observation(s)",
+      "present": "already present: {items} item(s), {observations} observation(s)",
+      "missing": "no export at {path}"
+    },
+    "help": {
+      "description": "A personal wire for macro and market announcements.",
+      "fetch": "run one poll cycle",
+      "fetch_source": "limit to named source(s)",
+      "backfill": "one-off historical seed for an API source",
+      "backfill_source": "source name from sources.yaml",
+      "backfill_dry": "show the plan, make no requests",
+      "backup": "verified timestamped backup",
+      "backup_keep": "how many backups to retain",
+      "backup_list": "list existing backups",
+      "restore": "restore from a backup",
+      "restore_backup": "path to a backup (default: newest)",
+      "restore_yes": "skip the confirmation prompt",
+      "migrate": "apply pending schema migrations",
+      "export": "write irreplaceable rows to export.path",
+      "export_force": "overwrite even if this database has fewer rows than the file",
+      "import": "load an export back into the database",
+      "import_file": "path to the export (default: export/irreplaceable.jsonl)",
+      "serve": "run the local web interface",
+      "serve_host": "override sources.yaml web.host",
+      "serve_port": "override sources.yaml web.port",
+      "stop": "stop the server (resolved by port, not by name)",
+      "stop_port": "default: sources.yaml web.port",
+      "watchlist": "tickers to follow for company filings",
+      "watchlist_add": "add a ticker (validated against the SEC map for US)",
+      "watchlist_market": "US, AU, HK ... (default US)",
+      "watchlist_remove": "remove a ticker",
+      "watchlist_list": "show the watchlist",
+      "watchlist_refresh": "re-download the SEC ticker map",
+      "status": "per-source health",
+      "debug": "show the full traceback instead of a summary"
+    }
+  }
+}

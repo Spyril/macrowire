@@ -112,14 +112,20 @@ def stop(port: int, timeout: float = 5.0) -> dict:
 
     found = holder(port)
     if found is None:
-        return {"stopped": False, "reason": f"nothing is listening on {port}"}
+        # A machine-readable code alongside the prose. The caller decides an
+        # exit status from this, and deciding it by searching English inside
+        # a sentence breaks the moment the sentence is translated.
+        return {"stopped": False, "code": "not_listening",
+                "reason": f"nothing is listening on {port}"}
     if found["pid"] is None:
-        return {"stopped": False,
+        return {"stopped": False, "code": "uninspectable",
                 "reason": f"port {port} is held by a process this user cannot inspect"}
     if found["is_self"]:
-        return {"stopped": False, "reason": "that is this process"}
+        return {"stopped": False, "code": "self",
+                "reason": "that is this process"}
     if not found["is_macrowire"]:
-        return {"stopped": False, "pid": found["pid"], "cmdline": found["cmdline"],
+        return {"stopped": False, "code": "not_ours", "pid": found["pid"],
+                "cmdline": found["cmdline"],
                 "reason": f"pid {found['pid']} on port {port} is not a macrowire "
                           f"server; refusing to kill it"}
 
@@ -136,4 +142,12 @@ def stop(port: int, timeout: float = 5.0) -> dict:
 
     os.kill(pid, signal.SIGKILL)          # declined to go quietly
     time.sleep(0.4)
-    return {"stopped": holder(port) is None, "pid": pid, "signal": "SIGKILL"}
+    gone = holder(port) is None
+    if gone:
+        return {"stopped": True, "pid": pid, "signal": "SIGKILL"}
+    # SIGKILL and still holding the port. The caller printed result["reason"]
+    # unconditionally, so returning without one raised a KeyError on the one
+    # path where something is actually wrong.
+    return {"stopped": False, "code": "survived_sigkill", "pid": pid,
+            "signal": "SIGKILL",
+            "reason": f"pid {pid} still holds port {port} after SIGKILL"}

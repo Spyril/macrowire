@@ -97,6 +97,11 @@ class Source:
     fx: dict = field(default_factory=dict)
     timing: dict = field(default_factory=dict)
     collapse_repeats: bool = True
+    # Whether this source is polled. A disabled source keeps its config, its
+    # stored rows and its place in the file; it is simply not contacted.
+    # Commenting a block out instead loses the configuration and makes
+    # turning it back on an editing job rather than a one-word change.
+    enabled: bool = True
     categories: list = field(default_factory=list)
     config: dict = field(default_factory=dict)
 
@@ -212,6 +217,16 @@ def load_sources(path: Path | None = None) -> list[Source]:
                     f"  Currently: {contact!r}"
                 )
 
+        # Top level, not under `config:`: whether to poll a source at all is
+        # not one of its parser's settings, and a per-source default that
+        # could be inherited from `defaults:` would let one line silently
+        # switch off everything.
+        enabled = entry.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ConfigError(
+                f"{path}: '{name}' enabled={enabled!r} must be true or false"
+            )
+
         categories = setting("categories", []) or []
         if not isinstance(categories, list):
             raise ConfigError(f"{path}: '{name}' categories must be a list")
@@ -251,6 +266,20 @@ def load_sources(path: Path | None = None) -> list[Source]:
             raise ConfigError(
                 f"{path}: '{name}' sets fx.always AND a vocabulary. Pick one - "
                 f"a source is either FX by construction or classified by title.")
+        # `unmeasured:` is a declared absence. It behaves exactly as no
+        # vocabulary does - every item unclassified - but it is a decision on
+        # the record with a reason attached, rather than a block someone
+        # forgot to write. It must carry that reason, or it is the oversight
+        # it exists to rule out.
+        if "unmeasured" in fx_block:
+            if fx_block.get("include") or fx_block.get("exclude") or fx_block.get("always"):
+                raise ConfigError(
+                    f"{path}: '{name}' sets fx.unmeasured AND a policy. "
+                    f"Pick one.")
+            if not isinstance(fx_block["unmeasured"], str) or not fx_block["unmeasured"].strip():
+                raise ConfigError(
+                    f"{path}: '{name}' fx.unmeasured must be a sentence saying "
+                    f"why the corpus has not been measured yet.")
 
         importance = int(setting("importance", 3))
         if not 0 <= importance <= 5:
@@ -318,6 +347,7 @@ def load_sources(path: Path | None = None) -> list[Source]:
                 fx=fx_block,
                 timing=timing,
                 collapse_repeats=bool(setting('collapse_repeats', True)),
+                enabled=enabled,
                 categories=categories,
                 config=config,
             )
@@ -381,6 +411,19 @@ def load_backup_settings(path: Path | None = None) -> dict:
 
 
 DEFAULT_WEB_PORT = 8917
+
+
+def load_locale(path: Path | None = None) -> str:
+    """Which language the interface speaks. Content is never translated.
+
+    An unknown locale is not fatal: i18n falls back to English and logs it,
+    which is the right trade for a typo in a config file. A missing English
+    catalogue IS fatal, and raises in i18n.load().
+    """
+    load_dotenv(REPO_ROOT / ".env")
+    path = path or DEFAULT_CONFIG_PATH
+    document = yaml.safe_load(path.read_text()) or {}
+    return str((document.get("defaults") or {}).get("locale", "en"))
 
 
 def load_web_settings(path: Path | None = None) -> dict:

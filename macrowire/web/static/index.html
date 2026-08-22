@@ -14,10 +14,10 @@
   <span class="unread-total" id="unread-total"></span>
 </header>
 
-<section class="ribbon" aria-label="Session ribbon">
+<section class="ribbon" data-i18n-label="app.aria_ribbon">
   <div class="ribbon-head">
     <span id="ribbon-day">—</span>
-    <span id="ribbon-note">local time computed per instant — offsets are never stored</span>
+    <span id="ribbon-note" data-i18n="ribbon.note"></span>
   </div>
   <div class="band">
     <div class="hours" id="hours"></div>
@@ -34,44 +34,48 @@
   <main>
     <div class="filterbar">
       <button class="fbtn" id="fopen" aria-expanded="false" aria-controls="fpanel">
-        Filter <kbd>f</kbd>
+        <span data-i18n="filter.button"></span> <kbd>f</kbd>
       </button>
       <div class="tokens" id="tokens" aria-live="polite"></div>
-      <button class="fclear" id="fclear" hidden>clear all <kbd>c</kbd></button>
+      <button class="fclear" id="fclear" hidden><span data-i18n="filter.clear"></span> <kbd>c</kbd></button>
     </div>
 
     <div class="fpanel" id="fpanel" role="dialog" aria-modal="false"
-         aria-label="Filters" hidden>
+         data-i18n-label="filter.aria_panel" hidden>
       <div class="fgrid" id="fgrid"></div>
       <div class="fpanel-foot">
-        <span class="fhint">Esc closes &middot; c clears &middot; OR within a row, AND across rows</span>
-        <button class="fbtn" id="fclose">close</button>
+        <span class="fhint" data-i18n="filter.hint"></span>
+        <button class="fbtn" id="fclose" data-i18n="filter.close"></button>
       </div>
     </div>
-    <div class="tape" id="tape"><div class="note">loading…</div></div>
+    <div class="tape" id="tape"><div class="note" data-i18n="app.loading"></div></div>
   </main>
 
   <aside class="rail">
-    <h2>CNY central parity</h2>
+    <h2 data-i18n="rail.cny_heading"></h2>
     <div class="fx" id="fx"></div>
     <div class="asof" id="fx-asof"></div>
 
-    <h2>Speculative positioning</h2>
+    <h2 data-i18n="rail.sb_heading"></h2>
+    <div class="fx" id="sb"></div>
+    <div class="asof" id="sb-asof"></div>
+
+    <h2 data-i18n="rail.cot_heading"></h2>
     <div class="fx" id="cot"></div>
     <div class="asof" id="cot-asof"></div>
 
-    <h2>ECB reference rates</h2>
+    <h2 data-i18n="rail.ecb_heading"></h2>
     <div class="fx" id="ecb"></div>
     <div class="asof" id="ecb-asof"></div>
 
-    <h2>RBA 4pm rates</h2>
+    <h2 data-i18n="rail.rba_heading"></h2>
     <div class="fx" id="rba"></div>
     <div class="asof" id="rba-asof"></div>
 
-    <h2>Source health</h2>
+    <h2 data-i18n="rail.health_heading"></h2>
     <div class="health" id="health"></div>
 
-    <h2>If this disk dies</h2>
+    <h2 data-i18n="rail.risk_heading"></h2>
     <div class="risk" id="risk"></div>
     <div class="risk" id="export-state"></div>
   </aside>

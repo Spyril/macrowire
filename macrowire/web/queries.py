@@ -41,6 +41,7 @@ def sources_meta(conn: sqlite3.Connection, sources) -> list[dict]:
             "importance": s.importance,
             "archive": s.archive,
             "timing_class": (s.timing or {}).get("class", "scattered"),
+            "enabled": s.enabled,
         })
     return out
 
@@ -354,63 +355,39 @@ def unread_counts(conn: sqlite3.Connection, sources, user_id: int, days: int = 3
 # about it. "no contact logged" was truthful and read like an error; it was
 # a new source nobody had polled yet. A state name nobody can decode is a
 # state that gets ignored.
-HEALTH_STATES = {
-    "never_polled": {
-        "label": "not polled yet",
-        "meaning": "This source has never been fetched. Nothing is wrong.",
-        "action": "Run `python -m macrowire fetch` to collect from it.",
-        "severity": "info",
-    },
-    "healthy": {
-        "label": "polled",
-        "meaning": "Last poll succeeded and stored what it found.",
-        "action": None,
-        "severity": "ok",
-    },
-    "no_change": {
-        "label": "polled, nothing new",
-        "meaning": "The source was contacted and reported nothing new. "
-                   "A successful poll - this is the normal outcome for a "
-                   "source that publishes once a day.",
-        "action": None,
-        "severity": "ok",
-    },
-    "throttled": {
-        "label": "waiting on interval",
-        "meaning": "The rate limiter blocked this cycle before any request "
-                   "went out, to stay inside the source's polite interval.",
-        "action": None,
-        "severity": "ok",
-    },
-    "log_incomplete": {
-        "label": "data current, log incomplete",
-        "meaning": "This source holds data newer than any fetch it has "
-                   "logged - usually a restore from a backup taken before "
-                   "that fetch. The data is fine; only the log is missing.",
-        "action": "Harmless. The next successful fetch clears it.",
-        "severity": "info",
-    },
-    "failing": {
-        "label": "failing",
-        "meaning": "Consecutive failures since the last good cycle.",
-        "action": "Check the error kind: `network` is usually transient, "
-                  "`http_404` suggests the feed has moved or been withdrawn.",
-        "severity": "bad",
-    },
-    "stale": {
-        "label": "stale",
-        "meaning": "Polling works, but the source has published nothing new "
-                   "for longer than its configured threshold.",
-        "action": "Usually the source being quiet. Confirm on its website "
-                  "before assuming a fault.",
-        "severity": "warn",
-    },
+# Severity only. The label, the explanation and the suggested action are
+# viewer-facing prose and live in the locale catalogues under `health.*`,
+# resolved through a Translator at render time. Severity is not prose - it
+# drives a colour, so it stays here.
+HEALTH_SEVERITY = {
+    "never_polled": "info",
+    "disabled": "info",
+    "healthy": "ok",
+    "no_change": "ok",
+    "throttled": "ok",
+    "log_incomplete": "info",
+    "failing": "bad",
+    "unreachable": "warn",
+    "stale": "warn",
 }
 
 
 def health_state(st: dict) -> str:
     """One state per source, most serious first."""
+    if not st["enabled"]:
+        # Switched off on purpose. Not a fault, and not "not polled yet"
+        # either - that state tells you to run a fetch, which would do
+        # nothing here.
+        return "disabled"
     if st["consecutive_failures"]:
+        # Every failure in the streak was a timeout or a connection that
+        # never landed. Nothing came back from the source, so nothing has
+        # been learned ABOUT the source - only about the path to it. On a
+        # slow or filtered international link this is what a healthy feed
+        # looks like, and calling it "failing" is a false alarm of exactly
+        # the kind that teaches you to stop reading the panel.
+        if st.get("all_failures_are_path"):
+            return "unreachable"
         return "failing"
     if st["stale"]:
         return "stale"
@@ -425,7 +402,7 @@ def health_state(st: dict) -> str:
     return "healthy"
 
 
-def rail(conn: sqlite3.Connection, sources) -> dict:
+def rail(conn: sqlite3.Connection, sources, t) -> dict:
     """Right-rail data: latest fixes with change, and source health."""
     fx = []
     for series in ("USD/CNY", "AUD/CNY", "HKD/CNY", "EUR/CNY", "100JPY/CNY"):
@@ -503,6 +480,51 @@ def rail(conn: sqlite3.Connection, sources) -> dict:
     ):
         rba.append({"series": row["series"], "period": row["period"], "value": row["value"]})
 
+    # Southbound Stock Connect. The DIRECTION is the signal, so net leads
+    # and turnover is context - and the change is against the previous
+    # trading day the source actually published, never a calendar offset,
+    # because a market that was shut has no figure to compare against.
+    southbound = None
+    latest_sb = conn.execute(
+        """SELECT MAX(period) FROM observations o JOIN sources s ON s.id = o.source_id
+           WHERE s.name = 'sse_southbound'""").fetchone()[0]
+    if latest_sb:
+        prior_sb = conn.execute(
+            """SELECT MAX(period) FROM observations o JOIN sources s ON s.id = o.source_id
+               WHERE s.name = 'sse_southbound' AND o.period < ?""", (latest_sb,)
+        ).fetchone()[0]
+
+        def sb_values(period):
+            if not period:
+                return {}
+            return {r["series"]: (r["value"], r["unit"]) for r in conn.execute(
+                """SELECT o.series, o.value, o.unit FROM observations o
+                   JOIN sources s ON s.id = o.source_id
+                   WHERE s.name = 'sse_southbound' AND o.period = ?""", (period,))}
+
+        now_v, was_v = sb_values(latest_sb), sb_values(prior_sb)
+        rows = []
+        for series, label in (("SOUTHBOUND/amount/net", "net"),
+                              ("SOUTHBOUND/amount/buy", "buy"),
+                              ("SOUTHBOUND/amount/sell", "sell"),
+                              ("SOUTHBOUND/amount/total", "turnover")):
+            if series not in now_v:
+                continue
+            value, unit = now_v[series]
+            before = was_v.get(series)
+            rows.append({
+                "key": label, "value": value,
+                # Carried, never assumed. The scale is nowhere in SSE's
+                # payload - it lives in a rendered column header - so it
+                # travels with the number rather than being implied.
+                "unit": unit,
+                # Rounded to the precision the source publishes. A raw
+                # float subtraction produces 27.819999999999965, which
+                # reads as precision SSE never claimed.
+                "change": round(value - before[0], 2) if before else None,
+            })
+        southbound = {"period": latest_sb, "prior_period": prior_sb, "rows": rows}
+
     health = []
     for source in sources:
         st = source_status(conn, source)
@@ -511,7 +533,10 @@ def rail(conn: sqlite3.Connection, sources) -> dict:
             "name": st["name"],
             "jurisdiction": source.jurisdiction,
             "state": state_key,
-            **{f"state_{k}": v for k, v in HEALTH_STATES[state_key].items()},
+            "state_severity": HEALTH_SEVERITY[state_key],
+            "state_label": t(f"health.{state_key}.label"),
+            "state_meaning": t(f"health.{state_key}.meaning"),
+            "state_action": t(f"health.{state_key}.action") or None,
             # Contact, not store: a gated source that finds nothing new has
             # still reached its source and is demonstrably alive.
             "seconds_since_contact": st["seconds_since_contact"],
@@ -524,6 +549,14 @@ def rail(conn: sqlite3.Connection, sources) -> dict:
             "at_risk": st["at_risk"],
             "consecutive_failures": st["consecutive_failures"],
             "failure_kinds": st["failure_kinds"],
+            "all_failures_are_path": st["all_failures_are_path"],
         })
-    return {"fx": fx, "ecb": ecb, "cot": cot, "rba": rba, "health": health,
-            "states": HEALTH_STATES}
+    # MEASURE, never warn unconditionally. One unreachable source is that
+    # source's route; most of them unreachable is this machine's connection,
+    # and saying so is the difference between a useful panel and one that
+    # blames fourteen publishers for a single bad link.
+    unreachable = [h for h in health if h["state"] == "unreachable"]
+    note = (t("rail.health_unreachable_many", n=len(unreachable), total=len(health))
+            if len(unreachable) >= 2 else None)
+    return {"fx": fx, "ecb": ecb, "cot": cot, "rba": rba,
+            "southbound": southbound, "health": health, "health_note": note}

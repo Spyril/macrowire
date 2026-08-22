@@ -62,6 +62,13 @@ STATUS_REVISION = "revision"
 #
 # ADDING A STATUS? Decide here whether it means contact. That decision is
 # the point of this set existing.
+# Error kinds that describe the PATH to the source rather than the source.
+# A run of these means the request never got an answer; it is not evidence
+# that the feed has changed, moved or gone. Kept here beside the statuses
+# because "which kinds mean unreachable" has to have exactly one definition -
+# the contact-status drift this project already fixed four times.
+PATH_KINDS = ("network", "timeout")
+
 CONTACT_STATUSES = (STATUS_OK, STATUS_NO_CHANGE, STATUS_BACKFILL, STATUS_REVISION)
 
 # Legacy: everything written before the no_change/throttled distinction

@@ -231,7 +231,7 @@ def fetch(source, get, state):
 
     from .. import watchlist as wl
 
-    tickers = state.get("watchlist_us") or []
+    tickers = (state.get("watchlist") or {}).get("US") or []
     if not tickers:
         return [], "watchlist is empty - nothing to poll"
 
