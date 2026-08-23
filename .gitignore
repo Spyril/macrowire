@@ -23,3 +23,4 @@ AI_RULES.md
 __pycache__/
 .ipynb_checkpoints/
 venv/
+docs/context/
