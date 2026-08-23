@@ -5,8 +5,50 @@
 Every test writes to a temporary database. MACROWIRE_REFUSE_DEFAULT_DB is
 set before macrowire is imported, so a test that forgets to pass a path
 fails loudly rather than writing fabricated rows into collected history.
+
+A TEST THAT CANNOT FAIL IS WORSE THAN NO TEST
+--------------------------------------------------------------------------
+It reads as coverage. This suite has produced three of them, all the same
+shape - the test's REACH was narrower than its CLAIM - so the rules are
+written down rather than remembered.
+
+  1. A LOOP OVER A DERIVED COLLECTION NEEDS A FLOOR.
+     `for x in something_computed(): self.assertX(...)` passes perfectly
+     when the computation returns nothing, and a derivation silently
+     returning nothing is exactly how a guard stops guarding. Wrap it:
+     `for x in floor(self, collection, "what", least=N)`. A loop over an
+     inline literal needs no floor - a literal tuple cannot empty.
+
+  2. A TEST SEEDED FROM AN EMPTY FIXTURE ASSERTS NOTHING.
+     `test_every_axis_carries_both_counts` ran against a TempDB with no
+     rows, so the thing it iterated was empty and every assertion inside
+     was skipped. It was written one turn after an entire exercise on
+     this exact failure mode. Seed the fixture, then floor the loop.
+
+  3. SCAN BY PROPERTY, NOT BY CHARACTER RANGE.
+     `css[css.index(".filterbar"):css.index(".chips {")]` silently stops
+     covering anything that moves past the end marker, and `assertNotIn`
+     inside such a slice is vacuous. Iterate every rule and match on what
+     you actually care about. Where a range is unavoidable, prefer
+     `assertIn` - it fails loudly when the range is wrong, while
+     `assertNotIn` passes.
+
+MUTATION TESTING, AND ITS OWN TRAP
+--------------------------------------------------------------------------
+The way to know a guard bites is to break the thing it guards and watch it
+fail. Do that. But CLEAR THE BYTECODE AFTERWARDS:
+
+    find . -name __pycache__ -type d -not -path "./.git/*" -exec rm -rf {} +
+
+Python invalidates a .pyc on (mtime, size). A mutation of the SAME BYTE
+LENGTH, applied and reverted inside one second, leaves both unchanged - so
+the interpreter keeps running bytecode compiled from the mutated source
+while the file on disk reads correctly. That happened here: `"*.json"` was
+swapped for `"*.nope"`, restored, and five unrelated tests then failed
+against a file that was already correct.
 """
 
+import contextlib
 import dataclasses
 import json
 import os
@@ -29,6 +71,21 @@ from macrowire.errors import (                                    # noqa: E402
 from macrowire.parsers import get_parser                          # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def floor(case, collection, what, least=1):
+    """Assert there is something to iterate before iterating it.
+
+    A test that loops over a derived collection and asserts inside the loop
+    passes perfectly when the collection comes back empty - and a derivation
+    silently returning nothing is exactly how a guard stops guarding. Every
+    such loop in this suite states its floor.
+    """
+    n = len(collection)
+    case.assertGreaterEqual(
+        n, least,
+        f"found {n} {what}; the scan is broken, so nothing below was checked")
+    return collection
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SOURCES = {s.name: s for s in load_sources()}
 
@@ -390,12 +447,12 @@ class TestBackupRoundTrip(unittest.TestCase):
 
 class TestIrreplaceability(unittest.TestCase):
     def test_every_source_is_classified(self):
-        for src in SOURCES.values():
+        for src in floor(self, list(SOURCES.values()), "sources", 10):
             self.assertIn(src.archive, {"none", "rolling", "queryable"},
                           f"{src.name} is unclassified")
 
     def test_archive_none_forbids_raw_pruning(self):
-        for src in SOURCES.values():
+        for src in floor(self, list(SOURCES.values()), "sources", 10):
             if src.archive == "none":
                 self.assertIsNone(src.raw_retention_days,
                                   f"{src.name} would prune its only copy")
@@ -450,7 +507,7 @@ class TestExportRoundTrip(TempDB):
         names = {json.loads(l).get("source") for l in payload.splitlines()}
         names.discard(None)
         self.assertEqual(names, {s.name for s in self.irreplaceable})
-        for src in self.sources:
+        for src in floor(self, list(self.sources), "sources"):
             if src.archive != "none":
                 self.assertNotIn(f'"{src.name}"', payload)
 
@@ -828,7 +885,7 @@ class TestJurisdiction(unittest.TestCase):
 
     def test_every_source_declares_one(self):
         from macrowire.config import JURISDICTIONS
-        for src in SOURCES.values():
+        for src in floor(self, list(SOURCES.values()), "sources", 10):
             self.assertIn(src.jurisdiction, JURISDICTIONS,
                           f"{src.name} has jurisdiction {src.jurisdiction!r}")
 
@@ -1785,7 +1842,11 @@ class TestWriteSurface(unittest.TestCase):
         WRITERS = ("mark_all_read", "mark_read(", "set_flag", "wl.add", "wl.remove")
         blocks = re.split(r"@app\.(get|post)\(", self.src)
         # blocks alternate: [prefix, verb, body, verb, body, ...]
-        for verb, body in zip(blocks[1::2], blocks[2::2]):
+        # If the decorator is ever reformatted this split yields ONE block,
+        # the zip is empty, and every assertion below is skipped silently.
+        endpoints = list(zip(blocks[1::2], blocks[2::2]))
+        floor(self, [v for v, _ in endpoints if v == "get"], "GET endpoints", 5)
+        for verb, body in endpoints:
             if verb != "get":
                 continue
             for writer in WRITERS:
@@ -1851,23 +1912,82 @@ class TestFilterUI(unittest.TestCase):
         self.assertIn("function clearFilters", self.js)
         self.assertIn('$("fclear").hidden', self.js)
 
+    # Selectors permitted to spend a signal colour, each with the reason.
+    # An allowlist of SELECTORS, not a character range: the previous version
+    # scanned from ".filterbar" to ".chips {" and every `.chip*` rule sat
+    # past the end of it, so `.chip .n { color: var(--accent) }` - a window
+    # count painted in the unread colour - was invisible to the test that
+    # existed to forbid exactly that.
+    SIGNAL_ALLOWED = {
+        "focus-visible":  "accessibility: the focus ring must be visible",
+        ".wl-msg.err":    "a failure, not a category",
+        ".item.unread":   "unread IS what --accent means",
+        ".unread-total":  "the masthead unread count is unread",
+        ".chip .n-unread": "an unread count, which is what --accent means",
+        ".health .warn":  "--fault on a failing source is what --fault is for",
+        ".unsolved":      "--fault on an unsolved risk, likewise",
+        ".hnote":         "--fault on a network-wide fault, likewise",
+    }
+
+    def signal_users(self, token):
+        """Every selector in the WHOLE stylesheet that spends `token`.
+
+        Property-driven, not range-driven. A rule added anywhere in the file
+        is covered the moment it is written.
+        """
+        import re
+        # Comments first. A rule preceded by a /* ... */ block otherwise
+        # yields the last line of the COMMENT as its selector, which reads
+        # as a violation and is only ever noise.
+        css = re.sub(r"/\*.*?\*/", " ", self.css, flags=re.S)
+        out = []
+        for rule in re.finditer(r"([^{}]+)\{([^}]*)\}", css):
+            if f"var({token})" not in rule.group(2):
+                continue
+            for selector in rule.group(1).strip().split(","):
+                selector = " ".join(selector.split())
+                if selector:
+                    out.append(selector)
+        return out
+
     def test_filter_ui_encodes_no_category_in_colour(self):
         """The rule is that colour never encodes a CATEGORY - not that the
         signal tokens are unmentionable. A focus ring and an error message
         are legitimate: one is an accessibility requirement, the other is
         exactly what --fault exists for. What must never happen is a chip,
-        token or axis carrying meaning through hue."""
+        token or axis carrying meaning through hue.
+
+        Both signal tokens are checked. The earlier version named --fault in
+        its docstring and only ever tested --accent."""
+        for token in ("--accent", "--fault"):
+            for selector in self.signal_users(token):
+                with self.subTest(token=token, selector=selector):
+                    self.assertTrue(
+                        any(k in selector for k in self.SIGNAL_ALLOWED),
+                        f"{selector!r} spends {token} to carry meaning; if that "
+                        f"is deliberate, add it to SIGNAL_ALLOWED with a reason")
+
+    def test_no_filter_chip_carries_a_signal_colour(self):
+        """The specific regression: a filter chip tinted by category."""
+        for token in ("--accent", "--fault"):
+            for selector in self.signal_users(token):
+                if ".chip" not in selector:
+                    continue
+                with self.subTest(token=token, selector=selector):
+                    self.assertTrue(
+                        "n-unread" in selector or "focus-visible" in selector,
+                        f"{selector!r} tints a chip with {token}")
+
+    def test_bucket_counts_are_not_painted_in_the_unread_colour(self):
+        """`.chip .n` was one amber badge used for BOTH a window count and an
+        unread count depending on the axis, so `fx 61` rendered 61 window
+        items in the colour that means unread."""
         import re
-        block = self.css[self.css.index(".filterbar"):self.css.index(".chips {")]
-        for rule in re.finditer(r"([^{}]+)\{([^}]*)\}", block):
-            selector, body = rule.group(1).strip(), rule.group(2)
-            if "--accent" not in body and "--fault" not in body:
-                continue
-            allowed = ("focus-visible" in selector      # accessibility
-                       or ".wl-msg.err" in selector)    # a failure, not a category
-            self.assertTrue(
-                allowed,
-                f"{selector!r} uses a signal colour to carry meaning")
+        self.assertNotIn(".chip .n {", self.css, "the merged badge is back")
+        bucket = re.search(r"\.chip \.n-bucket \{([^}]*)\}", self.css)
+        self.assertIsNotNone(bucket, "no bucket badge rule")
+        self.assertNotIn("--accent", bucket.group(1))
+        self.assertIn("--chrome", bucket.group(1))
 
     def test_signal_colours_are_still_reserved(self):
         """--accent means unread, --fault means something is wrong. Neither
@@ -1908,17 +2028,86 @@ class TestLegibility(unittest.TestCase):
         self.css = self.CSS.read_text()
         self.tokens = dict(re.findall(r"(--[\w-]+):\s*(#[0-9a-f]{6})", self.css))
 
-    def test_every_text_token_clears_7to1_on_both_surfaces(self):
-        ground, raised = self.tokens["--ground"], self.tokens["--raised"]
-        surfaces = {"--ground", "--raised", "--sunken"}
-        venues = {"--syd", "--tyo", "--hkg", "--lon", "--nyc"}
-        for name, value in self.tokens.items():
-            if name in surfaces or name in venues or name.startswith("--edge"):
+    SURFACES = ("--ground", "--raised", "--sunken")
+    VENUES = ("--syd", "--tyo", "--hkg", "--lon", "--nyc")
+    FLOOR_TEXT = 7.0
+    FLOOR_NONTEXT = 3.0          # WCAG 1.4.11, for UI parts that are not text
+
+    def text_pairs(self):
+        """Every (token, surface) pair that will carry text, with its ratio."""
+        skip = set(self.SURFACES) | set(self.VENUES)
+        for name, value in sorted(self.tokens.items()):
+            if name in skip or name.startswith("--edge"):
                 continue
-            for surface, label in ((ground, "ground"), (raised, "raised")):
-                r = self._ratio(value, surface)
+            for surface in self.SURFACES:
+                yield name, surface, self._ratio(value, self.tokens[surface])
+
+    def test_every_text_token_clears_7to1_on_every_surface(self):
+        # All THREE surfaces, not two. --sunken was never checked, and a
+        # token can only be trusted on a surface it was measured against.
+        pairs = list(self.text_pairs())
+        self.assertTrue(pairs)
+        for name, surface, r in pairs:
+            with self.subTest(token=name, surface=surface):
                 self.assertGreaterEqual(
-                    r, 7.0, f"{name} {value} is {r:.2f}:1 on {label}, below 7:1")
+                    r, self.FLOOR_TEXT,
+                    f"{name} on {surface} is {r:.3f}:1, below {self.FLOOR_TEXT}:1")
+
+    def test_the_tightest_pair_is_written_down_and_still_true(self):
+        """The floor is cleared by 0.013 and nothing said so.
+
+        A margin that thin is a silent break waiting for the next palette
+        edit, so the tightest pair is recorded in the stylesheet header and
+        checked here against a freshly computed value. Change a colour and
+        this fails until you have re-measured and written the new number
+        down - which is the point.
+        """
+        import re
+        name, surface, ratio = min(self.text_pairs(), key=lambda p: p[2])
+        declared = re.search(
+            r"TIGHTEST TEXT PAIR:\s*(--[\w-]+) on (--[\w-]+)\s*=\s*([\d.]+):1",
+            self.css)
+        self.assertIsNotNone(
+            declared, "the stylesheet no longer records its tightest text pair")
+        self.assertEqual((name, surface), (declared.group(1), declared.group(2)),
+                         f"tightest pair is now {name} on {surface}, "
+                         f"not {declared.group(1)} on {declared.group(2)}")
+        self.assertAlmostEqual(
+            ratio, float(declared.group(3)), places=2,
+            msg=f"tightest pair measures {ratio:.3f}:1, header says "
+                f"{declared.group(3)}:1")
+
+    def test_non_text_tokens_clear_the_3to1_floor(self):
+        # Dividers and chip borders are UI parts, not text: 1.4.11 asks 3:1,
+        # not 7:1, and holding them to 7:1 would push them into the content
+        # range where they would compete with what they frame.
+        for name in ("--edge", "--edge-hi"):
+            r = self._ratio(self.tokens[name], self.tokens["--ground"])
+            with self.subTest(token=name):
+                self.assertGreaterEqual(
+                    r, self.FLOOR_NONTEXT,
+                    f"{name} is {r:.2f}:1 on ground, below {self.FLOOR_NONTEXT}:1")
+
+    def test_the_two_coincidentally_equal_tokens_are_flagged_as_such(self):
+        """--ink-2 and --chrome-hi hold the same hex today by coincidence.
+
+        They are in different families and either may move without the
+        other, so a future edit to one would diff as a no-op against the
+        other. That has to be written down or it is a trap.
+        """
+        import collections
+        by_hex = collections.defaultdict(list)
+        floor(self, self.tokens, "colour tokens", 10)
+        for name, value in self.tokens.items():
+            by_hex[value.lower()].append(name)
+        for value, names in by_hex.items():
+            if len(names) < 2:
+                continue
+            with self.subTest(hex=value, tokens=names):
+                self.assertIn(
+                    "coincidence", self.css,
+                    f"{names} share {value} with nothing saying whether that "
+                    f"is deliberate")
 
     def test_surface_step_is_visible_without_a_border(self):
         r = self._ratio(self.tokens["--raised"], self.tokens["--ground"])
@@ -1960,10 +2149,15 @@ class TestLegibility(unittest.TestCase):
         users = set()
         for m in re.finditer(r"([^{}]+)\{([^}]*)\}", self.css):
             if "var(--accent)" in m.group(2):
-                users.add(m.group(1).strip().split("\n")[-1].strip())
+                for sel in m.group(1).strip().split(","):
+                    users.add(sel.strip().split("\n")[-1].strip())
+        self.assertTrue(users, "no --accent users found; the scan is broken")
         for sel in users:
+            # `.n` used to be allowed wholesale, which let ANY element named
+            # .n claim amber - including the bucket counts. Only the unread
+            # badge qualifies now.
             self.assertTrue(
-                "unread" in sel or ".n" in sel or "focus-visible" in sel,
+                "unread" in sel or "n-unread" in sel or "focus-visible" in sel,
                 f"{sel} uses --accent but is not unread or focus")
 
 
@@ -2034,6 +2228,11 @@ class LocaleTests(unittest.TestCase):
     The point of the completeness test is that adding a string cannot
     silently break another language: a new key in en.json fails here until
     every shipped locale has it.
+
+    ONE DIRECTION ONLY, and deliberately so. This compares the locale files
+    with each other; it cannot see a key that is referenced in code and
+    missing from BOTH files, because both files agree it does not exist and
+    the comparison passes. TranslationKeyReachTests covers that direction.
     """
 
     def setUp(self):
@@ -2058,7 +2257,7 @@ class LocaleTests(unittest.TestCase):
     def test_no_locale_carries_a_key_english_does_not(self):
         # A key with no English original cannot fall back, so it can only
         # ever render in one language or as the raw key.
-        for locale in self.i18n.available():
+        for locale in floor(self, self.i18n.available(), "locale files", 2):
             if locale == "en":
                 continue
             with self.subTest(locale=locale):
@@ -2072,7 +2271,7 @@ class LocaleTests(unittest.TestCase):
         # information the sentence existed to carry.
         import re
         fields = lambda s: set(re.findall(r"\{(\w+)\}", s))
-        for locale in self.i18n.available():
+        for locale in floor(self, self.i18n.available(), "locale files", 2):
             if locale == "en":
                 continue
             other = self.i18n.flatten(self.i18n.load(locale))
@@ -2105,7 +2304,7 @@ class LocaleTests(unittest.TestCase):
 
     def test_merged_catalogue_is_complete_for_every_locale(self):
         # The client gets one object and never does fallback itself.
-        for locale in self.i18n.available():
+        for locale in floor(self, self.i18n.available(), "locale files", 2):
             with self.subTest(locale=locale):
                 merged = self.i18n.flatten(self.i18n.Translator(locale).merged())
                 self.assertEqual(set(merged), set(self.en))
@@ -2122,7 +2321,7 @@ class LocaleTests(unittest.TestCase):
         # one of these turns up in a locale file, someone has translated a
         # fact instead of the label around it.
         facts = ("4pm AEST", "09:15 CST", "16:00 CET", "15:30 ET")
-        for locale in self.i18n.available():
+        for locale in floor(self, self.i18n.available(), "locale files", 2):
             blob = "\n".join(self.i18n.flatten(self.i18n.load(locale)).values())
             for fact in facts:
                 with self.subTest(locale=locale, fact=fact):
@@ -2425,7 +2624,7 @@ class CninfoTests(unittest.TestCase):
 
     def test_undecoded_category_codes_are_not_shown_as_filter_chips(self):
         feed = self.cninfo.parse(self.source, self.body("cninfo_300750.json"))
-        for item in feed.items:
+        for item in floor(self, feed.items, "parsed announcements"):
             self.assertIsNone(item["type_tags"])
 
 
@@ -2965,3 +3164,948 @@ class BackfillInterruptionTests(TempDB):
     def test_the_debug_flag_is_global_not_per_subcommand(self):
         cli = (ROOT / "macrowire/__main__.py").read_text()
         self.assertIn('parser.add_argument("--debug"', cli)
+
+
+class FilterPanelTests(TempDB):
+    """The drawer used to push 195 items below the fold and print two
+    differently-scoped numbers with nothing saying which was which."""
+
+    def setUp(self):
+        super().setUp()
+        self.css = (ROOT / "macrowire/web/static/style.css").read_text()
+        self.js = (ROOT / "macrowire/web/static/app.js").read_text()
+        self.html = (ROOT / "macrowire/web/static/index.html").read_text()
+        self.seed()
+
+    def seed(self):
+        """Real rows across several axes.
+
+        The count tests were written against an empty TempDB, so `facets`
+        returned empty lists and every per-entry assertion was skipped. The
+        floor caught it; this is the other half of the fix.
+        """
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        for n, name in enumerate(("rba_media_releases", "hkma_press", "ecb_press")):
+            src = SOURCES[name]
+            sid = db.upsert_source(self.conn, src.name, src.kind, src.config)
+            for k in range(3):
+                self.conn.execute(
+                    """INSERT INTO items (id, source_id, title, url, fetched_at,
+                                          published_at, fx_state, type_primary)
+                       VALUES (?, ?, ?, 'http://x', ?, ?, ?, ?)""",
+                    (f"seed{n}{k}", sid, f"Item {n}{k}", now.isoformat(),
+                     (now - timedelta(hours=k)).isoformat(),
+                     "fx" if k else "unclassified",
+                     "Press Release" if k else "Speech"))
+        self.conn.commit()
+
+    # --- 1. the ceiling ---------------------------------------------------
+
+    def test_the_panel_cannot_grow_past_a_fraction_of_the_viewport(self):
+        import re
+        rule = re.search(r"\.fpanel \{([^}]*)\}", self.css)
+        self.assertIsNotNone(rule)
+        body = rule.group(1)
+        self.assertIn("max-height", body,
+                      "the panel has no ceiling; it pushes the tape off screen")
+        self.assertIn("overflow-y: auto", body,
+                      "a ceiling without a scroll just clips the last axis")
+        self.assertIn("vh", body, "the ceiling must be relative to the viewport")
+
+    def test_the_ceiling_leaves_more_than_half_the_viewport_for_the_tape(self):
+        import re
+        vh = float(re.search(r"max-height:\s*min\((\d+)vh", self.css).group(1))
+        self.assertLessEqual(vh, 50.0,
+                             f"panel may take {vh}vh, leaving under half for the tape")
+
+    # --- 2. both counts, one unit ----------------------------------------
+
+    def test_every_axis_carries_both_counts(self):
+        from macrowire.web import queries
+        f = queries.facets(self.conn, list(SOURCES.values()), 1)
+        flat = list(f["fx"]) + list(f["jurisdiction"]) + list(f["source"]) + list(f["ticker"])
+        for group in f["type"]:
+            flat += list(group["primary"]) + list(group["tags"])
+        for entry in floor(self, flat, "facet values", 10):
+            with self.subTest(value=entry["value"]):
+                self.assertIn("count", entry)
+                self.assertIn("unread", entry)
+
+    def test_both_counts_are_in_the_same_unit(self):
+        """They were not. `facets` counted raw item rows and `unread_counts`
+        counted collapsed groups, so HKMA's repeated scam alert was 207 on
+        one axis and 1 on the other - two numbers that could not be compared
+        even once they were labelled."""
+        from macrowire.web import queries
+        sources = list(SOURCES.values())
+
+        def hkma_bucket():
+            f = queries.facets(self.conn, sources, 1)
+            return next(x["count"] for x in f["source"] if x["value"] == "hkma_press")
+
+        before = hkma_bucket()
+        src = SOURCES["hkma_press"]
+        sid = db.upsert_source(self.conn, src.name, src.kind, src.config)
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        for n in range(9):
+            self.conn.execute(
+                """INSERT INTO items (id, source_id, title, url, fetched_at, published_at)
+                   VALUES (?, ?, 'Scam alert related to banks', 'http://x', ?, ?)""",
+                (f"s{n}", sid, now.isoformat(), (now - timedelta(hours=n)).isoformat()))
+        self.conn.commit()
+
+        # Nine identical notices are ONE thing on the tape and must be one
+        # here too, or the bucket count and the tape disagree. Asserted as a
+        # DELTA, so it stays true regardless of what else the fixture holds.
+        self.assertEqual(hkma_bucket() - before, 1,
+                         "nine identical notices did not collapse to one bucket")
+
+    def test_the_axis_counts_sum_to_the_masthead(self):
+        from macrowire.web import queries
+        sources = list(SOURCES.values())
+        f = queries.facets(self.conn, sources, 1)
+        u = queries.unread_counts(self.conn, sources, 1)
+        self.assertEqual(sum(x["count"] for x in f["jurisdiction"]), u["window_total"])
+        self.assertEqual(sum(x["unread"] for x in f["jurisdiction"]), u["total"])
+
+    def test_the_masthead_states_both_scopes(self):
+        from macrowire import i18n
+        self.assertIn("app.unread_and_window", self.js)
+        line = i18n.Translator("en")("app.unread_and_window", unread=7, total=162)
+        self.assertIn("unread", line)
+        self.assertIn("window", line)
+
+    def test_unread_counts_carry_the_window_total(self):
+        from macrowire.web import queries
+        u = queries.unread_counts(self.conn, list(SOURCES.values()), 1)
+        self.assertIn("window_total", u)
+
+    # --- badge semantics --------------------------------------------------
+
+    def test_a_bucket_count_of_zero_is_rendered_not_dropped(self):
+        """A missing badge read as 'no data'. HK had 70 items in the window
+        and printed a bare 'HK' next to 'CN 7'."""
+        self.assertIn("n-bucket", self.js)
+        # the bucket branch is guarded on null/undefined, never on falsiness
+        self.assertIn("c.count === null || c.count === undefined", self.js)
+        self.assertNotIn("count ? `<span class=\"n\">", self.js)
+
+    def test_an_attention_count_of_zero_is_muted_not_dropped(self):
+        """'Caught up' and 'nothing here' are different answers."""
+        self.assertIn("n-unread", self.js)
+        self.assertIn('c.unread ? "" : " zero"', self.js)
+        import re
+        self.assertIsNotNone(re.search(r"\.chip \.n-unread\.zero \{", self.css))
+
+    def test_an_uncomputed_count_is_an_em_dash_never_a_zero(self):
+        self.assertIn("\\u2014", self.js.split("function countBadges")[1][:600])
+        from macrowire.web import queries
+        # facets emits None, not 0, for a value the collapsed pass never saw
+        src = (ROOT / "macrowire/web/queries.py").read_text()
+        self.assertIn('"count": cell["total"] if cell else None', src)
+
+    def test_the_panel_says_what_the_two_numbers_are(self):
+        from macrowire import i18n
+        self.assertIn("filter.legend", self.html)
+        legend = i18n.Translator("en")("filter.legend")
+        self.assertIn("window", legend)
+        self.assertIn("unread", legend)
+
+    # --- 5. per-axis collapse --------------------------------------------
+
+    def test_each_axis_is_its_own_disclosure(self):
+        self.assertIn("<details class=\"fax\"", self.js)
+        self.assertIn("<summary>", self.js)
+        # native disclosure, so keyboard and screen-reader behaviour is free
+        self.assertNotIn("aria-expanded=\"${", self.js)
+
+    def test_an_axis_with_an_active_filter_opens_itself(self):
+        """A collapsed section hiding a filter that is narrowing the tape is
+        the drawer's own problem in miniature."""
+        self.assertIn('${on ? " open" : ""}', self.js)
+
+    def test_a_closed_axis_still_shows_how_many_chips_it_holds(self):
+        self.assertIn('class="fcount"', self.js)
+
+    def test_the_active_filter_marker_is_not_amber(self):
+        import re
+        rule = re.search(r"\.fon \{([^}]*)\}", self.css)
+        self.assertIsNotNone(rule)
+        self.assertNotIn("--accent", rule.group(1),
+                         "an active filter is neither unread nor a fault")
+
+
+class TranslationKeyReachTests(unittest.TestCase):
+    """The other half of the completeness guard.
+
+    `test_every_key_in_the_default_exists_in_every_other_locale` checks the
+    locales against EACH OTHER. A key referenced in code and present in
+    NEITHER file passes it perfectly - both locales agree it does not exist,
+    and the UI renders the raw key. That is the same shape as the CSS
+    scope-gap audit: a test whose reach is narrower than its claim.
+
+    This class checks the direction the other one cannot: every key the code
+    actually asks for resolves in en.json.
+    """
+
+    SCANNED = ("macrowire/web/static/app.js", "macrowire/web/static/index.html")
+
+    def setUp(self):
+        from macrowire import i18n
+        self.i18n = i18n
+        self.en = i18n.load("en")
+
+    def resolves(self, key):
+        node = self.en
+        for part in key.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return False
+            node = node[part]
+        return isinstance(node, str)
+
+    def literal_keys(self):
+        """Every statically-readable key, with where it came from."""
+        import re
+        found = {}
+        files = list(self.SCANNED) + [
+            str(p.relative_to(ROOT)) for p in (ROOT / "macrowire").rglob("*.py")]
+        for name in files:
+            src = (ROOT / name).read_text(encoding="utf-8")
+            # t("a.b") / t('a.b') / t(`a.b`) — no interpolation, no escapes
+            for m in re.finditer(r"""\bt\(\s*(["'`])([a-z][\w.]*)\1""", src):
+                found.setdefault(m.group(2), set()).add(name)
+            # markup that names a key instead of a sentence
+            for m in re.finditer(r'data-i18n(?:-label)?="([^"]+)"', src):
+                found.setdefault(m.group(1), set()).add(name)
+        return found
+
+    def test_every_literal_key_in_the_code_exists_in_english(self):
+        keys = self.literal_keys()
+        # A broken regex would make this pass by finding nothing, which is
+        # the failure mode this whole class exists to close.
+        self.assertGreater(len(keys), 150,
+                           f"only found {len(keys)} keys; the scan is broken")
+        missing = sorted(k for k in keys if not self.resolves(k))
+        self.assertFalse(
+            missing,
+            "keys referenced in code but absent from en.json:\n" + "\n".join(
+                f"  {k}  <- {', '.join(sorted(keys[k]))}" for k in missing))
+
+    def test_every_computed_key_resolves_for_every_value_it_can_take(self):
+        """Keys built at runtime, checked against the real enumerations.
+
+        A prefix check would pass on `filter.fx_state` existing as an object
+        while `filter.fx_state.unclassified` was missing. These enumerate
+        the values the code can actually substitute.
+        """
+        from macrowire.config import FX_STATES
+        from macrowire.web.queries import HEALTH_SEVERITY
+
+        expected = []
+        # app.js: t(`filter.fx_state.${x.value}`)
+        expected += [f"filter.fx_state.{s}" for s in FX_STATES]
+        # app.js: t(`filter.short.${axis}`) and t("filter.axis.<axis>")
+        axes = ("fx", "jurisdiction", "ticker", "source", "type")
+        expected += [f"filter.short.{a}" for a in axes]
+        expected += [f"filter.axis.{a}" for a in axes]
+        # queries.py: t(f"health.{state_key}.{label,meaning,action}")
+        expected += [f"health.{s}.{part}" for s in HEALTH_SEVERITY
+                     for part in ("label", "meaning", "action")]
+        # app.js: t(`rail.sb.${r.key}`)
+        expected += [f"rail.sb.{k}" for k in ("net", "buy", "sell", "turnover")]
+        # __main__.py: t(f"cli.status.{k}") over its LABELS tuple
+        import re
+        cli = (ROOT / "macrowire/__main__.py").read_text()
+        labels = re.search(r"LABELS = \(([^)]*)\)", cli, re.S).group(1)
+        expected += [f"cli.status.{k}" for k in re.findall(r'"(\w+)"', labels)]
+
+        missing = sorted(k for k in expected if not self.resolves(k))
+        self.assertFalse(missing, "computed keys that do not resolve: " + str(missing))
+
+    def test_the_two_halves_together_cover_both_directions(self):
+        """en -> other locales is one direction; code -> en is the other.
+        Neither alone is enough, and only one of them existed."""
+        source = (ROOT / "tests/test_macrowire.py").read_text()
+        self.assertIn("test_every_key_in_the_default_exists_in_every_other_locale",
+                      source)
+        self.assertIn("test_every_literal_key_in_the_code_exists_in_english", source)
+
+
+class CatalogueFreshnessTests(unittest.TestCase):
+    """The page's JS is served from disk per request; its strings were read
+    once at import. Two halves of one feature, two freshnesses - and the
+    result renders as a raw key, which is indistinguishable from a string
+    nobody ever wrote. That is what cost a bug report, twice counting the
+    earlier stale-server incident, so the fix is structural.
+    """
+
+    def setUp(self):
+        from macrowire import i18n
+        self.i18n = i18n
+        self.path = i18n.LOCALES_DIR / "en.json"
+        self.backup = self.path.read_text(encoding="utf-8")
+
+    def tearDown(self):
+        self.path.write_text(self.backup, encoding="utf-8")
+        self.i18n.load("en")          # leave the cache holding the real file
+
+    def rewrite(self, mutate):
+        import collections, json, time
+        tree = json.loads(self.backup, object_pairs_hook=collections.OrderedDict)
+        mutate(tree)
+        self.path.write_text(json.dumps(tree, ensure_ascii=False, indent=2) + "\n",
+                             encoding="utf-8")
+        # mtime resolution can be coarse enough to collide inside one test
+        import os
+        stamp = os.stat(self.path).st_mtime + 1
+        os.utime(self.path, (stamp, stamp))
+
+    def test_a_key_added_while_running_is_visible_without_a_restart(self):
+        self.i18n.load("en")                       # prime the cache
+        self.rewrite(lambda t: t["app"].__setitem__("added_live", "hello"))
+        self.assertEqual(self.i18n.Translator("en")("app.added_live"), "hello")
+
+    def test_an_edited_key_is_re_read(self):
+        self.i18n.load("en")
+        self.rewrite(lambda t: t["app"].__setitem__("title", "Edited"))
+        self.assertEqual(self.i18n.Translator("en")("app.title"), "Edited")
+
+    def test_an_unchanged_file_is_not_re_parsed(self):
+        """It is a cache, not a re-read on every call."""
+        first = self.i18n.load("en")
+        second = self.i18n.load("en")
+        self.assertIs(first, second, "the catalogue is being re-parsed needlessly")
+
+    def test_the_web_app_binds_no_translator_at_import(self):
+        src = (ROOT / "macrowire/web/app.py").read_text()
+        for line in src.split("\n"):
+            if line.startswith(("T = ", "LOCALE = ")):
+                self.fail(f"module-level {line!r} freezes the catalogue at import")
+        self.assertIn("def _translator()", src)
+
+    def test_the_locale_itself_is_read_per_request(self):
+        """`defaults.locale` and a source's `enabled` live in the SAME file.
+        Binding one at import and reading the other per request gave one
+        file two freshnesses in one process."""
+        src = (ROOT / "macrowire/web/app.py").read_text()
+        bootstrap = src[src.index('@app.get("/api/bootstrap")'):]
+        bootstrap = bootstrap[:bootstrap.index("@app.post")]
+        self.assertIn("_translator()", bootstrap,
+                      "bootstrap does not build a translator per request")
+
+    def test_the_cli_may_bind_at_import_because_it_exits(self):
+        """Not every import-time read is the same bug. A CLI process reads
+        its catalogue and exits; there is no window in which the file can
+        change underneath a long-running server."""
+        src = (ROOT / "macrowire/__main__.py").read_text()
+        self.assertIn("t = i18n.Translator(load_locale())", src)
+
+
+class ViewerTimezoneTests(unittest.TestCase):
+    """The viewer's zone moves the ribbon. It must not move a source fact.
+
+    Some strings describe the VIEWER - day headers, the clock, session
+    bars, mark positions. Some describe the SOURCE - "4pm AEST",
+    "09:15 CST", "~16:00 CET", CFTC's Tuesday/Friday. The RBA fixes at 4pm
+    Sydney whether it is read in Sydney or Stuttgart, and a naive sweep
+    that relabelled the second kind would make the rail lie.
+    """
+
+    # The six, lifted from app.js. Not a copy of a list in the test - the
+    # test parses the real constant, so deleting one there fails here.
+    ZONES = ("Australia/Sydney", "America/New_York", "Europe/London",
+             "Asia/Shanghai", "UTC")
+
+    def facts(self):
+        import re
+        js = (ROOT / "macrowire/web/static/app.js").read_text()
+        block = re.search(r"const FACT = \{(.*?)\n\};", js, re.S)
+        self.assertIsNotNone(block, "the FACT constant is gone")
+        pairs = dict(re.findall(r"(\w+):\s*\"([^\"]*)\"", block.group(1)))
+        floor(self, pairs, "source facts in FACT", 5)
+        return pairs
+
+    @contextlib.contextmanager
+    def viewer_in(self, zone):
+        """Run a block as a viewer in `zone`.
+
+        A context manager, not a function returning a module: the first
+        version restored the config path in `finally` BEFORE the caller
+        asserted anything, so every zone silently read as Sydney and the
+        FACT guard would have passed without ever changing a viewer.
+        """
+        import tempfile, yaml as pyyaml
+        from macrowire import config
+        doc = pyyaml.safe_load((ROOT / "sources.yaml").read_text())
+        doc["defaults"]["timezone"] = zone
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
+            pyyaml.safe_dump(doc, fh, allow_unicode=True)
+            temp = Path(fh.name)
+        original = config.DEFAULT_CONFIG_PATH
+        config.DEFAULT_CONFIG_PATH = temp
+        try:
+            from macrowire.web import ribbon
+            yield ribbon
+        finally:
+            config.DEFAULT_CONFIG_PATH = original
+            temp.unlink(missing_ok=True)
+
+    def test_the_harness_actually_changes_the_viewer(self):
+        """Guard on the guard. If viewer_in() stops taking effect, every
+        test below passes by comparing Sydney with Sydney."""
+        with self.viewer_in("America/New_York") as ribbon:
+            self.assertEqual(ribbon.view_label(), "New York")
+        with self.viewer_in("Europe/London") as ribbon:
+            self.assertEqual(ribbon.view_label(), "London")
+
+    # --- the FACT guard ---------------------------------------------------
+
+    def test_source_facts_are_byte_identical_for_every_viewer(self):
+        baseline = self.facts()
+        for zone in self.ZONES:
+            with self.viewer_in(zone) as ribbon:
+                # prove the viewer really moved before claiming the facts did not
+                self.assertEqual(ribbon.now_position()["timezone"], zone)
+                with self.subTest(zone=zone):
+                    self.assertEqual(
+                        self.facts(), baseline,
+                        f"a source fact changed for a viewer in {zone}")
+
+    def test_the_six_facts_are_the_ones_we_think_they_are(self):
+        values = set(self.facts().values())
+        for fact in ("09:15 CST", "15:30 ET", "~16:00 CET", "4pm AEST", "EUR"):
+            self.assertIn(fact, values, f"{fact} is no longer a declared source fact")
+
+    def test_no_source_fact_leaked_into_a_catalogue(self):
+        from macrowire import i18n
+        for locale in floor(self, i18n.available(), "locale files", 2):
+            blob = "\n".join(i18n.flatten(i18n.load(locale)).values())
+            for fact in self.facts().values():
+                if len(fact) < 4:          # "EUR" is also a legitimate word
+                    continue
+                with self.subTest(locale=locale, fact=fact):
+                    self.assertNotIn(fact, blob)
+
+    def test_a_source_timing_block_is_not_the_viewer_zone(self):
+        """sources.yaml timing.timezone is the PUBLISHER's zone and must
+        never be read from the viewer setting."""
+        for src in floor(self, list(SOURCES.values()), "sources", 10):
+            tz = (src.timing or {}).get("timezone")
+            if tz:
+                with self.subTest(source=src.name):
+                    self.assertNotEqual(tz, "system")
+
+    # --- the viewer half DOES move ---------------------------------------
+
+    def test_the_ribbon_label_follows_the_configured_zone(self):
+        for zone, label in (("Australia/Sydney", "Sydney"),
+                            ("America/New_York", "New York"),
+                            ("Europe/London", "London"),
+                            ("UTC", "UTC")):
+            with self.viewer_in(zone) as ribbon, self.subTest(zone=zone):
+                self.assertEqual(ribbon.view_label(), label)
+                self.assertEqual(ribbon.now_position()["timezone"], zone)
+
+    def test_a_fixed_offset_is_refused(self):
+        import tempfile, yaml as pyyaml
+        from macrowire.config import ConfigError, load_timezone
+        doc = pyyaml.safe_load((ROOT / "sources.yaml").read_text())
+        doc["defaults"]["timezone"] = "+10:00"
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
+            pyyaml.safe_dump(doc, fh, allow_unicode=True)
+            temp = Path(fh.name)
+        try:
+            with self.assertRaises(ConfigError) as caught:
+                load_timezone(temp)
+            self.assertIn("DST", str(caught.exception))
+        finally:
+            temp.unlink()
+
+    def test_an_undetectable_system_zone_falls_back_to_utc_not_a_guess(self):
+        from macrowire import config
+        self.assertIn("UTC", (ROOT / "macrowire/config.py").read_text())
+        # and the reason is written down, because UTC looks like a bug
+        self.assertIn("looks like data rather than a misconfiguration",
+                      (ROOT / "macrowire/config.py").read_text())
+
+
+class DstAcrossHemispheresTests(ViewerTimezoneTests):
+    """The Fed publishes at a rock-solid 14:00 ET. It lands at 04:00, 05:00
+    or 06:00 in Sydney across a year, including a three-week window where
+    both hemispheres have switched out of step. Whatever the viewer's zone,
+    that per-instant resolution has to hold.
+    """
+
+    # 14:00 America/New_York, the FOMC statement slot.
+    def fed_local(self, ribbon, day, zone):
+        from datetime import date, datetime, time
+        from zoneinfo import ZoneInfo
+        origin = datetime.combine(day, time(14, 0), tzinfo=ZoneInfo("America/New_York"))
+        return origin.astimezone(ZoneInfo(zone)).strftime("%H:%M")
+
+    def test_a_southern_viewer_sees_the_fed_move_across_the_year(self):
+        from datetime import date
+        seen = {}
+        with self.viewer_in("Australia/Sydney"):
+            for day in (date(2026, 1, 28),    # both on summer time
+                        date(2026, 4, 29),    # AU off, US on
+                        date(2026, 7, 29),    # both off / US on
+                        date(2026, 11, 4)):   # AU on, US off
+                seen[day.isoformat()] = self.fed_local(None, day, "Australia/Sydney")
+        # Three distinct landing times is the measured behaviour; one would
+        # mean a stored offset had crept back in.
+        self.assertGreaterEqual(len(set(seen.values())), 2,
+                                f"the Fed never moves for a Sydney viewer: {seen}")
+        for shown in seen.values():
+            self.assertIn(shown.split(":")[0], {"03", "04", "05", "06", "07"}, seen)
+
+    def test_the_out_of_step_window_is_a_distinct_offset(self):
+        """Between the US spring-forward and the AU fall-back the gap is
+        neither the summer nor the winter value. A fixed offset gets this
+        wrong twice a year in each direction."""
+        from datetime import date
+        march = self.fed_local(None, date(2026, 3, 18), "Australia/Sydney")
+        june = self.fed_local(None, date(2026, 6, 17), "Australia/Sydney")
+        december = self.fed_local(None, date(2026, 12, 16), "Australia/Sydney")
+        self.assertNotEqual(march, june)
+        self.assertNotEqual(june, december)
+
+    def test_a_northern_viewer_crosses_its_own_boundary(self):
+        from datetime import date
+        with self.viewer_in("Europe/London"):
+            winter = self.fed_local(None, date(2026, 1, 28), "Europe/London")
+            summer = self.fed_local(None, date(2026, 7, 29), "Europe/London")
+        # London and New York switch within two weeks of each other, so the
+        # OFFSET BETWEEN THEM barely moves - the local time should be stable
+        # even though both zones changed. That stability is the tell that
+        # each instant was resolved in its own zone.
+        self.assertEqual(winter, summer,
+                         "London/New York should hold a steady 5h gap year-round")
+
+    def test_a_utc_viewer_sees_the_us_switch_and_nothing_else(self):
+        from datetime import date
+        with self.viewer_in("UTC"):
+            winter = self.fed_local(None, date(2026, 1, 28), "UTC")
+            summer = self.fed_local(None, date(2026, 7, 29), "UTC")
+        self.assertEqual(winter, "19:00")   # EST, UTC-5
+        self.assertEqual(summer, "18:00")   # EDT, UTC-4
+
+    def test_the_ribbon_places_a_mark_per_instant_not_per_offset(self):
+        from datetime import date
+        fed = next(s for s in SOURCES.values()
+                   if s.name == "fed_press_monetary" and (s.timing or {}).get("at"))
+        positions = {}
+        with self.viewer_in("Australia/Sydney") as ribbon:
+            for day in (date(2026, 1, 28), date(2026, 7, 29), date(2026, 11, 4)):
+                marks = {m["source"]: m for m in ribbon.marks_for(day, [fed])}
+                mark = marks[fed.name]
+                if mark["position"] is not None:
+                    positions[day.isoformat()] = mark["local_time"]
+        floor(self, positions, "placed Fed marks", 2)
+        self.assertGreater(len(set(positions.values())), 1,
+                           f"the Fed mark never moves across the year: {positions}")
+
+    def test_the_dst_note_reports_the_shift_rather_than_hiding_it(self):
+        from datetime import date
+        fed = next(s for s in SOURCES.values() if s.name == "fed_press_monetary")
+        with self.viewer_in("Australia/Sydney") as ribbon:
+            marks = {m["source"]: m for m in ribbon.marks_for(date(2026, 7, 29), [fed])}
+        note = marks[fed.name].get("shifts")
+        self.assertTrue(note, "a source that moves across the year says nothing about it")
+        self.assertIn("mo", note)
+
+
+class EndpointSmokeTests(unittest.TestCase):
+    """Every GET endpoint is actually called.
+
+    `ribbon.VIEW` was renamed and `/api/ribbon` kept referencing it. 325
+    tests passed: none of them called that endpoint. A suite that tests the
+    functions an endpoint uses, but never the endpoint, cannot see a broken
+    wire between them.
+    """
+
+    def setUp(self):
+        import warnings, tempfile
+        warnings.filterwarnings("ignore")
+        # A throwaway DB, pointed at by env so the app's own _conn() picks
+        # it up. The suite-wide guard still stands: the default path is
+        # refused, and this names an explicit one.
+        self._dir = tempfile.TemporaryDirectory()
+        self._prev = os.environ.get("MACROWIRE_DB")
+        os.environ["MACROWIRE_DB"] = str(Path(self._dir.name) / "smoke.db")
+        conn = db.connect(Path(self._dir.name) / "smoke.db")
+        db.initialise(conn)
+        conn.close()
+        from fastapi.testclient import TestClient
+        from macrowire.web.app import app
+        self.client = TestClient(app)
+        self.src = (ROOT / "macrowire/web/app.py").read_text()
+
+    def tearDown(self):
+        if self._prev is None:
+            os.environ.pop("MACROWIRE_DB", None)
+        else:
+            os.environ["MACROWIRE_DB"] = self._prev
+        self._dir.cleanup()
+
+    def get_routes(self):
+        import re
+        return re.findall(r'@app\.get\("([^"]+)"\)', self.src)
+
+    def test_every_get_route_answers(self):
+        # Parameterised routes are exercised with a real value; the rest as
+        # declared. Anything new shows up here the moment it is added.
+        SUBSTITUTE = {"/static/{path:path}": None, "/": "/"}
+        routes = floor(self, self.get_routes(), "GET routes", 5)
+        for route in routes:
+            if "{" in route and route not in SUBSTITUTE:
+                continue
+            path = SUBSTITUTE.get(route, route)
+            if path is None:
+                continue
+            with self.subTest(route=route):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200,
+                                 f"{route} -> {response.status_code}")
+
+    def test_the_ribbon_endpoint_specifically(self):
+        """The one that broke. It is the only endpoint that resolves a
+        timezone, so it is the only one a zone rename can take down."""
+        payload = self.client.get("/api/ribbon").json()
+        for key in ("day", "sessions", "marks"):
+            self.assertIn(key, payload)
+        floor(self, payload["sessions"], "session rows", 5)
+
+    def test_the_ribbon_endpoint_accepts_an_explicit_day(self):
+        payload = self.client.get("/api/ribbon?day=2026-07-29").json()
+        self.assertEqual(payload["day"], "2026-07-29")
+
+    def test_the_default_db_is_still_unreachable_without_saying_where(self):
+        """Narrowing the guard must not open the hole it was built for."""
+        prev = os.environ.pop("MACROWIRE_DB", None)
+        try:
+            with self.assertRaises(MacroWireError) as caught:
+                db.connect()
+            self.assertIn("refusing", str(caught.exception))
+        finally:
+            if prev is not None:
+                os.environ["MACROWIRE_DB"] = prev
+
+
+class ViewerZoneArithmeticTests(ViewerTimezoneTests):
+    """The label following config is not the same as the CLOCK following it.
+
+    view_label() reads load_timezone() directly, so a hardcoded view_zone()
+    still produced correct-looking labels over Sydney arithmetic. Mutation
+    testing found that: reverting view_zone() to ZoneInfo("Australia/Sydney")
+    passed every timezone test. These assert the numbers, not the words.
+    """
+
+    def test_the_offset_matches_the_configured_zone(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        for zone in ("Australia/Sydney", "America/New_York", "Europe/London", "UTC"):
+            with self.viewer_in(zone) as ribbon, self.subTest(zone=zone):
+                reported = ribbon.now_position()["offset"]
+                expected = (datetime.now(ZoneInfo(zone)).utcoffset().total_seconds()
+                            / 3600.0)
+                self.assertEqual(reported, expected,
+                                 f"{zone} reports {reported}h, actually {expected}h")
+
+    def test_the_now_marker_sits_somewhere_different_in_each_zone(self):
+        from datetime import datetime, timezone as dt_timezone
+        instant = datetime(2026, 7, 29, 12, 0, tzinfo=dt_timezone.utc)
+        seen = {}
+        for zone in ("Australia/Sydney", "America/New_York", "Europe/London", "UTC"):
+            with self.viewer_in(zone) as ribbon:
+                seen[zone] = round(ribbon.now_position(instant)["position"], 4)
+        self.assertEqual(len(set(seen.values())), len(seen),
+                         f"one instant lands at the same ribbon position everywhere: {seen}")
+
+    def test_the_local_clock_differs_by_zone_for_one_instant(self):
+        from datetime import datetime, timezone as dt_timezone
+        instant = datetime(2026, 7, 29, 12, 0, tzinfo=dt_timezone.utc)
+        seen = {}
+        for zone in ("Australia/Sydney", "America/New_York", "UTC"):
+            with self.viewer_in(zone) as ribbon:
+                seen[zone] = ribbon.now_position(instant)["local"]
+        self.assertEqual(len(set(seen.values())), 3, seen)
+        self.assertEqual(seen["UTC"], "12:00:00")
+
+    def test_session_bars_move_with_the_viewer(self):
+        """SYD 10:00-16:00 is at one end of a Sydney band and the middle of
+        a London one. If the bars do not move, the arithmetic is pinned."""
+        from datetime import date
+        day = date(2026, 7, 29)
+        seen = {}
+        for zone in ("Australia/Sydney", "America/New_York", "Europe/London"):
+            with self.viewer_in(zone) as ribbon:
+                rows = {s["key"]: s for s in ribbon.sessions_for(day)}
+                syd = rows["sydney"]["segments"]
+                seen[zone] = round(syd[0]["start"], 4) if syd else None
+        self.assertEqual(len(set(seen.values())), len(seen),
+                         f"the Sydney session bar sits identically everywhere: {seen}")
+
+    def test_a_mark_lands_at_a_different_hour_for_a_different_viewer(self):
+        from datetime import date
+        fed = next(s for s in SOURCES.values() if s.name == "fed_press_monetary")
+        seen = {}
+        for zone in ("Australia/Sydney", "America/New_York", "Europe/London"):
+            with self.viewer_in(zone) as ribbon:
+                for m in ribbon.marks_for(date(2026, 7, 29), [fed]):
+                    if m["position"] is not None:
+                        seen[zone] = m["local_time"]
+        floor(self, seen, "placed marks across zones", 3)
+        self.assertEqual(len(set(seen.values())), 3,
+                         f"the Fed mark shows the same local time everywhere: {seen}")
+        # and the New York viewer sees the publisher's own 14:00
+        self.assertEqual(seen["America/New_York"], "14:00")
+
+
+class SessionOrderingTests(ViewerTimezoneTests):
+    """Rotating the band must not disturb what the band draws."""
+
+    ALL = {"sydney", "tokyo", "hongkong", "london", "newyork"}
+
+    def rows(self, ribbon, day=None):
+        from datetime import date
+        return ribbon.sessions_for(day or date(2026, 7, 29))
+
+    # --- rotation ---------------------------------------------------------
+
+    def test_the_band_starts_at_the_readers_own_market(self):
+        for zone, first in (("Australia/Sydney", "SYD"),
+                            ("America/New_York", "NYC"),
+                            ("Europe/London", "LON"),
+                            ("Asia/Tokyo", "TYO"),
+                            ("Asia/Hong_Kong", "HKG")):
+            with self.viewer_in(zone) as ribbon, self.subTest(zone=zone):
+                self.assertEqual(self.rows(ribbon)[0]["label"], first)
+
+    CANONICAL = ["sydney", "tokyo", "hongkong", "london", "newyork"]
+
+    def test_the_sequence_survives_the_rotation(self):
+        """The band is the trading day in order. Rotating must move the
+        entry point and nothing else - a reordered sequence would destroy
+        the shape the band exists to teach.
+
+        The expected start is stated per zone rather than read off the
+        answer. Deriving it from keys[0] made the test circular, and there
+        is a coincidence waiting in it: rotating this particular sequence
+        at Hong Kong produces EXACTLY alphabetical order, so a sort would
+        have looked like a correct rotation for one viewer in five.
+        """
+        expected_start = {
+            "Australia/Sydney": "sydney", "America/New_York": "newyork",
+            "Europe/London": "london", "Asia/Tokyo": "tokyo",
+            "Asia/Hong_Kong": "hongkong",
+        }
+        for zone, first in expected_start.items():
+            with self.viewer_in(zone) as ribbon, self.subTest(zone=zone):
+                keys = [r["key"] for r in self.rows(ribbon)]
+                self.assertEqual(set(keys), self.ALL, "a session went missing")
+                start = self.CANONICAL.index(first)
+                self.assertEqual(
+                    keys, self.CANONICAL[start:] + self.CANONICAL[:start],
+                    f"{zone} should start at {first}, got {keys}")
+
+    def test_the_band_is_not_merely_sorted(self):
+        """The coincidence, named so it cannot be relied on by accident."""
+        rotated_at_hongkong = self.CANONICAL[2:] + self.CANONICAL[:2]
+        self.assertEqual(rotated_at_hongkong, sorted(self.CANONICAL),
+                         "the coincidence this guards against has gone away; "
+                         "if the session list changed, re-check the guard")
+        # For every OTHER viewer the two must differ, which is what makes
+        # test_the_band_starts_at_the_readers_own_market load-bearing.
+        for zone in ("Australia/Sydney", "America/New_York", "Europe/London"):
+            with self.viewer_in(zone) as ribbon, self.subTest(zone=zone):
+                keys = [r["key"] for r in self.rows(ribbon)]
+                self.assertNotEqual(keys, sorted(self.CANONICAL),
+                                    f"{zone} produced alphabetical order")
+
+    def test_an_unplaceable_viewer_falls_back_to_nearest_not_to_nothing(self):
+        with self.viewer_in("Europe/Zurich") as ribbon:
+            self.assertEqual(self.rows(ribbon)[0]["label"], "LON")
+            self.assertIsNone(ribbon.viewer_jurisdiction())
+
+    def test_fixed_mode_ignores_the_viewer(self):
+        from macrowire import ordering
+        rows = [{"key": k, "tz": t} for k, t in
+                (("sydney", "Australia/Sydney"), ("tokyo", "Asia/Tokyo"),
+                 ("hongkong", "Asia/Hong_Kong"), ("london", "Europe/London"),
+                 ("newyork", "America/New_York"))]
+        out = ordering.rotate_sessions(rows, "America/New_York", "fixed")
+        self.assertEqual([r["key"] for r in out], [r["key"] for r in rows])
+
+    def test_an_explicit_list_wins_and_keeps_unlisted_rows(self):
+        from macrowire import ordering
+        rows = [{"key": k, "tz": ""} for k in
+                ("sydney", "tokyo", "hongkong", "london", "newyork")]
+        out = ordering.rotate_sessions(rows, "UTC", ["newyork", "london"])
+        self.assertEqual([r["key"] for r in out][:2], ["newyork", "london"])
+        self.assertEqual(set(r["key"] for r in out), self.ALL,
+                         "an unlisted session was dropped")
+
+    # --- the wrap, which is what could break ------------------------------
+
+    def segments_are_sane(self, ribbon, zone, day):
+        for row in self.rows(ribbon, day):
+            segs = row["segments"]
+            for i, a in enumerate(segs):
+                self.assertGreaterEqual(a["start"], 0.0)
+                self.assertLessEqual(a["end"], 1.0)
+                self.assertLess(a["start"], a["end"],
+                                f"{zone} {row['label']} zero-width segment")
+                for b in segs[i + 1:]:
+                    self.assertNotEqual(
+                        (a["start"], a["end"]), (b["start"], b["end"]),
+                        f"{zone} {row['label']} renders a DUPLICATE segment")
+                    self.assertLessEqual(
+                        a["end"], b["start"] + 1e-9,
+                        f"{zone} {row['label']} segments OVERLAP: {segs}")
+
+    def test_no_session_renders_duplicate_or_overlapping_segments(self):
+        """The bug that shipped once: a session caught from two adjacent
+        origin dates and drawn twice."""
+        from datetime import date
+        for zone in ("Australia/Sydney", "America/New_York", "Europe/London",
+                     "Asia/Tokyo", "UTC", "Asia/Hong_Kong", "Europe/Zurich"):
+            for day in (date(2026, 1, 28), date(2026, 7, 29),
+                        date(2026, 3, 18), date(2026, 11, 4)):
+                with self.viewer_in(zone) as ribbon, self.subTest(zone=zone, day=day):
+                    self.segments_are_sane(ribbon, zone, day)
+
+    def test_every_viewer_has_at_least_one_wrapping_session(self):
+        """A 24-hour band always cuts something. If nothing wraps for some
+        viewer, the adjacent-date walk has stopped finding the other half."""
+        from datetime import date
+        for zone in ("Australia/Sydney", "America/New_York", "Asia/Tokyo"):
+            with self.viewer_in(zone) as ribbon, self.subTest(zone=zone):
+                wrapped = [r["label"] for r in self.rows(ribbon)
+                           if any(s["continues"] for s in r["segments"])]
+                floor(self, wrapped, f"wrapping sessions for {zone}")
+
+    def test_a_wrap_is_marked_at_both_ends_or_neither(self):
+        """A segment running off the right edge implies one arriving at the
+        left. One marker without the other is half a session drawn."""
+        from datetime import date
+        for zone in ("Australia/Sydney", "America/New_York", "Europe/London",
+                     "Asia/Tokyo", "UTC"):
+            with self.viewer_in(zone) as ribbon:
+                for row in self.rows(ribbon, date(2026, 7, 29)):
+                    edges = {s["continues"] for s in row["segments"]}
+                    with self.subTest(zone=zone, session=row["label"]):
+                        if "into" in edges:
+                            self.assertIn("from", edges,
+                                          f"{row['label']} runs off the right "
+                                          f"edge and never comes back")
+                        if "from" in edges:
+                            self.assertIn("into", edges,
+                                          f"{row['label']} arrives from "
+                                          f"nowhere")
+
+    def test_a_lunch_break_still_reads_as_one_session_in_two_pieces(self):
+        """Tokyo shows three segments for a New York viewer - a whole
+        morning plus both halves of a wrapped afternoon. That is correct
+        and must not be 'fixed' into two."""
+        from datetime import date
+        with self.viewer_in("America/New_York") as ribbon:
+            tyo = next(r for r in self.rows(ribbon, date(2026, 7, 29))
+                       if r["key"] == "tokyo")
+        self.assertTrue(tyo["has_break"])
+        self.assertEqual(len(tyo["segments"]), 3)
+        self.segments_are_sane(ribbon, "America/New_York", date(2026, 7, 29))
+
+    def test_rotation_does_not_change_any_segment(self):
+        """Ordering is presentation. It must not be able to touch the
+        arithmetic, so the same zone under two orderings draws the same
+        geometry."""
+        from datetime import date
+        import tempfile, yaml as pyyaml
+        from macrowire import config
+        day = date(2026, 7, 29)
+
+        def geometry(mode):
+            doc = pyyaml.safe_load((ROOT / "sources.yaml").read_text())
+            doc["defaults"]["timezone"] = "America/New_York"
+            doc["defaults"]["session_order"] = mode
+            with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
+                pyyaml.safe_dump(doc, fh, allow_unicode=True)
+                temp = Path(fh.name)
+            original = config.DEFAULT_CONFIG_PATH
+            config.DEFAULT_CONFIG_PATH = temp
+            try:
+                from macrowire.web import ribbon
+                return {r["key"]: [(s["start"], s["end"], s["continues"])
+                                   for s in r["segments"]]
+                        for r in ribbon.sessions_for(day)}
+            finally:
+                config.DEFAULT_CONFIG_PATH = original
+                temp.unlink(missing_ok=True)
+
+        self.assertEqual(geometry("viewer"), geometry("fixed"))
+
+
+class JurisdictionOrderingTests(ViewerTimezoneTests):
+    CODES = ["AU", "CN", "EU", "HK", "JP", "UK", "US"]
+
+    def test_the_readers_market_leads_then_alphabetical(self):
+        from macrowire import ordering
+        self.assertEqual(ordering.order_jurisdictions(self.CODES, "US"),
+                         ["US", "AU", "CN", "EU", "HK", "JP", "UK"])
+        self.assertEqual(ordering.order_jurisdictions(self.CODES, "AU"),
+                         ["AU", "CN", "EU", "HK", "JP", "UK", "US"])
+
+    def test_an_unplaceable_reader_gets_plain_alphabetical(self):
+        from macrowire import ordering
+        for viewer in (None, "CH", "BR"):
+            with self.subTest(viewer=viewer):
+                self.assertEqual(ordering.order_jurisdictions(self.CODES, viewer),
+                                 sorted(self.CODES))
+
+    def test_a_reader_whose_market_has_no_items_gets_alphabetical(self):
+        """Ordering must not invent a chip for a jurisdiction with nothing
+        in the window - populated-only is a rule the ordering inherits."""
+        from macrowire import ordering
+        present = ["CN", "HK", "JP"]
+        self.assertEqual(ordering.order_jurisdictions(present, "US"),
+                         ["CN", "HK", "JP"])
+
+    def test_the_order_is_stable_regardless_of_counts(self):
+        """Volume-ordering would move a control between renders."""
+        from macrowire import ordering
+        first = ordering.order_jurisdictions(self.CODES, "AU")
+        second = ordering.order_jurisdictions(list(reversed(self.CODES)), "AU")
+        self.assertEqual(first, second)
+
+    def test_one_ordering_serves_both_the_chips_and_the_rail(self):
+        """They disagreed: chips alphabetical in SQL, health hardcoded in
+        JavaScript."""
+        js = (ROOT / "macrowire/web/static/app.js").read_text()
+        self.assertNotIn('["AU", "CN", "HK", "JP", "US", "EU", "UK"]', js)
+        self.assertIn("d.jurisdiction_order", js)
+        queries = (ROOT / "macrowire/web/queries.py").read_text()
+        self.assertEqual(queries.count("def jurisdiction_order"), 1)
+
+    def test_an_explicit_list_is_honoured(self):
+        from macrowire import ordering
+        out = ordering.order_jurisdictions(self.CODES, "AU", ["US", "UK"])
+        self.assertEqual(out[:2], ["US", "UK"])
+        self.assertEqual(set(out), set(self.CODES))
+
+    def test_an_unknown_code_in_config_is_refused(self):
+        import tempfile, yaml as pyyaml
+        from macrowire.config import ConfigError, load_ordering
+        doc = pyyaml.safe_load((ROOT / "sources.yaml").read_text())
+        doc["defaults"]["jurisdiction_order"] = ["US", "ZZ"]
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
+            pyyaml.safe_dump(doc, fh, allow_unicode=True)
+            temp = Path(fh.name)
+        try:
+            with self.assertRaises(ConfigError) as caught:
+                load_ordering(temp)
+            self.assertIn("ZZ", str(caught.exception))
+        finally:
+            temp.unlink()

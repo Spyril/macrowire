@@ -76,8 +76,16 @@ USER_ID = db.LOCAL_USER_ID
 # One translator for the process. The locale is a config decision, not a
 # per-request one: there is a single local user and no Accept-Language to
 # negotiate with.
-LOCALE = load_locale()
-T = i18n.Translator(LOCALE)
+def _translator() -> i18n.Translator:
+    """Per request, not per process.
+
+    `sources.yaml` is read fresh by _sources() on every request, so binding
+    `defaults.locale` out of the SAME FILE at import gave one file two
+    freshnesses in one process: disabling a source took effect immediately
+    and changing the locale did not. The Translator itself caches on mtime,
+    so this is a stat and a dict lookup unless something actually changed.
+    """
+    return i18n.Translator(load_locale())
 
 app = FastAPI(title="MacroWire", docs_url=None, redoc_url=None)
 
@@ -123,6 +131,7 @@ def bootstrap():
     """
     conn = _conn()
     sources = _sources()
+    translator = _translator()
     payload = {
         "sources": queries.sources_meta(conn, sources),
         "now": ribbon.now_position(),
@@ -132,10 +141,10 @@ def bootstrap():
         "watchlist": wl.entries(conn, USER_ID),
         # The whole catalogue, once, on load. It is a few kilobytes and it
         # means the page never renders a label before its text arrives.
-        "locale": LOCALE,
+        "locale": translator.locale,
         # Without `cli`: ninety terminal strings the page can never render,
         # sent on every load.
-        "strings": T.merged(exclude=("cli",)),
+        "strings": translator.merged(exclude=("cli",)),
     }
     conn.close()
     return payload
@@ -191,7 +200,8 @@ def watchlist_remove(request: WatchlistRequest):
 @app.get("/api/ribbon")
 def ribbon_data(day: str | None = None):
     try:
-        target = date.fromisoformat(day) if day else datetime.now(ribbon.VIEW).date()
+        target = (date.fromisoformat(day) if day
+              else datetime.now(ribbon.view_zone()).date())
     except ValueError:
         raise HTTPException(400, "day must be YYYY-MM-DD")
     sources = _sources()
@@ -224,7 +234,7 @@ def tape(days: int = 30, sources: str | None = None, jurisdictions: str | None =
 def rail():
     conn = _conn()
     sources = _sources()
-    payload = queries.rail(conn, sources, T)
+    payload = queries.rail(conn, sources, _translator())
     # Measured, not assumed: whether the irreplaceable rows are actually
     # written somewhere, and whether that somewhere is off this disk.
     payload["export"] = _export_state(conn, sources)

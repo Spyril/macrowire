@@ -10,7 +10,8 @@
     "first_run": "first run — {n} existing items marked read. Only what arrives from now on will show as unread.",
     "loading": "loading…",
     "failed": "failed: {message}",
-    "aria_ribbon": "Session ribbon"
+    "aria_ribbon": "Session ribbon",
+    "unread_and_window": "{unread} unread · {total} in window"
   },
   "ribbon": {
     "note": "local time computed per instant — offsets are never stored",
@@ -62,7 +63,11 @@
     "empty_ticker": "no watchlisted ticker has items in this window",
     "empty_type": "no source in this window has more than one type",
     "type_items": "8-K items",
-    "aria_panel": "Filters"
+    "aria_panel": "Filters",
+    "count_unknown": "not counted",
+    "aria_counts": "{label}, {total} in window, {unread} unread",
+    "aria_unknown": "{label}, count unavailable",
+    "legend": "Each chip shows items in window · unread"
   },
   "watchlist": {
     "add": "add",
@@ -379,7 +384,22 @@
       "watchlist_list": "show the watchlist",
       "watchlist_refresh": "re-download the SEC ticker map",
       "status": "per-source health",
-      "debug": "show the full traceback instead of a summary"
+      "debug": "show the full traceback instead of a summary",
+      "locales": "list interface languages and their coverage",
+      "locales_all": "list every missing key, not the first few"
+    },
+    "locales": {
+      "header": "interface languages in {path}",
+      "row": "{locale}  {name}  {present}/{total} ({percent}%){flags}",
+      "active": "  <- active, from sources.yaml",
+      "source_of_truth": "  <- source of truth",
+      "complete": "every locale is complete",
+      "missing_head": "{locale} is missing {n} key(s):",
+      "more": "... and {n} more (use --all to list them)",
+      "orphaned_head": "{locale} has {n} key(s) that do not exist in {default}:",
+      "orphaned_note": "A key with no English original cannot fall back, so it renders in one language only. Usually a typo or a string removed from en.",
+      "partial_note": "A partial locale is usable: every missing key falls back to {default} on its own, so nothing renders blank or as a raw key.",
+      "contribute": "To add one: copy {default}.json, translate the values, save it as <code>.json alongside, and set locale in sources.yaml. Translate values only - never the keys, and never a publication time."
     }
   }
 }

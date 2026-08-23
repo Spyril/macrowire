@@ -107,10 +107,18 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     to pass a temp path fails loudly instead of quietly writing fabricated
     rows into six years of collected history.
     """
-    if path is None and os.environ.get("MACROWIRE_REFUSE_DEFAULT_DB"):
+    # Fires on the DEFAULT path, which is what the guard is named for. An
+    # explicit path, or MACROWIRE_DB naming a throwaway, is a deliberate
+    # choice of somewhere safe and is allowed - the app's own _conn() takes
+    # no argument, so redirecting it by env is the only way to exercise an
+    # endpoint at all. What stays impossible is reaching the real database
+    # by forgetting to say where to write.
+    if (path is None and os.environ.get("MACROWIRE_REFUSE_DEFAULT_DB")
+            and not os.environ.get("MACROWIRE_DB")):
         raise MacroWireError(
             "refusing to open the default database: MACROWIRE_REFUSE_DEFAULT_DB "
-            "is set. Pass an explicit path - tests must use a throwaway DB."
+            "is set. Pass an explicit path, or set MACROWIRE_DB to a throwaway "
+            "- tests must never reach collected history."
         )
     path = path or db_path()
     path.parent.mkdir(parents=True, exist_ok=True)

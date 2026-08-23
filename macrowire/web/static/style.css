@@ -1,10 +1,25 @@
 /* MacroWire — a wire terminal for one reader.
  *
- * PALETTE. Ink-on-slate at a base of #14181d. An earlier pass used #0b0d10
- * to avoid OLED halation; on a non-OLED panel that buys nothing and costs
- * legibility, so the base is lifted and panels sit above it at #232a35 —
- * a 1.23:1 surface step, which is where an unbordered edge becomes visible
- * without needing a rule to announce it.
+ * PALETTE. Ink-on-slate at a base of #14181d.
+ *
+ * A DARKER BASE MEASURES BETTER AND WAS REJECTED ANYWAY. Do not "fix" this
+ * by darkening it. At #0b0e14 every text token scores HIGHER than it does
+ * here:
+ *
+ *     ink 15.40 -> 16.69    ink-3  8.66 ->  9.38
+ *     chrome 9.32 -> 10.10  accent 9.23 -> 10.00
+ *
+ * A contrast pass would endorse the change. It was reverted on observation:
+ * on the author's non-OLED panel the darker ground haloes and near-black
+ * text smears, which is a property of the display that a luminance ratio
+ * does not model. Contrast is NECESSARY, NOT SUFFICIENT, and this is the
+ * case that proves it — the number said one thing and the eye said another,
+ * and the eye was looking at the actual screen. The earlier note here
+ * called it an OLED-vs-not tradeoff, which is exactly the reasoning that
+ * would tempt the next reader to revert it.
+ *
+ * Panels sit above the base at #232a35 — a 1.23:1 surface step, which is
+ * where an unbordered edge becomes visible without a rule to announce it.
  *
  * TWO TOKEN FAMILIES, and the distinction matters more than the hues:
  *
@@ -19,13 +34,40 @@
  *     used one faint token for both, so dimming an HKMA notice and
  *     labelling the rail drew from the same well at 2.66:1.
  *
- * Every token carrying text clears 7:1 on BOTH surfaces. Nothing renders
- * below 12px anywhere.
+ * Every token carrying text clears 7:1 on ALL THREE surfaces. Nothing
+ * renders below 12px anywhere.
+ *
+ * TIGHTEST TEXT PAIR: --ink-3 on --raised = 7.01:1
+ *
+ * That line is asserted by the test suite against a freshly computed value,
+ * so it cannot rot. Read the margin before touching a colour: it is 0.01,
+ * and ONE hex step lighter on --raised (#242b36) drops it to 6.92 and
+ * breaks the floor. A palette change here is a measurement, not a taste
+ * decision - compute every foreground/background pair before and after.
  *
  * ACCENT. Exactly one — amber --accent — and it means unread. Two other
  * signals exist and are deliberately not amber: --fault for a failing or
  * stale source, --cursor for the now-marker. If a second thing were amber,
- * unread would stop meaning unread.
+ * unread would stop meaning unread. Seven unread items in a window of 162
+ * is a 4% signal, and pop-out only works while the target is unique in its
+ * channel.
+ *
+ * COLOUR-ENCODES-CATEGORY IS SCOPED, NOT FORBIDDEN — and the ribbon is the
+ * exception, so the next reader does not read a contradiction. --syd --tyo
+ * --hkg --lon --nyc give five venues five hues, and that is allowed there
+ * for four reasons that do not hold on the tape:
+ *
+ *   1. the band is FIXED at five rows — colour never has to scale, whereas
+ *      the tape's axes run to sixteen sources and an unbounded watchlist;
+ *   2. every row is LABELLED, so hue reinforces a name already present
+ *      rather than replacing one;
+ *   3. position carries the meaning; colour is redundant, not load-bearing;
+ *   4. NO UNREAD MARKER APPEARS IN THE RIBBON, so nothing competes with
+ *      amber there.
+ *
+ * Tinting a tape chip fails all four. That is the distinction — not that
+ * hue is banned, but that it is affordable exactly where it is bounded,
+ * labelled, redundant, and not sharing a surface with the unread gutter.
  *
  * TYPE. IBM Plex Mono for every timestamp, rate and count: installed
  * locally, true tabular figures so numeric columns align without hacks.
@@ -42,12 +84,17 @@
 
   /* content — things you read */
   --ink:        #e9eff6;   /* 15.4 : 1 on ground */
-  --ink-2:      #c6d0dc;   /* 11.4 : 1 */
+  --ink-2:      #c6d0dc;   /* 11.4 : 1 — same hex as --chrome-hi TODAY, and
+                              that is coincidence, not aliasing. They are in
+                              different families and either may move without
+                              the other; if you change one, a diff against
+                              the other will look like a no-op and will not
+                              be one. Do not collapse them into one token. */
   --ink-3:      #aab6c4;   /*  8.7 : 1 — quiet content, still readable */
 
   /* chrome — structure. never dimmed with content. */
   --chrome:     #b0bdca;   /*  9.2 : 1 */
-  --chrome-hi:  #c6d0dc;
+  --chrome-hi:  #c6d0dc;   /* see --ink-2: equal by coincidence, not by rule */
   /* Structural, not text: WCAG 1.4.11 asks 3:1 for non-text UI, not 7:1.
      Both clear it on the ground surface. */
   --edge:       #5a6775;   /* dividers        3.08:1 */
@@ -189,13 +236,40 @@ kbd { font-family: var(--mono); font-size: 12px; color: var(--chrome);
           background: var(--ground); color: var(--chrome-hi); cursor: pointer; }
 .fclear:hover { color: var(--ink); border-color: var(--chrome); }
 
+/* A CEILING, not a tuning. The panel is in normal flow, so its height comes
+   straight off the tape - and it GROWS with the source count: eleven source
+   chips today, sixteen when everything is enabled, and the type axis grows
+   with every source that has more than one type. Open, it pushed 195 items
+   entirely below the fold. A max-height makes that structurally impossible
+   however many sources are added later. */
 .fpanel { background: var(--raised); border-bottom: 1px solid var(--edge);
-          padding: 14px 20px 12px; }
-.fgrid { display: grid; grid-template-columns: max-content minmax(0,1fr);
-         gap: 12px 16px; align-items: start; }
+          padding: 14px 20px 12px;
+          max-height: min(44vh, 420px); overflow-y: auto;
+          overscroll-behavior: contain; }
+.fgrid { display: block; }
+.fax { border-bottom: 1px solid var(--edge); }
+.fax:last-child { border-bottom: none; }
+.fax > summary { display: flex; align-items: baseline; gap: 8px; cursor: pointer;
+                 padding: 7px 0; list-style: none; }
+.fax > summary::-webkit-details-marker { display: none; }
+/* A disclosure triangle drawn in text, so there is no icon font and no SVG. */
+.fax > summary::before { content: "\25b8"; color: var(--chrome);
+                         font-size: 12px; width: 10px; }
+.fax[open] > summary::before { content: "\25be"; }
+.fax > summary:hover .faxis { color: var(--ink); }
+.fax > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fax > .fgroup { padding: 2px 0 10px 18px; }
 .faxis { font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
-         text-transform: uppercase; color: var(--chrome-hi); padding-top: 4px;
+         text-transform: uppercase; color: var(--chrome-hi);
          white-space: nowrap; }
+/* How many chips are behind the summary. A bucket count, so it is neutral. */
+.fcount { font-family: var(--mono); font-size: 12px; color: var(--chrome);
+          font-variant-numeric: tabular-nums; }
+/* How many filters are ACTIVE on a closed axis. Not amber - amber means
+   unread, and an active filter is neither unread nor a fault. */
+.fon { font-family: var(--mono); font-size: 12px; color: var(--ink);
+       font-weight: 600; border: 1px solid var(--chrome); border-radius: 2px;
+       padding: 0 5px; }
 .fgroup { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .fsub { font-family: var(--mono); font-size: 12px; color: var(--chrome);
         letter-spacing: .06em; width: 100%; margin-top: 4px; }
@@ -254,7 +328,19 @@ kbd { font-family: var(--mono); font-size: 12px; color: var(--chrome);
 .chip:hover { color: var(--ink); border-color: var(--chrome); }
 .chip[aria-pressed="true"] { color: var(--ink); border-color: var(--chrome);
                              background: var(--raised); }
-.chip .n { color: var(--accent); margin-left: 6px; font-weight: 600; }
+/* TWO badges. `.n` was one amber number used for BOTH a bucket count and an
+   unread count depending on the axis - so `fx 61` rendered 61 window items
+   in the colour that means unread. Amber now appears on exactly one of the
+   two, and only ever means unread. */
+.chip .n-bucket { color: var(--chrome); margin-left: 6px;
+                  font-variant-numeric: tabular-nums; }
+.chip .n-bucket.unknown { color: var(--chrome); }
+/* Attention. Muted at zero rather than dropped: "caught up" and "nothing
+   here" are different answers and must not render alike. */
+.chip .n-unread { color: var(--accent); margin-left: 5px; font-weight: 600;
+                  font-variant-numeric: tabular-nums; }
+.chip .n-unread.zero { color: var(--chrome); font-weight: 400; opacity: .55; }
+.flegend { font-family: var(--mono); font-size: 12px; color: var(--chrome); }
 .chip:focus-visible, button:focus-visible, a:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px; }
 

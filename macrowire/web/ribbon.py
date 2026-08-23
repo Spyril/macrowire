@@ -16,7 +16,36 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-VIEW = ZoneInfo("Australia/Sydney")
+from .. import ordering
+from ..config import load_ordering, load_timezone
+
+def view_zone() -> ZoneInfo:
+    """The VIEWER's zone, from config. Read per call, never bound at import.
+
+    One file, one lifetime: sources.yaml is read per request everywhere
+    else, so binding this at import would give it two freshnesses - the bug
+    that has already bitten twice. ZoneInfo caches internally, so this is a
+    dict lookup after the first call.
+    """
+    return ZoneInfo(load_timezone())
+
+
+def viewer_jurisdiction() -> str | None:
+    """Which of the seven the reader is in, config first then derived."""
+    declared = load_ordering()["viewer_jurisdiction"]
+    if declared:
+        return declared
+    return ordering.jurisdiction_for_zone(load_timezone())
+
+
+def view_label() -> str:
+    """What to call the viewer's zone on screen: the city, not the offset.
+
+    "Sydney" reads; "UTC+10" does not, and an offset would also be wrong
+    half the year. Australia/Sydney -> Sydney, America/New_York -> New York.
+    """
+    name = load_timezone()
+    return name.rsplit("/", 1)[-1].replace("_", " ")
 
 # Exchange trading hours in each venue's own local time.
 # Continuous trading hours in each venue's own local time, EXCLUDING the
@@ -47,9 +76,9 @@ def _hhmm(value: str) -> time:
     return time(int(hour), int(minute))
 
 
-def _fraction(moment: datetime, day: date) -> float:
+def _fraction(moment: datetime, day: date, view: ZoneInfo | None = None) -> float:
     """Position within the viewed day, 0.0-1.0. May fall outside on wrap."""
-    start = datetime.combine(day, time(0, 0), tzinfo=VIEW)
+    start = datetime.combine(day, time(0, 0), tzinfo=view or view_zone())
     return (moment - start).total_seconds() / 86400.0
 
 
@@ -75,7 +104,10 @@ def _clip(lo: float, hi: float) -> dict | None:
 
 
 def sessions_for(day: date) -> list[dict]:
-    """Each market's hours, resolved for this date and projected into Sydney."""
+    """Each market's hours, resolved for this date and projected into the
+    viewer's zone - whatever that is. Every conversion is per instant, so a
+    hemisphere switching to summer time moves the bar and nothing else."""
+    view = view_zone()
     result = []
     for spec in SESSIONS:
         tz = ZoneInfo(spec["tz"])
@@ -87,13 +119,13 @@ def sessions_for(day: date) -> list[dict]:
             for open_at, close_at in spec["spans"]:
                 opens = datetime.combine(local_day, _hhmm(open_at), tzinfo=tz)
                 closes = datetime.combine(local_day, _hhmm(close_at), tzinfo=tz)
-                lo = _fraction(opens.astimezone(VIEW), day)
-                hi = _fraction(closes.astimezone(VIEW), day)
+                lo = _fraction(opens.astimezone(view), day, view)
+                hi = _fraction(closes.astimezone(view), day, view)
                 seg = _clip(lo, hi)
                 if seg is None:
                     continue
-                seg["opens_local"] = opens.astimezone(VIEW).strftime("%H:%M")
-                seg["closes_local"] = closes.astimezone(VIEW).strftime("%H:%M")
+                seg["opens_local"] = opens.astimezone(view).strftime("%H:%M")
+                seg["closes_local"] = closes.astimezone(view).strftime("%H:%M")
                 spans.append(seg)
         spans.sort(key=lambda x: x["start"])
         # Weekends: markets are shut, but showing the band greyed is more
@@ -104,7 +136,10 @@ def sessions_for(day: date) -> list[dict]:
             "weekend": day.weekday() >= 5,
             "has_break": len(spec["spans"]) > 1,
         })
-    return result
+    # Rotated LAST, after every projection is computed. Ordering is a
+    # presentation decision and must not be able to touch the arithmetic.
+    return ordering.rotate_sessions(
+        result, load_timezone(), load_ordering()["sessions"])
 
 
 def marks_for(day: date, sources) -> list[dict]:
@@ -114,6 +149,7 @@ def marks_for(day: date, sources) -> list[dict]:
     for a source whose interquartile range is seven hours would be a
     decoration, not information.
     """
+    view = view_zone()
     out = []
     for source in sources:
         timing = source.timing or {}
@@ -139,8 +175,8 @@ def marks_for(day: date, sources) -> list[dict]:
         for offset in (-1, 0, 1):
             origin = datetime.combine(
                 day + timedelta(days=offset), _hhmm(timing["at"]), tzinfo=tz)
-            local = origin.astimezone(VIEW)
-            position = _fraction(local, day)
+            local = origin.astimezone(view)
+            position = _fraction(local, day, view)
             if 0 <= position <= 1:
                 placed = (origin, local, position)
                 break
@@ -180,7 +216,8 @@ def _dst_note(timing: dict, day: date) -> str | None:
     seen = {}
     for month in range(1, 13):
         probe = date(day.year, month, 15)
-        local = datetime.combine(probe, _hhmm(timing["at"]), tzinfo=tz).astimezone(VIEW)
+        local = datetime.combine(probe, _hhmm(timing["at"]),
+                                 tzinfo=tz).astimezone(view_zone())
         seen.setdefault(local.strftime("%H:%M"), []).append(probe.strftime("%b"))
     if len(seen) == 1:
         return None
@@ -188,11 +225,16 @@ def _dst_note(timing: dict, day: date) -> str | None:
 
 
 def now_position(moment: datetime | None = None) -> dict:
-    now = (moment or datetime.now(VIEW)).astimezone(VIEW)
+    view = view_zone()
+    now = (moment or datetime.now(view)).astimezone(view)
     return {
-        "position": _fraction(now, now.date()),
+        "position": _fraction(now, now.date(), view),
         "local": now.strftime("%H:%M:%S"),
+        # tzname() of THIS instant, so AEST and AEDT are both correct in
+        # their season rather than one label pinned all year.
         "zone": now.tzname(),
+        "label": view_label(),
+        "timezone": load_timezone(),
         "date": now.date().isoformat(),
         "offset": now.utcoffset().total_seconds() / 3600.0,
     }

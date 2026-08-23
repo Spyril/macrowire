@@ -1504,6 +1504,66 @@ git-hooks/commit-msg
 data/macrowire.db         gitignored
 ```
 
+## Adding a language
+
+Discovery is a directory listing, not a list in code. Drop a JSON file
+into `macrowire/locales/` and it exists:
+
+```bash
+cp macrowire/locales/en.json macrowire/locales/de.json
+# translate the VALUES
+$EDITOR macrowire/locales/de.json
+# then in sources.yaml:  locale: de
+python -m macrowire locales
+```
+
+`macrowire locales` lists what is installed and how complete each one is:
+
+```
+interface languages in macrowire/locales
+  de     Deutsch         192/321 (60%)
+  en     English         321/321 (100%)  <- source of truth  <- active
+  zh-CN  简体中文          321/321 (100%)
+
+  de is missing 129 key(s):
+    app.aria_ribbon
+    ...
+```
+
+**A partial locale is usable.** Missing keys fall back to `en`
+individually, so 60% complete renders 60% translated and 40% English —
+never blank, never a raw key, and every miss logged once. There is no
+threshold to clear before a file is worth shipping.
+
+`en.json` is the source of truth. A key present in another locale but
+absent from `en` is reported as *orphaned*: it cannot fall back, so it
+renders in one language only. Usually a typo or a string removed from
+`en`.
+
+### Translate values. Never keys, and never a publication time.
+
+Some strings describe the **viewer** and some describe the **source**,
+and only the first kind is in the catalogue at all:
+
+| | |
+|---|---|
+| **Viewer-facing** — translate | "Source health", "clear all", "not polled yet" |
+| **Source fact** — NOT in the catalogue | `4pm AEST`, `09:15 CST`, `~16:00 CET`, `Fri 15:30 ET` |
+
+The RBA fixes at 4pm Sydney time whether it is read in Sydney or
+Stuttgart. Those six facts live in a `FACT` constant in `app.js`, outside
+the catalogue, and are interpolated into translated templates — so
+`rail.rba_asof` is `"{time} · {period}"` and never `"4pm AEST · {period}"`.
+Translating the label is correct; changing the fixing time would be a lie.
+**Do not add them to a locale file**, and a test fails if they appear in
+one.
+
+Item titles and summaries are never translated either. A translation is
+an interpretation, and storing one as the record loses the original.
+
+Nothing here is machine-translated. A wrong word in a financial interface
+reads as sloppiness, and two good locales beat six approximate ones.
+
 ## Testing
 
 ```bash
@@ -1521,6 +1581,55 @@ development, and is why the guard exists.
 
 Fixtures in `tests/fixtures/` are real payloads lifted from
 `raw_responses`, trimmed where large.
+
+### A test that cannot fail is worse than no test
+
+It reads as coverage. Three have shipped here, all the same shape — the
+test's **reach** was narrower than its **claim**. The rules are in the
+suite's module docstring; the short version:
+
+- **A loop over a derived collection needs a floor.** `for x in
+  computed(): assertX(...)` passes when `computed()` returns nothing.
+  Use `floor(self, collection, "what", least=N)`. Inline literals need
+  no floor.
+- **A test seeded from an empty fixture asserts nothing.** Seed it, then
+  floor the loop.
+- **Scan by property, not by character range.** A slice stops covering
+  whatever moves past its end marker, and `assertNotIn` inside a slice is
+  vacuous where `assertIn` would fail loudly.
+
+### Mutation testing, and clearing the bytecode
+
+The way to know a guard bites is to break what it guards and watch it
+fail. Afterwards, always:
+
+```bash
+find . -name __pycache__ -type d -not -path "./.git/*" -exec rm -rf {} +
+```
+
+Python invalidates a `.pyc` on `(mtime, size)`. A mutation of the **same
+byte length**, applied and reverted inside one second, changes neither —
+so the interpreter keeps running bytecode compiled from the mutated
+source while the file on disk reads correctly. `"*.json"` → `"*.nope"` →
+restored did exactly that here, and five unrelated tests failed against
+an already-correct file.
+
+### One file, one lifetime
+
+Every loader in `config.py` re-reads on call. **Do not bind one at import
+in a long-running process while something else reads the same file per
+request.** That gives one file two freshnesses, and it has bitten this
+project twice.
+
+The second time, `app.py` bound `LOCALE = load_locale()` at import while
+`_sources()` read `sources.yaml` per request. Disabling a source was live;
+changing `defaults.locale` was not. And because `StaticFiles` serves
+`app.js` from disk every request, new JavaScript asked for strings an old
+in-memory catalogue did not have — which renders as a raw key and looks
+exactly like a string nobody ever wrote.
+
+A short-lived CLI process is exempt: it reads and exits, so there is no
+window for the file to change underneath it.
 
 ## Durability
 

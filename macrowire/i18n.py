@@ -39,7 +39,16 @@ DEFAULT_LOCALE = "en"
 
 log = logging.getLogger("macrowire.i18n")
 
-_cache: dict[str, dict] = {}
+# locale -> (mtime_when_read, catalogue). Keyed on mtime so this is a CACHE
+# and not a FREEZE. It was a freeze, and the difference cost a bug report:
+# the page's JavaScript is served from disk by StaticFiles on every request
+# while the strings it asks for were read once at import, so editing a
+# catalogue with the server running produced new JS asking for keys an old
+# in-memory copy did not have. That renders as a raw key and is
+# indistinguishable from a string nobody ever wrote.
+#
+# Two halves of one feature must not have two different freshnesses.
+_cache: dict[str, tuple[float, dict]] = {}
 _warned: set[tuple[str, str]] = set()
 
 
@@ -48,16 +57,61 @@ def available() -> list[str]:
 
 
 def load(locale: str) -> dict:
-    if locale not in _cache:
-        path = LOCALES_DIR / f"{locale}.json"
-        if not path.exists():
-            if locale == DEFAULT_LOCALE:
-                raise FileNotFoundError(f"default locale file missing: {path}")
-            log.warning("locale %r not found, falling back to %s", locale, DEFAULT_LOCALE)
-            _cache[locale] = {}
-        else:
-            _cache[locale] = json.loads(path.read_text(encoding="utf-8"))
-    return _cache[locale]
+    """The catalogue, re-read whenever the file on disk has changed.
+
+    A stat per call, and a parse only when the mtime moves. Cheap enough
+    that correctness is not worth trading for it: this is a single-user
+    local server and the file is a few kilobytes.
+    """
+    path = LOCALES_DIR / f"{locale}.json"
+    stamp = path.stat().st_mtime if path.exists() else 0.0
+    cached = _cache.get(locale)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+
+    if not path.exists():
+        if locale == DEFAULT_LOCALE:
+            raise FileNotFoundError(f"default locale file missing: {path}")
+        log.warning("locale %r not found, falling back to %s", locale, DEFAULT_LOCALE)
+        catalogue: dict = {}
+    else:
+        catalogue = json.loads(path.read_text(encoding="utf-8"))
+
+    # A key that was missing and has now been added should be able to warn
+    # again if it goes missing a second time, so the once-only log guard is
+    # dropped along with the stale copy.
+    _warned.difference_update({w for w in _warned if w[0] == locale})
+    _cache[locale] = (stamp, catalogue)
+    return catalogue
+
+
+def coverage(locale: str) -> dict:
+    """How complete a locale is against `en`, which is the source of truth.
+
+    A partial catalogue is USABLE, not broken: every missing key falls back
+    to English per key, so a 60%-complete file renders 60% translated and
+    40% English and never a raw key. This exists so a contributor can see
+    what is left rather than diffing two JSON files by hand.
+    """
+    english = {k: v for k, v in flatten(load(DEFAULT_LOCALE)).items()
+               if not k.startswith("_meta.")}
+    theirs = {k: v for k, v in flatten(load(locale)).items()
+              if not k.startswith("_meta.")}
+    present = [k for k in english if k in theirs]
+    missing = [k for k in english if k not in theirs]
+    # A key with no English original cannot fall back, so it can only ever
+    # render in one language. Worth naming separately from "missing".
+    orphaned = [k for k in theirs if k not in english]
+    meta = load(locale).get("_meta") or {}
+    return {
+        "locale": locale,
+        "name": meta.get("name") or locale,
+        "total": len(english),
+        "present": len(present),
+        "missing": sorted(missing),
+        "orphaned": sorted(orphaned),
+        "percent": (100.0 * len(present) / len(english)) if english else 0.0,
+    }
 
 
 def _lookup(catalogue: dict, key: str):

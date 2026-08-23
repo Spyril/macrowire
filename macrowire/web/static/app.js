@@ -43,10 +43,15 @@ const FACT = {
 const AXES = ["fx", "jurisdiction", "ticker", "source", "type"];
 const state = {
   sources: [], facets: null, tape: [], offsetHours: 10,
+  // Filled from the server at boot. "en" and a null label are only the
+  // shape; the real values are config, not defaults worth relying on.
+  locale: "en", zoneLabel: null,
   f: { fx: new Set(), jurisdiction: new Set(), ticker: new Set(),
        source: new Set(), type: new Set() },
 };
 const anyActive = () => AXES.some((a) => state.f[a].size);
+// Where the READER is. Not a source's zone - those are in FACT.
+const viewerZone = () => state.zoneLabel || t("ribbon.viewer_zone");
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -85,7 +90,12 @@ function drawHours() {
 }
 
 function drawRibbon(data) {
-  $("ribbon-day").textContent = t("ribbon.day", { day: data.day, zone: t("ribbon.viewer_zone") });
+  // The zone NAME comes from config via the server, not the catalogue: it
+  // is a fact about this installation, and a translator has no business
+  // turning "New York" into "Sydney". The catalogue holds the sentence
+  // around it. ribbon.viewer_zone remains the fallback for a server that
+  // has not sent one.
+  $("ribbon-day").textContent = t("ribbon.day", { day: data.day, zone: viewerZone() });
   const colours = { sydney: "--syd", tokyo: "--tyo", hongkong: "--hkg",
                     london: "--lon", newyork: "--nyc" };
 
@@ -98,7 +108,7 @@ function drawRibbon(data) {
       const wrapFrom = g.continues === "from" || g.continues === "both"
         ? `<span class="wrapmark" style="left:calc(${g.start * 100}% + 3px)">\u25c2</span>` : "";
       const title = t("ribbon.wrap_title", { label: s.label, open: g.opens_local,
-                                             close: g.closes_local, zone: t("ribbon.viewer_zone") })
+                                             close: g.closes_local, zone: viewerZone() })
         + (g.continues ? " " + t("ribbon.wrap_continues") : "");
       return `<div class="seg" data-continues="${g.continues || ""}"
                    style="left:${g.start * 100}%;width:${(g.end - g.start) * 100}%;
@@ -122,7 +132,7 @@ function drawRibbon(data) {
     const label = m.source.replace(/_/g, " ");
     const short = label.split(" ")[0];
     const tip = t("ribbon.mark_title", { source: label, local: m.local_time,
-                                         zone: t("ribbon.viewer_zone"), origin: m.origin })
+                                         zone: viewerZone(), origin: m.origin })
       + (m.shifts ? "\n" + t("ribbon.mark_shifts", { shifts: m.shifts }) : "")
       + (m.crosses_date ? "\n" + t("ribbon.mark_prev_day") : "");
     return `<div class="mark imp${m.importance}" data-i="${i}"
@@ -278,7 +288,10 @@ function drawTape() {
     const key = syd.toDateString();
     if (key !== lastDay) {
       lastDay = key;
-      html += `<div class="dayhead">${syd.toLocaleDateString("en-AU",
+      // The VIEWER's locale, not a hardcoded en-AU. A day header is the
+      // reader's own calendar; a publication time is not, and those live
+      // in FACT rather than here.
+      html += `<div class="dayhead">${syd.toLocaleDateString(state.locale,
         { weekday: "long", day: "numeric", month: "long" })}</div>`;
     }
     const hh = String(syd.getHours()).padStart(2, "0");
@@ -331,11 +344,39 @@ function observeItems() {
 
 /* ---------------- filter panel ---------------- */
 
-function chip(axis, value, label, count) {
+// TWO badges, never one, because the two numbers answer different questions
+// and used to be told apart by nothing at all. The bucket count is how many
+// are in the window; the attention count is how many of those are unread.
+// Both are collapsed-group counts, so they are comparable.
+//
+//   bucket    neutral, ALWAYS rendered, including 0. Zero is a real bucket
+//             size and an absent badge used to read as "no data" - HK had
+//             70 items and printed a bare "HK" beside "CN 7".
+//   attention amber, muted at 0. "Caught up" and "nothing here" must not
+//             look alike, so 0 is shown quietly rather than dropped.
+//   unknown   an em dash. Never a 0: a number nobody computed is not zero.
+function countBadges(counts) {
+  const c = counts || {};
+  const bucket = c.count === null || c.count === undefined
+    ? `<span class="n-bucket unknown" title="${esc(t("filter.count_unknown"))}">\u2014</span>`
+    : `<span class="n-bucket">${c.count}</span>`;
+  const unread = c.unread === null || c.unread === undefined
+    ? ""
+    : `<span class="n-unread${c.unread ? "" : " zero"}">${c.unread}</span>`;
+  return bucket + unread;
+}
+
+function chip(axis, value, label, counts) {
   const on = state.f[axis].has(value);
+  const c = counts || {};
+  // The screen reader gets the scope spelled out; the sighted reader gets
+  // it from the legend and the two treatments.
+  const described = c.count === null || c.count === undefined
+    ? t("filter.aria_unknown", { label })
+    : t("filter.aria_counts", { label, total: c.count, unread: c.unread ?? 0 });
   return `<button class="chip" data-axis="${axis}" data-value="${esc(value)}"
-                  aria-pressed="${on}">${esc(label)}${
-            count ? `<span class="n">${count}</span>` : ""}</button>`;
+                  aria-pressed="${on}" aria-label="${esc(described)}"
+                  >${esc(label)}${countBadges(c)}</button>`;
 }
 
 function drawPanel(unread) {
@@ -345,15 +386,14 @@ function drawPanel(unread) {
 
   // Three states, and unclassified is OFFERED rather than hidden - if you
   // filter to FX and something is missing, it must be findable.
-  rows.push([t("filter.axis.fx"), (f.fx || []).length
-    ? f.fx.map((x) => chip("fx", x.value, t(`filter.fx_state.${x.value}`), x.count)).join("")
+  rows.push(["fx", t("filter.axis.fx"), (f.fx || []).length
+    ? f.fx.map((x) => chip("fx", x.value, t(`filter.fx_state.${x.value}`), x)).join("")
       + `<span class="fsub">${esc(t("filter.fx_caveat"))}</span>`
-    : `<span class="fempty">${esc(t("filter.empty_window"))}</span>`]);
+    : `<span class="fempty">${esc(t("filter.empty_window"))}</span>`, (f.fx || []).length]);
 
-  rows.push([t("filter.axis.jurisdiction"), f.jurisdiction.length
-    ? f.jurisdiction.map((x) => chip("jurisdiction", x.value, x.value,
-        (unread.per_jurisdiction || {})[x.value] || 0)).join("")
-    : `<span class="fempty">${esc(t("filter.empty_window"))}</span>`]);
+  rows.push(["jurisdiction", t("filter.axis.jurisdiction"), f.jurisdiction.length
+    ? f.jurisdiction.map((x) => chip("jurisdiction", x.value, x.value, x)).join("")
+    : `<span class="fempty">${esc(t("filter.empty_window"))}</span>`, f.jurisdiction.length]);
 
   // Watchlist: filter chips for tickers with items, plus the held-but-quiet
   // ones so they can be removed, plus an add form. Editing lives here rather
@@ -362,9 +402,9 @@ function drawPanel(unread) {
   const withItems = new Set(f.ticker.map((x) => x.value));
   const wlChips = held.map((e) => {
     const hasItems = withItems.has(e.ticker);
-    const count = (f.ticker.find((x) => x.value === e.ticker) || {}).count || 0;
+    const entry = f.ticker.find((x) => x.value === e.ticker);
     const inner = hasItems
-      ? chip("ticker", e.ticker, e.ticker, count)
+      ? chip("ticker", e.ticker, e.ticker, entry)
       : `<button class="chip" disabled title="${esc(t("watchlist.held_quiet"))}"
                  style="opacity:.62;cursor:default">${esc(e.ticker)}</button>`;
     return `<span class="wl-chip">${inner}<button class="wl-del"
@@ -387,32 +427,46 @@ function drawPanel(unread) {
       <button class="fbtn" type="submit">${esc(t("watchlist.add"))}</button>
       <span class="wl-msg" id="wl-msg" role="status" aria-live="polite"></span>
     </form>`;
-  rows.push([t("filter.axis.ticker"),
-    (wlChips || `<span class="fempty">${esc(t("filter.empty_watchlist"))}</span>`) + wlForm]);
+  rows.push(["ticker", t("filter.axis.ticker"),
+    (wlChips || `<span class="fempty">${esc(t("filter.empty_watchlist"))}</span>`) + wlForm,
+    held.length]);
 
-  rows.push([t("filter.axis.source"), f.source.map((x) => chip("source", x.value,
-      x.value.replace(/_/g, " "), (unread.per_source || {})[x.value] || 0)).join("")]);
+  rows.push(["source", t("filter.axis.source"), f.source.map((x) => chip("source", x.value,
+      x.value.replace(/_/g, " "), x)).join(""), f.source.length]);
 
   // Type is scoped to its owning source. Sources with a single type are not
   // offered at all - their type IS their source, and a chip for it would
   // just duplicate the row above.
-  rows.push([t("filter.axis.type"), f.type.length
+  rows.push(["type", t("filter.axis.type"), f.type.length
     ? f.type.map((g) => {
         const head = `<span class="fsub">${esc(g.source.replace(/_/g, " "))}</span>`;
         const prim = g.primary.map((x) =>
-          chip("type", `${g.source}:${x.value}`, x.value, x.count)).join("");
+          chip("type", `${g.source}:${x.value}`, x.value, x)).join("");
         const tags = g.tags.length
           ? `<span class="fsub">${esc(t("filter.type_items"))}</span>` + g.tags.map((x) =>
               chip("type", `${g.source}:${x.value}`,
-                   `${x.value.split(":")[1]} ${x.label}`, x.count)).join("")
+                   `${x.value.split(":")[1]} ${x.label}`, x)).join("")
           : "";
         return head + prim + tags;
       }).join("")
-    : `<span class="fempty">${esc(t("filter.empty_type"))}</span>`]);
+    : `<span class="fempty">${esc(t("filter.empty_type"))}</span>`, f.type.length]);
 
-  $("fgrid").innerHTML = rows.map(
-    ([label, body]) => `<div class="faxis">${label}</div><div class="fgroup">${body}</div>`
-  ).join("");
+  // One <details> per axis, so the closed panel is five summary lines
+  // rather than five wrapped chip fields. Native disclosure: keyboard
+  // handling, screen-reader semantics and the open/closed state all come
+  // free, and there is no state to keep in sync with anything.
+  //
+  // An axis holding an active filter opens itself. A collapsed section
+  // hiding a filter that is narrowing the tape would be the drawer's own
+  // problem in miniature: something acting on what you see, out of sight.
+  $("fgrid").innerHTML = rows.map(([axis, label, body, n]) => {
+    const on = state.f[axis] ? state.f[axis].size : 0;
+    return `<details class="fax"${on ? " open" : ""}>
+      <summary><span class="faxis">${esc(label)}</span>` +
+      `<span class="fcount">${n}</span>` +
+      (on ? `<span class="fon">${on} \u2713</span>` : "") +
+      `</summary><div class="fgroup">${body}</div></details>`;
+  }).join("");
 
   wireWatchlistControls();
 
@@ -547,11 +601,15 @@ function wireKeyboard() {
 async function refreshUnread() {
   const u = await get("/api/unread?days=30");
   state.unread = u;
-  // The catalogue is our own file, so a marked-up field is safe here; the
-  // number is the only substitution and it comes from our own API.
-  $("unread-total").innerHTML = u.total
-    ? t("app.unread_some", { n: `<b>${u.total}</b>` })
-    : esc(t("app.unread_none"));
+  // Both numbers, together, each labelled. They were on two surfaces with
+  // no scope stated - "7 unread" in the masthead and "61 80 51" in the
+  // panel - and read as a contradiction. They are not: one counts unread,
+  // the other counts the window, and now they say so side by side.
+  // The catalogue is our own file, so a marked-up field is safe here.
+  $("unread-total").innerHTML = t("app.unread_and_window", {
+    unread: u.total ? `<b>${u.total}</b>` : "0",
+    total: u.window_total ?? "\u2014",
+  });
   if (panelOpen()) drawPanel(u);
 }
 
@@ -593,7 +651,7 @@ function drawRail(d) {
   }
 
   const thou = (v) => (v === undefined || v === null) ? "\u2014"
-    : (v > 0 ? "+" : "") + Math.round(v).toLocaleString("en-AU");
+    : (v > 0 ? "+" : "") + Math.round(v).toLocaleString(state.locale);
   $("cot").innerHTML = (d.cot || []).map((p) => `
       <div class="k">${esc(p.currency)}</div>
       <div class="v">${thou(p.net)}</div>
@@ -624,7 +682,11 @@ function drawRail(d) {
     ? t("rail.rba_asof", { time: FACT.rbaFix, period: d.rba[0].period })
     : t("rail.no_data");
 
-  const order = ["AU", "CN", "HK", "JP", "US", "EU", "UK"];
+  // From the server, not a second list here. This was hardcoded
+  // ["AU","CN","HK","JP","US","EU","UK"] while the filter chips were
+  // sorted alphabetically in SQL - the same axis in two orders, neither
+  // aware of the other.
+  const order = d.jurisdiction_order || [];
   const grouped = {};
   d.health.forEach((h) => { (grouped[h.jurisdiction] ||= []).push(h); });
   const ago = (s) => s === null ? null
@@ -731,6 +793,8 @@ async function boot() {
   state.facets = b.facets;
   state.watchlist = b.watchlist || [];
   state.zone = b.now.zone;
+  state.zoneLabel = b.now.label;
+  state.locale = b.locale || "en";
   if (b.first_run) {
     // bootstrap only REPORTS this; the sweep is a POST so a GET never mutates.
     const swept = await post("/api/first-run", {});

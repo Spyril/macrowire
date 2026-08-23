@@ -138,9 +138,52 @@ defaults:
   # never falls back to a different port: a silently relocated server is how
   # you end up with three of them running.
 
+  # WHERE THE READER IS. Day headers, the clock, session bars and mark
+  # positions are all in this zone. A SOURCE's publication time is not -
+  # the RBA fixes at 4pm Sydney whether you read it in Sydney or Stuttgart,
+  # and those facts live outside this setting entirely.
+  #
+  # An IANA name, never a fixed offset: the Fed publishes at a rock-solid
+  # 14:00 ET and lands at 04:00, 05:00 or 06:00 in Sydney across the year,
+  # including a three-week window where both hemispheres have switched out
+  # of step. Every conversion resolves per instant.
+  #
+  # `system` (or leaving this out) detects the machine's zone and falls
+  # back to UTC if it cannot. UTC is deliberate: a wrong zone shifts every
+  # day header by hours and looks like data rather than a misconfiguration.
+  timezone: system
+
+  # ORDER OF THE SESSION BAND.
+  #   viewer  (default) the trading day in sequence, rotated to start at
+  #           your own market. Sydney reads SYD TYO HKG LON NYC; New York
+  #           reads NYC SYD TYO HKG LON - the same day, entered where you
+  #           are. The sequence is a fact and the band exists so you learn
+  #           its shape, so only the starting point moves.
+  #   fixed   the canonical order, starting at Sydney, whoever is reading.
+  #   [list]  explicit: [newyork, london, tokyo, hongkong, sydney]
+  session_order: viewer
+
+  # ORDER OF THE JURISDICTION CHIPS. Not a sequence - things you click, and
+  # a control that moves is a control you misclick, so nothing here is
+  # ordered by volume.
+  #   viewer        (default) your own market first, then alphabetical.
+  #                 Falls back to plain alphabetical if your timezone is
+  #                 not one of the seven.
+  #   alphabetical  flat, neutral, says nothing.
+  #   [list]        explicit: [US, EU, UK, JP, CN, HK, AU]
+  jurisdiction_order: viewer
+
+  # Which market is YOURS, for the ordering above. Derived from timezone
+  # when unset - Australia/Sydney means AU. Set it if you read from
+  # somewhere other than the market you follow.
+  # jurisdiction: AU
+
   # Interface language. Labels, buttons and health explanations only - item
   # titles are stored and shown as published, never translated. An unknown
-  # value falls back to en and logs it. Shipped: en, zh-CN.
+  # value falls back to en and logs it, per key, so a partial locale is
+  # usable. `python -m macrowire locales` lists what is installed and how
+  # complete each one is - it reads the directory, so this comment cannot
+  # go stale by naming them here.
   locale: en
 
   web:

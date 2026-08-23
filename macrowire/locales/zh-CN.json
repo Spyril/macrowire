@@ -10,7 +10,8 @@
     "first_run": "首次运行 — 已将 {n} 条既有条目标记为已读。此后新到达的才会显示为未读。",
     "loading": "加载中…",
     "failed": "失败：{message}",
-    "aria_ribbon": "交易时段带"
+    "aria_ribbon": "交易时段带",
+    "unread_and_window": "{unread} 条未读 · 窗口内 {total} 条"
   },
   "ribbon": {
     "note": "本地时间按时刻实时换算 — 不存储时区偏移",
@@ -62,7 +63,11 @@
     "empty_ticker": "此时间范围内自选标的均无条目",
     "empty_type": "此时间范围内没有来源具有一种以上类型",
     "type_items": "8-K 条款",
-    "aria_panel": "筛选条件"
+    "aria_panel": "筛选条件",
+    "count_unknown": "未计数",
+    "aria_counts": "{label}，窗口内 {total} 条，未读 {unread} 条",
+    "aria_unknown": "{label}，计数不可用",
+    "legend": "每个筛选项显示：窗口内条数 · 未读条数"
   },
   "watchlist": {
     "add": "添加",
@@ -379,7 +384,22 @@
       "watchlist_list": "显示自选列表",
       "watchlist_refresh": "重新下载 SEC 代码表",
       "status": "各来源的健康状态",
-      "debug": "显示完整堆栈信息，而非摘要"
+      "debug": "显示完整堆栈信息，而非摘要",
+      "locales": "列出界面语言及其完整度",
+      "locales_all": "列出全部缺失的键，而非仅前几个"
+    },
+    "locales": {
+      "header": "{path} 中的界面语言",
+      "row": "{locale}  {name}  {present}/{total}（{percent}%）{flags}",
+      "active": "  <- 当前使用，来自 sources.yaml",
+      "source_of_truth": "  <- 基准语言",
+      "complete": "所有语言均已完整",
+      "missing_head": "{locale} 缺少 {n} 个键：",
+      "more": "... 还有 {n} 个（使用 --all 查看全部）",
+      "orphaned_head": "{locale} 有 {n} 个键在 {default} 中不存在：",
+      "orphaned_note": "没有英文原文的键无法回退，只能以一种语言显示。通常是拼写错误，或是已从 en 中移除的字符串。",
+      "partial_note": "不完整的语言包依然可用：每个缺失的键都会单独回退到 {default}，不会出现空白或原始键名。",
+      "contribute": "添加方法：复制 {default}.json，翻译其中的值，以 <代码>.json 为名保存在同一目录，并在 sources.yaml 中设置 locale。只翻译值 —— 不要改键名，也不要翻译发布时间。"
     }
   }
 }

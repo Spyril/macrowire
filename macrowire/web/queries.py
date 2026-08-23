@@ -246,6 +246,22 @@ def watchlist_axis(conn: sqlite3.Connection, user_id: int, days: int = 30) -> di
             "counts": counts}
 
 
+def jurisdiction_order(codes) -> list:
+    """The one place that decides where a jurisdiction sits.
+
+    Both the filter chips and the rail's health grouping call this. They
+    used to disagree: the chips were sorted alphabetically in SQL while the
+    health panel carried a hardcoded ["AU","CN","HK","JP","US","EU","UK"]
+    in JavaScript - the same axis, two orders, neither aware of the other.
+    """
+    from .. import ordering
+    from ..config import load_ordering
+    from . import ribbon
+
+    return ordering.order_jurisdictions(
+        codes, ribbon.viewer_jurisdiction(), load_ordering()["jurisdictions"])
+
+
 def facets(conn: sqlite3.Connection, sources, user_id: int, days: int = 30) -> dict:
     """Every filterable value that would actually return rows, right now.
 
@@ -299,12 +315,26 @@ def facets(conn: sqlite3.Connection, sources, user_id: int, days: int = 30) -> d
                 key = f"{row['primary_type']}:{tag}"
                 group["tags"][key] = group["tags"].get(key, 0) + row["n"]
 
-    fx_axis = []
-    for row in conn.execute(
-        """SELECT COALESCE(i.fx_state, 'unclassified') AS state, COUNT(*) AS n
-           FROM items i WHERE i.published_at >= ? GROUP BY state""", (cutoff,)
-    ):
-        fx_axis.append({"value": row["state"], "count": row["n"]})
+    # Both numbers, from ONE pass over the collapsed tape, so a bucket count
+    # and an attention count on the same chip are in the same unit. The raw
+    # SQL above decides WHICH chips exist (populated-only); it no longer
+    # decides what a chip says, because it counts rows and the tape draws
+    # groups - 207 HKMA scam alerts are 207 rows and one thing you have seen.
+    tally = axis_tally(tape(conn, sources, user_id, days=days, collapse=True,
+                            limit=100000))["axes"]
+
+    def counted(axis, value, **extra):
+        cell = tally[axis].get(value)
+        # A value the raw query found but the collapsed pass did not is not
+        # zero - it is unaccounted for, and renders as an em dash rather
+        # than a number nobody computed.
+        return {"value": value, **extra,
+                "count": cell["total"] if cell else None,
+                "unread": cell["unread"] if cell else None}
+
+    fx_axis = [counted("fx", row["state"]) for row in conn.execute(
+        """SELECT COALESCE(i.fx_state, 'unclassified') AS state
+           FROM items i WHERE i.published_at >= ? GROUP BY state""", (cutoff,))]
     fx_axis.sort(key=lambda x: ["fx", "not_fx", "unclassified"].index(x["value"])
                  if x["value"] in ("fx", "not_fx", "unclassified") else 9)
 
@@ -314,41 +344,89 @@ def facets(conn: sqlite3.Connection, sources, user_id: int, days: int = 30) -> d
         # already say, so it is not offered as a type filter at all.
         if len(group["primary"]) < 2 and not group["tags"]:
             continue
+        primary = [counted("type", f"{name}:{v}") for v in group["primary"]]
+        for entry in primary:
+            entry["value"] = entry["value"].split(":", 1)[1]
+        tags = [counted("type", f"{name}:{v}",
+                        label=ITEM_LABELS.get(v.split(":")[-1], v))
+                for v in group["tags"]]
+        for entry in tags:
+            entry["value"] = entry["value"].split(":", 1)[1]
         type_axis.append({
             "source": name,
-            "primary": sorted(({"value": v, "count": c} for v, c in group["primary"].items()),
-                              key=lambda x: (-x["count"], x["value"])),
-            "tags": sorted(({"value": v, "count": c,
-                             "label": ITEM_LABELS.get(v.split(":")[-1], v)}
-                            for v, c in group["tags"].items()),
-                           key=lambda x: x["value"]),
+            "primary": sorted(primary, key=lambda x: (-(x["count"] or 0), x["value"])),
+            "tags": sorted(tags, key=lambda x: x["value"]),
         })
 
     return {
         "window_days": days,
-        "jurisdiction": sorted(({"value": v, "count": c}
-                                for v, c in per_jurisdiction.items()),
-                               key=lambda x: x["value"]),
-        "source": sorted(({"value": v, "count": c} for v, c in per_source.items()),
+        # Reader's own market first, then alphabetical - ONE ordering
+        # function, shared with the rail's health panel, so the two cannot
+        # disagree about where AU goes.
+        "jurisdiction": [counted("jurisdiction", v)
+                         for v in jurisdiction_order(list(per_jurisdiction))],
+        "source": sorted((counted("source", v) for v in per_source),
                          key=lambda x: x["value"]),
-        "ticker": sorted(({"value": v, "count": c} for v, c in per_ticker.items()
-                          if v in held), key=lambda x: x["value"]),
+        "ticker": sorted((counted("ticker", v) for v in per_ticker if v in held),
+                         key=lambda x: x["value"]),
         "type": type_axis,
         "fx": fx_axis,
     }
 
 
+def axis_tally(rows) -> dict:
+    """Per axis value: how many rows in the window, and how many unread.
+
+    ONE pass over the COLLAPSED tape, because the two numbers have to be in
+    the same unit or showing them together is worse than showing one.
+
+    They were not. `facets` counted raw `items` rows while `unread_counts`
+    counted collapsed groups, so HKMA's "Scam alert related to banks" was
+    207 on one axis and 1 on the other - a bucket and an attention count
+    that could not be compared even after they were labelled. A collapsed
+    group is what the tape draws and what marking-read acts on, so that is
+    the unit both now use.
+    """
+    axes = {a: {} for a in ("fx", "jurisdiction", "ticker", "source", "type")}
+
+    def bump(axis, value, unread):
+        if value is None or value == "":
+            return
+        cell = axes[axis].setdefault(value, {"total": 0, "unread": 0})
+        cell["total"] += 1
+        if unread:
+            cell["unread"] += 1
+
+    total = unread_total = 0
+    for row in rows:
+        total += 1
+        unread = bool(row["unread"])
+        unread_total += 1 if unread else 0
+        bump("fx", row.get("fx_state") or "unclassified", unread)
+        bump("jurisdiction", row.get("jurisdiction"), unread)
+        bump("ticker", row.get("ticker"), unread)
+        bump("source", row.get("source"), unread)
+        primary, source = row.get("type_primary"), row.get("source")
+        if primary and source:
+            bump("type", f"{source}:{primary}", unread)
+            for tag in (row.get("type_tags") or "").split(","):
+                tag = tag.strip()
+                if tag:
+                    bump("type", f"{source}:{primary}:{tag}", unread)
+    return {"axes": axes, "window_total": total, "unread_total": unread_total}
+
+
 def unread_counts(conn: sqlite3.Connection, sources, user_id: int, days: int = 30) -> dict:
     rows = tape(conn, sources, user_id, days=days, collapse=True, limit=100000)
-    per: dict[str, int] = {}
-    per_j: dict[str, int] = {}
-    for row in rows:
-        if row["unread"]:
-            per[row["source"]] = per.get(row["source"], 0) + 1
-            j = row["jurisdiction"]
-            if j:
-                per_j[j] = per_j.get(j, 0) + 1
-    return {"total": sum(per.values()), "per_source": per, "per_jurisdiction": per_j}
+    tally = axis_tally(rows)
+    per = {v: c["unread"] for v, c in tally["axes"]["source"].items() if c["unread"]}
+    per_j = {v: c["unread"] for v, c in tally["axes"]["jurisdiction"].items() if c["unread"]}
+    return {"total": tally["unread_total"],
+            # The masthead shows both, so it needs both. Two numbers with no
+            # scope stated read as a contradiction; the fix is to say which
+            # is which, not to drop one.
+            "window_total": tally["window_total"],
+            "per_source": per, "per_jurisdiction": per_j}
 
 
 # Every health state a source can be in, with what it MEANS and what to do
@@ -559,4 +637,8 @@ def rail(conn: sqlite3.Connection, sources, t) -> dict:
     note = (t("rail.health_unreachable_many", n=len(unreachable), total=len(health))
             if len(unreachable) >= 2 else None)
     return {"fx": fx, "ecb": ecb, "cot": cot, "rba": rba,
-            "southbound": southbound, "health": health, "health_note": note}
+            "southbound": southbound, "health": health, "health_note": note,
+            # The rail groups health rows by jurisdiction and used to carry
+            # its own hardcoded order in JavaScript. It takes this instead.
+            "jurisdiction_order": jurisdiction_order(
+                sorted({h["jurisdiction"] for h in health if h["jurisdiction"]}))}

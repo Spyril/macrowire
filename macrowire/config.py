@@ -2,6 +2,25 @@
 
 The architectural constraint: adding a source means editing YAML. Nothing
 in this module or in the fetch loop names a specific feed.
+
+ONE FILE, ONE LIFETIME.
+--------------------------------------------------------------------------
+Every loader here re-reads from disk on call. Do not bind the result at
+import in a long-running process while something else reads the same file
+per request - that gives one file two freshnesses, and it has bitten this
+project twice.
+
+The second time: `app.py` bound `LOCALE = load_locale()` at import while
+`_sources()` called `load_sources()` per request. Both read sources.yaml.
+Disabling a source took effect immediately; changing `defaults.locale` did
+not. Worse, the page's JavaScript is served from disk by StaticFiles on
+every request, so new JS asked for strings an old in-memory catalogue did
+not have - which renders as a raw key and is indistinguishable from a
+string nobody ever wrote.
+
+The rule: if a file is read per-request anywhere, it must not be read at
+import anywhere. A short-lived CLI process is exempt - it reads and exits,
+and there is no window for the file to change underneath it.
 """
 
 from __future__ import annotations
@@ -13,6 +32,7 @@ from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
+from zoneinfo import ZoneInfo
 
 from .errors import ConfigError
 
@@ -411,6 +431,119 @@ def load_backup_settings(path: Path | None = None) -> dict:
 
 
 DEFAULT_WEB_PORT = 8917
+
+
+def system_timezone() -> str:
+    """The machine's own zone, or UTC if it cannot be determined.
+
+    UTC is the honest fallback, not a guess at a popular zone: a wrong
+    timezone silently shifts every day header and every ribbon position by
+    hours, and it looks like data rather than a misconfiguration.
+    """
+    import datetime
+
+    # /etc/localtime is a symlink into the zoneinfo tree on every system
+    # that has one; the resolved tail is the IANA name.
+    link = Path("/etc/localtime")
+    if link.is_symlink():
+        parts = link.resolve().parts
+        if "zoneinfo" in parts:
+            name = "/".join(parts[parts.index("zoneinfo") + 1:])
+            try:
+                ZoneInfo(name)
+                return name
+            except Exception:
+                pass
+    # TZ, when it names a zone rather than a POSIX offset rule.
+    declared = os.environ.get("TZ", "").strip()
+    if declared:
+        try:
+            ZoneInfo(declared)
+            return declared
+        except Exception:
+            pass
+    _ = datetime  # imported for the reader: everything here resolves per instant
+    return "UTC"
+
+
+def load_timezone(path: Path | None = None) -> str:
+    """Which zone the VIEWER reads in. Never a source's own zone.
+
+    Day headers, the clock, session bars and mark positions are all the
+    reader's local time. A source's publication time is NOT - the RBA fixes
+    at 4pm Sydney whether this is read in Sydney or Stuttgart - and those
+    facts live outside this setting entirely. See the FACT constant in
+    app.js and `ribbon.py`.
+
+    Stored as an IANA NAME and resolved per instant, never as a fixed
+    offset. The Fed publishes at a rock-solid 14:00 ET and lands at 04:00,
+    05:00 or 06:00 in Sydney across a year, including a three-week window
+    where both hemispheres have switched out of step. A stored offset gets
+    that wrong twice a year in each direction.
+    """
+    load_dotenv(REPO_ROOT / ".env")
+    path = path or DEFAULT_CONFIG_PATH
+    document = yaml.safe_load(path.read_text()) or {}
+    declared = (document.get("defaults") or {}).get("timezone")
+    if not declared or str(declared).strip().lower() == "system":
+        return system_timezone()
+    declared = str(declared).strip()
+    try:
+        ZoneInfo(declared)
+    except Exception as exc:
+        raise ConfigError(
+            f"{path}: timezone {declared!r} is not an IANA zone name "
+            f"(e.g. Australia/Sydney, America/New_York, Europe/London, UTC). "
+            f"A fixed offset is not accepted: it would be wrong across DST."
+        ) from exc
+    return declared
+
+
+def load_ordering(path: Path | None = None) -> dict:
+    """How the session band and the jurisdiction chips are ordered.
+
+    Both default to `viewer`, which is not the same thing in each case:
+    the band keeps its chronological sequence and rotates its start point,
+    while the chips put the reader's own market first and alphabetise the
+    rest. See macrowire/ordering.py for why the two differ.
+    """
+    load_dotenv(REPO_ROOT / ".env")
+    path = path or DEFAULT_CONFIG_PATH
+    document = yaml.safe_load(path.read_text()) or {}
+    defaults = document.get("defaults") or {}
+
+    sessions = defaults.get("session_order", "viewer")
+    if not isinstance(sessions, (str, list)):
+        raise ConfigError(f"{path}: session_order must be 'viewer', 'fixed', "
+                          f"or a list of session keys")
+    if isinstance(sessions, str) and sessions not in ("viewer", "fixed"):
+        raise ConfigError(f"{path}: session_order={sessions!r} must be "
+                          f"'viewer', 'fixed', or a list of session keys")
+
+    chips = defaults.get("jurisdiction_order", "viewer")
+    if not isinstance(chips, (str, list)):
+        raise ConfigError(f"{path}: jurisdiction_order must be 'viewer', "
+                          f"'alphabetical', or a list of jurisdiction codes")
+    if isinstance(chips, str) and chips not in ("viewer", "alphabetical"):
+        raise ConfigError(f"{path}: jurisdiction_order={chips!r} must be "
+                          f"'viewer', 'alphabetical', or a list of codes")
+    if isinstance(chips, list):
+        unknown = [c for c in chips if c not in JURISDICTIONS]
+        if unknown:
+            raise ConfigError(
+                f"{path}: jurisdiction_order names {unknown}, which are not "
+                f"jurisdictions. Known: {sorted(JURISDICTIONS)}")
+
+    # An explicit jurisdiction beats deriving one from the timezone - a
+    # reader in Zurich watching US markets should be able to say so.
+    declared = defaults.get("jurisdiction")
+    if declared is not None and declared not in JURISDICTIONS:
+        raise ConfigError(
+            f"{path}: jurisdiction={declared!r} must be one of "
+            f"{sorted(JURISDICTIONS)}, or unset to derive it from timezone")
+
+    return {"sessions": sessions, "jurisdictions": chips,
+            "viewer_jurisdiction": declared}
 
 
 def load_locale(path: Path | None = None) -> str:

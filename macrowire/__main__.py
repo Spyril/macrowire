@@ -568,6 +568,61 @@ def cmd_watchlist(args) -> int:
     return 1
 
 
+def cmd_locales(args) -> int:
+    """What languages exist and how complete each one is.
+
+    Discovery is a directory listing, not a list in code: dropping a JSON
+    file into macrowire/locales/ is the whole install step. This command
+    exists so a contributor can see what is left to translate without
+    diffing two JSON files by hand.
+    """
+    from . import i18n
+
+    active = load_locale()
+    print(t("cli.locales.header", path=i18n.LOCALES_DIR))
+    reports = [i18n.coverage(loc) for loc in i18n.available()]
+    width = max(len(r["locale"]) for r in reports)
+    for report in reports:
+        flags = ""
+        if report["locale"] == i18n.DEFAULT_LOCALE:
+            flags += t("cli.locales.source_of_truth")
+        if report["locale"] == active:
+            flags += t("cli.locales.active")
+        print("  " + t("cli.locales.row",
+                       locale=_pad(report["locale"], width),
+                       name=_pad(report["name"], 14),
+                       present=report["present"], total=report["total"],
+                       percent=f"{report['percent']:.0f}", flags=flags))
+
+    gaps = [r for r in reports if r["missing"] or r["orphaned"]]
+    if not gaps:
+        print()
+        print("  " + t("cli.locales.complete"))
+    for report in gaps:
+        if report["missing"]:
+            print()
+            print("  " + t("cli.locales.missing_head", locale=report["locale"],
+                           n=len(report["missing"])))
+            shown = report["missing"] if args.all else report["missing"][:12]
+            for key in shown:
+                print(f"    {key}")
+            if len(shown) < len(report["missing"]):
+                print("    " + t("cli.locales.more",
+                                 n=len(report["missing"]) - len(shown)))
+        if report["orphaned"]:
+            print()
+            print("  " + t("cli.locales.orphaned_head", locale=report["locale"],
+                           n=len(report["orphaned"]), default=i18n.DEFAULT_LOCALE))
+            for key in (report["orphaned"] if args.all else report["orphaned"][:12]):
+                print(f"    {key}")
+            _wrapped(t("cli.locales.orphaned_note"), indent="    ")
+
+    print()
+    _wrapped(t("cli.locales.partial_note", default=i18n.DEFAULT_LOCALE))
+    _wrapped(t("cli.locales.contribute", default=i18n.DEFAULT_LOCALE))
+    return 0
+
+
 def cmd_status(args) -> int:
     conn = db.connect()
     db.initialise(conn)
@@ -753,6 +808,10 @@ def main(argv=None) -> int:
     wsub.add_parser("list", help=t("cli.help.watchlist_list"))
     wsub.add_parser("refresh", help=t("cli.help.watchlist_refresh"))
     wlp.set_defaults(func=cmd_watchlist)
+
+    loc = subparsers.add_parser("locales", help=t("cli.help.locales"))
+    loc.add_argument("--all", action="store_true", help=t("cli.help.locales_all"))
+    loc.set_defaults(func=cmd_locales)
 
     status = subparsers.add_parser("status", help=t("cli.help.status"))
     status.set_defaults(func=cmd_status)
