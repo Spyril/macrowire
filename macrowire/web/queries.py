@@ -246,6 +246,66 @@ def watchlist_axis(conn: sqlite3.Connection, user_id: int, days: int = 30) -> di
             "counts": counts}
 
 
+# What a reader can DO about a gap, which is a more useful split than what
+# caused it. Time never fills a gap in the PAST - only backfilling does,
+# and only where the source answers for old dates.
+COVERAGE_RECOVERABLE = "recoverable"      # queryable + backfill configured
+COVERAGE_UNWIRED = "unwired"              # queryable, no backfill configured
+COVERAGE_LOST = "lost"                    # rolling window scrolled off
+COVERAGE_NEVER = "never"                  # one item, no archive, ever
+
+
+def coverage(conn: sqlite3.Connection, sources, days: int) -> dict:
+    """Where each source's record begins, and whether that is fixable.
+
+    A source whose coverage predates the window is COMPLETE for it and
+    appears nowhere: no boundary, no summary line. Only a source whose
+    record begins INSIDE the window has anything to say.
+
+    Three states used to render identically - as silence - and a month that
+    looks quiet because five sources were not being collected yet is
+    misinformation of the same class as a quiet feed looking broken.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    start = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    rows = []
+    for source in sources:
+        earliest = conn.execute(
+            """SELECT MIN(date(i.published_at)) FROM items i
+               JOIN sources s ON s.id = i.source_id WHERE s.name = ?""",
+            (source.name,)).fetchone()[0]
+        if earliest is None:
+            earliest = conn.execute(
+                """SELECT MIN(o.period) FROM observations o
+                   JOIN sources s ON s.id = o.source_id WHERE s.name = ?""",
+                (source.name,)).fetchone()[0]
+        if earliest is None:
+            continue                      # nothing collected at all; not a gap
+        if earliest <= start:
+            continue                      # complete for this window
+
+        config = source.config or {}
+        backfillable = bool(config.get("backfill_start") or config.get("backfill_url")
+                            or config.get("backfill_page_size")
+                            or config.get("backfill_per_date"))
+        if source.archive == "none":
+            state = COVERAGE_NEVER
+        elif source.archive == "queryable":
+            state = COVERAGE_RECOVERABLE if backfillable else COVERAGE_UNWIRED
+        else:
+            state = COVERAGE_LOST
+
+        first_fetch = conn.execute(
+            "SELECT MIN(date(timestamp)) FROM fetch_log WHERE source = ?",
+            (source.name,)).fetchone()[0]
+        rows.append({"source": source.name, "earliest": earliest, "state": state,
+                     "first_fetch": first_fetch, "archive": source.archive})
+    rows.sort(key=lambda r: (r["earliest"], r["source"]))
+    return {"window_start": start, "boundaries": rows,
+            "complete": len(list(sources)) - len(rows), "total": len(list(sources))}
+
+
 def jurisdiction_order(codes) -> list:
     """The one place that decides where a jurisdiction sits.
 
@@ -259,7 +319,8 @@ def jurisdiction_order(codes) -> list:
     from . import ribbon
 
     return ordering.order_jurisdictions(
-        codes, ribbon.viewer_jurisdiction(), load_ordering()["jurisdictions"])
+        codes, ribbon.viewer_jurisdiction(),
+        ribbon._pref("jurisdiction_order", load_ordering()["jurisdictions"]))
 
 
 def facets(conn: sqlite3.Connection, sources, user_id: int, days: int = 30) -> dict:

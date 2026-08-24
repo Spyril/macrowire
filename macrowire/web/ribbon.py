@@ -19,23 +19,48 @@ from zoneinfo import ZoneInfo
 from .. import ordering
 from ..config import load_ordering, load_timezone
 
+def _pref(key: str, fallback):
+    """A stored preference, or the config value beneath it.
+
+    Opened and closed per call. The connection is cheap, the alternative is
+    a module-level handle bound at import, and this project has fixed that
+    exact shape twice.
+    """
+    from .. import db, preferences
+    try:
+        conn = db.connect()
+    except Exception:
+        return fallback
+    try:
+        value = preferences.stored(conn).get(key)
+    finally:
+        conn.close()
+    return value if value else fallback
+
+
 def view_zone() -> ZoneInfo:
-    """The VIEWER's zone, from config. Read per call, never bound at import.
+    """The VIEWER's zone: preference first, then config. Read per call.
 
     One file, one lifetime: sources.yaml is read per request everywhere
     else, so binding this at import would give it two freshnesses - the bug
     that has already bitten twice. ZoneInfo caches internally, so this is a
     dict lookup after the first call.
     """
+    declared = _pref("timezone", None)
+    if declared and declared != "system":
+        try:
+            return ZoneInfo(declared)
+        except Exception:
+            pass
     return ZoneInfo(load_timezone())
 
 
 def viewer_jurisdiction() -> str | None:
     """Which of the seven the reader is in, config first then derived."""
-    declared = load_ordering()["viewer_jurisdiction"]
+    declared = _pref("jurisdiction", None) or load_ordering()["viewer_jurisdiction"]
     if declared:
         return declared
-    return ordering.jurisdiction_for_zone(load_timezone())
+    return ordering.jurisdiction_for_zone(str(view_zone()))
 
 
 def view_label() -> str:
@@ -44,7 +69,8 @@ def view_label() -> str:
     "Sydney" reads; "UTC+10" does not, and an offset would also be wrong
     half the year. Australia/Sydney -> Sydney, America/New_York -> New York.
     """
-    name = load_timezone()
+    declared = _pref("timezone", None)
+    name = declared if declared and declared != "system" else load_timezone()
     return name.rsplit("/", 1)[-1].replace("_", " ")
 
 # Exchange trading hours in each venue's own local time.
@@ -139,7 +165,8 @@ def sessions_for(day: date) -> list[dict]:
     # Rotated LAST, after every projection is computed. Ordering is a
     # presentation decision and must not be able to touch the arithmetic.
     return ordering.rotate_sessions(
-        result, load_timezone(), load_ordering()["sessions"])
+        result, str(view_zone()),
+        _pref("session_order", load_ordering()["sessions"]))
 
 
 def marks_for(day: date, sources) -> list[dict]:
@@ -234,7 +261,8 @@ def now_position(moment: datetime | None = None) -> dict:
         # their season rather than one label pinned all year.
         "zone": now.tzname(),
         "label": view_label(),
-        "timezone": load_timezone(),
+        "timezone": str(view_zone()),
+        "jurisdiction": viewer_jurisdiction(),
         "date": now.date().isoformat(),
         "offset": now.utcoffset().total_seconds() / 3600.0,
     }

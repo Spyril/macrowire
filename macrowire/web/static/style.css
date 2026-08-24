@@ -121,11 +121,28 @@ html, body {
 }
 
 /* ---------- masthead ---------- */
+/* Sticky, so both controls are reachable from a hundred rows down. It
+   must not eat tape when nothing is filtered, so the token row is a
+   SEPARATE element that is absent - not merely empty - until a filter is
+   applied. `hidden` rather than `display:none` on a zero-height box,
+   because an empty flex row still costs its padding. */
 header {
-  display: flex; align-items: baseline; gap: 20px;
-  padding: 11px 20px; background: var(--raised);
-  border-bottom: 1px solid var(--edge);
+  position: sticky; top: 0; z-index: 20;
+  background: var(--raised); border-bottom: 1px solid var(--edge);
 }
+.mast-line {
+  display: flex; align-items: baseline; gap: 20px;
+  padding: 11px 20px;
+}
+.mast-tokens {
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 20px 8px; border-top: 1px solid var(--edge);
+  padding-top: 7px;
+}
+.mast-tokens[hidden] { display: none; }
+/* The Filter button sits between the clock and the unread count; the count
+   keeps its right-hand position by pushing off the button instead. */
+.mast-line .fbtn { align-self: center; }
 .wordmark { font-family: var(--mono); font-size: 13px; letter-spacing: .2em;
             text-transform: uppercase; color: var(--chrome); }
 .clock { font-family: var(--mono); font-size: 14px; color: var(--ink);
@@ -133,6 +150,47 @@ header {
 .clock .zone { color: var(--chrome); }
 .unread-total { margin-left: auto; font-family: var(--mono); font-size: 13px;
                 color: var(--chrome); }
+/* THE FILTER PANEL IS THE SETTINGS DIALOG, MINUS THE MODALITY.
+   Same shape: one opaque box with its own border, a scrolling body and
+   controls pinned outside that body. Everything it can do is on screen
+   when it opens.
+   The one difference: the tape stays live behind it. Adjusting a filter
+   and watching the tape react is the point, so this cannot be a <dialog>
+   and cannot have a backdrop.
+   Fixed, not in flow, so opening it cannot displace a single row - the
+   requirement everything else bends around.
+   ONE BLOCK. These rules used to live in two places 120 lines apart, and
+   the second one's comment still said the panel was in normal flow. */
+.fpanel {
+  position: fixed; left: 0; right: 310px; z-index: 19;
+  background: var(--raised); color: var(--ink);
+  /* An edge on every side. The rail is also --raised and starts exactly
+     where this ends, so without a border the two read as one widened
+     rail rather than a panel in front of a page. */
+  border: 1px solid var(--edge-hi); border-radius: 3px;
+  box-shadow: 0 10px 24px rgba(9, 11, 14, .55);
+  /* A CEILING, not a tuning. Nothing collapses any more, so the content
+     is as tall as the source count makes it: eleven source chips today,
+     sixteen when everything is enabled, and the type axis grows with
+     every source that has more than one type. The ceiling keeps rows
+     visible while filtering, which is the whole reason this is not a
+     modal, and makes "the panel buries the tape" structurally impossible
+     however many sources are added later. */
+  /* Half the viewport stays tape. That invariant predates this
+     rebuild and survives it: the panel is not modal precisely so
+     rows react while you filter, and a panel taking most of the
+     screen would be a modal with extra steps. */
+  max-height: min(50vh, 520px);
+  /* The panel never scrolls; .fpanel-body does. Anything a child lays
+     out past this box is clipped here rather than painted over the tape. */
+  overflow: hidden;
+}
+/* SCOPED, like `.settings[open]`. An unscoped `display: flex` here is an
+   AUTHOR rule and outranks the UA's `[hidden] { display: none }` whatever
+   the specificity, so the closed panel stayed on screen - the same cascade
+   trap this whole rebuild started from, one selector further along. */
+.fpanel:not([hidden]) { display: flex; flex-direction: column; }
+@media (max-width: 980px) { .fpanel { right: 0; } }
 .unread-total b { color: var(--accent); font-weight: 600; }
 
 /* ---------- ribbon ---------- */
@@ -165,7 +223,13 @@ header {
                 font-family: var(--mono); font-size: 12px; color: var(--chrome); }
 
 .marks { position: relative; margin-top: 6px; }
-.marks .track { border-bottom: none; position: relative; height: 100%; }
+/* `left: 42px` comes from .track, which is ABSOLUTE there and inset by it.
+   Switching to relative here made that same 42px a SHIFT of a full-width
+   box instead, pushing the document 10px wider than the viewport - enough
+   for a horizontal scrollbar that carried the right-hand rail off screen.
+   Margin, not offset, once the positioning changes. */
+.marks .track { border-bottom: none; position: relative; height: 100%;
+                left: 0; margin-left: 42px; }
 
 /* Stems and labels occupy SEPARATE vertical zones, and this is load-bearing.
  * A first pass stacked whole marks in 17px lanes while a mark actually
@@ -236,28 +300,39 @@ kbd { font-family: var(--mono); font-size: 12px; color: var(--chrome);
           background: var(--ground); color: var(--chrome-hi); cursor: pointer; }
 .fclear:hover { color: var(--ink); border-color: var(--chrome); }
 
-/* A CEILING, not a tuning. The panel is in normal flow, so its height comes
-   straight off the tape - and it GROWS with the source count: eleven source
-   chips today, sixteen when everything is enabled, and the type axis grows
-   with every source that has more than one type. Open, it pushed 195 items
-   entirely below the fold. A max-height makes that structurally impossible
-   however many sources are added later. */
-.fpanel { background: var(--raised); border-bottom: 1px solid var(--edge);
-          padding: 14px 20px 12px;
-          max-height: min(44vh, 420px); overflow-y: auto;
-          overscroll-behavior: contain; }
+/* ALWAYS-VISIBLE SCROLLBAR, AND VISIBLE AS A SCROLLBAR. The body is
+   scrollable and the footer sits outside it, but the platform draws an
+   OVERLAY scrollbar that appears only once you are already scrolling - so
+   a full panel read as clipped content with no way down.
+   `scrollbar-width: thin` fixed that and introduced the next one: a 6px
+   bar whose thumb was --edge-hi, the SAME COLOUR AS THE PANEL BORDER it
+   sits 1px inside (measured 1.00:1 against it), over a transparent track
+   that is indistinguishable from --raised. Measured off a screenshot: at
+   the middle and bottom of the panel every pixel of that strip was
+   (35,42,53), the panel background. A short thumb hard against the border
+   reads as a thickened edge, not as something you can drag - and the
+   content below the fold reads as clipped rather than scrolled.
+   So: the settings dialog's width (auto, 12px) with an explicit CHANNEL.
+   Track --sunken, 1.30:1 against --raised - the same margin that makes
+   --raised visible above --ground. Thumb --chrome, 9.82:1 on that track
+   and nothing like the border. */
+.fpanel-body { overflow-y: auto; overscroll-behavior: contain;
+               /* min-height:0 or the flex item refuses to shrink below
+                  its content and the panel grows past its ceiling
+                  instead of scrolling. */
+               flex: 1 1 auto; min-height: 0;
+               padding: 14px 20px 12px;
+               scrollbar-width: auto;
+               scrollbar-color: var(--chrome) var(--sunken); }
+.fpanel-body::-webkit-scrollbar { width: 12px; }
+.fpanel-body::-webkit-scrollbar-thumb { background: var(--chrome); border-radius: 6px; }
+.fpanel-body::-webkit-scrollbar-track { background: var(--sunken); }
 .fgrid { display: block; }
 .fax { border-bottom: 1px solid var(--edge); }
 .fax:last-child { border-bottom: none; }
-.fax > summary { display: flex; align-items: baseline; gap: 8px; cursor: pointer;
-                 padding: 7px 0; list-style: none; }
-.fax > summary::-webkit-details-marker { display: none; }
-/* A disclosure triangle drawn in text, so there is no icon font and no SVG. */
-.fax > summary::before { content: "\25b8"; color: var(--chrome);
-                         font-size: 12px; width: 10px; }
-.fax[open] > summary::before { content: "\25be"; }
-.fax > summary:hover .faxis { color: var(--ink); }
-.fax > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Was a <summary>. It is a heading now: nothing here is pressable, so it
+   takes no cursor, no hover state and no focus ring. */
+.fax > .fhead { display: flex; align-items: baseline; gap: 8px; padding: 7px 0; }
 .fax > .fgroup { padding: 2px 0 10px 18px; }
 .faxis { font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
          text-transform: uppercase; color: var(--chrome-hi);
@@ -265,8 +340,10 @@ kbd { font-family: var(--mono); font-size: 12px; color: var(--chrome);
 /* How many chips are behind the summary. A bucket count, so it is neutral. */
 .fcount { font-family: var(--mono); font-size: 12px; color: var(--chrome);
           font-variant-numeric: tabular-nums; }
-/* How many filters are ACTIVE on a closed axis. Not amber - amber means
-   unread, and an active filter is neither unread nor a fault. */
+/* How many filters are ACTIVE on this axis. Every chip is visible now, so
+   this is a running total rather than a peek inside something shut: which
+   axes are narrowing the tape, without counting pressed chips. Not amber -
+   amber means unread, and an active filter is neither unread nor a fault. */
 .fon { font-family: var(--mono); font-size: 12px; color: var(--ink);
        font-weight: 600; border: 1px solid var(--chrome); border-radius: 2px;
        padding: 0 5px; }
@@ -299,8 +376,11 @@ kbd { font-family: var(--mono); font-size: 12px; color: var(--chrome);
           line-height: 1.5; margin-top: 4px; }
 .wl-msg.err { color: var(--fault); }
 .wl-msg.ok { color: var(--ink-2); }
+/* Outside .fpanel-body, so it does not scroll away. Same job as the
+   settings dialog's sticky head: the way out is always on screen. */
 .fpanel-foot { display: flex; justify-content: space-between; align-items: center;
-               margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--edge); }
+               flex: none; padding: 10px 20px 12px;
+               border-top: 1px solid var(--edge); background: var(--raised); }
 .fhint { font-family: var(--mono); font-size: 12px; color: var(--chrome); }
 
 /* An empty tape and a filtered-to-nothing tape must never look alike. */
@@ -450,3 +530,83 @@ kbd { font-family: var(--mono); font-size: 12px; color: var(--chrome);
    context rows do not. Direction is a word, not only a sign. */
 .fx .v.lead { font-weight: 600; }
 .fx .dir { color: var(--chrome); font-weight: 400; font-size: 12px; }
+
+/* ---------- settings ---------- */
+/* A dialog, so there is no ceiling to tune and no way to push the tape. */
+/* `display` is scoped to [open], and that is not a detail.
+   The UA stylesheet hides a closed dialog with `dialog:not([open]) {
+   display: none }`. An AUTHOR rule beats a UA rule regardless of
+   specificity, so an unscoped `display: flex` here overrode it and the
+   panel rendered in normal flow from page load - closed, over the ribbon,
+   with no backdrop, because ::backdrop only paints for an element in the
+   TOP LAYER and only showModal() puts it there. close() worked the whole
+   time; the CSS just kept painting it. */
+.settings { background: var(--raised); color: var(--ink);
+            border: 1px solid var(--edge-hi); border-radius: 3px;
+            padding: 0; width: min(680px, 92vw); max-height: 86vh; }
+.settings[open] { display: flex; flex-direction: column; }
+.settings::backdrop { background: rgba(9, 11, 14, .72); }
+.settings-head { display: flex; align-items: center; justify-content: space-between;
+                 padding: 12px 18px; border-bottom: 1px solid var(--edge);
+                 position: sticky; top: 0; background: var(--raised); }
+.settings-head h2 { font-family: var(--mono); font-size: 13px; margin: 0;
+                    letter-spacing: .14em; text-transform: uppercase;
+                    color: var(--chrome-hi); font-weight: 600; }
+.settings-body { overflow-y: auto; padding: 4px 18px 18px;
+                 overscroll-behavior: contain; }
+.settings section { margin-top: 18px; }
+.settings h3 { font-family: var(--mono); font-size: 12px; margin: 0 0 3px;
+               letter-spacing: .14em; text-transform: uppercase;
+               color: var(--chrome-hi); font-weight: 600; }
+.snote { font-family: var(--mono); font-size: 12px; color: var(--chrome);
+         margin: 0 0 10px; line-height: 1.5; }
+.sgrid { display: grid; grid-template-columns: max-content minmax(0,1fr);
+         gap: 9px 14px; align-items: baseline; }
+.sgrid > .lab { font-family: var(--mono); font-size: 12.5px; color: var(--ink-2);
+                white-space: nowrap; }
+.sgrid > .val { font-family: var(--mono); font-size: 12.5px; color: var(--ink);
+                display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.settings select, .settings input[type="text"] {
+  font-family: var(--mono); font-size: 12.5px; padding: 3px 7px;
+  background: var(--ground); color: var(--ink);
+  border: 1px solid var(--edge-hi); border-radius: 2px; }
+.settings input[type="text"] { min-width: 190px; }
+.settings select:focus-visible, .settings input:focus-visible,
+.settings button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* WHICH LEVEL ANSWERED. A value with no visible provenance is one you
+   cannot argue with, so every row says where it came from. */
+.prov { font-family: var(--mono); font-size: 12px; color: var(--chrome); }
+.sreset { font-family: var(--mono); font-size: 12px; color: var(--chrome);
+          background: none; border: none; border-bottom: 1px dotted var(--edge-hi);
+          cursor: pointer; padding: 0; }
+.sreset:hover { color: var(--ink); }
+/* Read-only rows are chrome, not controls: nothing here is pressable. */
+.sgrid.ro > .val { color: var(--ink-2); display: block; }
+.sgrid.ro .rnote { display: block; color: var(--chrome); font-size: 12px;
+                   margin-top: 2px; line-height: 1.5; }
+.sgrid.ro .unset { color: var(--chrome); }
+
+/* ---------- coverage boundaries ---------- */
+/* A coverage limit is a chronological fact, so it sits in the timeline in
+   position. Quiet by construction: it renders only where a source's record
+   actually begins, which on a fully covered window is nowhere at all. */
+.cbound { margin: 14px 0; padding: 9px 0 9px 11px;
+          border-left: 2px solid var(--edge-hi);
+          font-family: var(--mono); }
+.cbound .cb-t { font-size: 12.5px; color: var(--ink-2); letter-spacing: .04em; }
+.cbound .cb-b { font-size: 12.5px; color: var(--chrome); margin-top: 3px;
+                line-height: 1.6; max-width: 62ch; }
+/* Only the recoverable state carries an action, so only it gets a brighter
+   edge. Lost and never-existed are stated, not flagged: an alarm about
+   something you cannot act on is noise. */
+.cbound-recoverable { border-left-color: var(--chrome); }
+.cbound-never .cb-t { color: var(--ink-3); }
+
+.cend { margin: 26px 0 10px; padding: 11px 0 0;
+        border-top: 1px solid var(--edge-hi); font-family: var(--mono); }
+.cend .cb-t { font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+              color: var(--chrome-hi); }
+.cend .cb-b { font-size: 12.5px; color: var(--chrome); margin-top: 6px;
+              line-height: 1.6; }
+.cend-row { font-size: 12.5px; color: var(--ink-2); margin-top: 3px;
+            padding-left: 11px; }

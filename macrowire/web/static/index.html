@@ -8,11 +8,61 @@
 </head>
 <body>
 
-<header>
-  <span class="wordmark">MacroWire</span>
-  <span class="clock" id="clock">--:--:--<span class="zone"> ---</span></span>
-  <span class="unread-total" id="unread-total"></span>
+<!-- STICKY, and one line. Reading weeks back is what this tool turned out
+     to be for, and a Filter button pinned to the top of the document meant
+     scrolling a hundred rows to reach it. Both controls live here now
+     because both are controls.
+
+     The ribbon deliberately does NOT stick: measured at 275px against a
+     49px masthead, it is 34% of the viewport and answers a question you
+     ask once at the start of a session. The sticky day headers do the
+     orientation job for a backwards read at 30px instead. -->
+<header id="masthead">
+  <div class="mast-line">
+    <span class="wordmark">MacroWire</span>
+    <span class="clock" id="clock">--:--:--<span class="zone"> ---</span></span>
+    <button class="fbtn" id="fopen" aria-expanded="false" aria-controls="fpanel">
+      <span data-i18n="filter.button"></span> <kbd>f</kbd>
+    </button>
+    <span class="unread-total" id="unread-total"></span>
+    <button class="fbtn" id="settings-open" data-i18n="settings.open"></button>
+  </div>
+  <!-- Second line, present ONLY while something is filtered. Costs zero
+       vertical space when browsing, ~24px when filtering - and when you
+       are filtering you are not deep-reading, so the cost lands where it
+       hurts least. -->
+  <div class="mast-tokens" id="mast-tokens" hidden>
+    <div class="tokens" id="tokens" aria-live="polite"></div>
+    <button class="fclear" id="fclear"><span data-i18n="filter.clear"></span> <kbd>c</kbd></button>
+  </div>
 </header>
+
+<!-- A native <dialog>, not another push-down drawer. Settings are modal in
+     nature and filters are not: you adjust a filter WHILE watching the tape
+     react, which is why that panel needed a height ceiling. You do not
+     watch the tape while picking a timezone. showModal() also brings focus
+     trapping, Esc-to-close, a backdrop and an inert background with no
+     JavaScript - the same reasoning that made the filter axes <details>.
+     And the drawer's height bug is unreachable here by construction. -->
+<dialog class="settings" id="settings">
+  <form method="dialog" class="settings-head">
+    <h2 data-i18n="settings.title"></h2>
+    <button class="fbtn" value="close" data-i18n="settings.close"></button>
+  </form>
+  <div class="settings-body">
+    <section>
+      <h3 data-i18n="settings.viewer_heading"></h3>
+      <p class="snote" data-i18n="settings.viewer_note"></p>
+      <div class="sgrid" id="settings-viewer"></div>
+    </section>
+    <section>
+      <h3 data-i18n="settings.install_heading"></h3>
+      <p class="snote" id="settings-install-note"></p>
+      <div class="sgrid ro" id="settings-install"></div>
+    </section>
+  </div>
+  <datalist id="tz-all"></datalist>
+</dialog>
 
 <section class="ribbon" data-i18n-label="app.aria_ribbon">
   <div class="ribbon-head">
@@ -32,17 +82,14 @@
 
 <div class="body">
   <main>
-    <div class="filterbar">
-      <button class="fbtn" id="fopen" aria-expanded="false" aria-controls="fpanel">
-        <span data-i18n="filter.button"></span> <kbd>f</kbd>
-      </button>
-      <div class="tokens" id="tokens" aria-live="polite"></div>
-      <button class="fclear" id="fclear" hidden><span data-i18n="filter.clear"></span> <kbd>c</kbd></button>
-    </div>
-
     <div class="fpanel" id="fpanel" role="dialog" aria-modal="false"
          data-i18n-label="filter.aria_panel" hidden>
-      <div class="fgrid" id="fgrid"></div>
+      <!-- The panel itself never scrolls; this does. Same split as the
+           settings dialog: a scrolling body with the controls pinned
+           outside it, so the way out is always on screen. -->
+      <div class="fpanel-body" id="fpanel-body">
+        <div class="fgrid" id="fgrid"></div>
+      </div>
       <div class="fpanel-foot">
         <span class="fhint">
           <span data-i18n="filter.hint"></span>

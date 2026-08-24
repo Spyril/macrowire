@@ -19,7 +19,9 @@ from .. import db
 from .. import export as export_mod
 from .. import watchlist as wl
 from .. import i18n
-from ..config import load_export_settings, load_locale, load_sources
+from .. import preferences
+from ..config import (DEFAULT_CONFIG_PATH, JURISDICTIONS, load_export_settings,
+                      load_locale, load_sources, load_web_settings)
 from ..errors import ConfigError, MacroWireError
 from . import queries, ribbon
 
@@ -76,6 +78,22 @@ USER_ID = db.LOCAL_USER_ID
 # One translator for the process. The locale is a config decision, not a
 # per-request one: there is a single local user and no Accept-Language to
 # negotiate with.
+def _window(days: int | None = None) -> int:
+    """How far back to look. ONE definition.
+
+    It was `days=30` in five places - three in app.js and two as endpoint
+    defaults - so changing it meant finding all five and the client and the
+    server could disagree. An explicit ?days= still wins, for a one-off.
+    """
+    if days is not None:
+        return days
+    conn = _conn()
+    try:
+        return int(preferences.resolve(conn)["window_days"])
+    finally:
+        conn.close()
+
+
 def _translator() -> i18n.Translator:
     """Per request, not per process.
 
@@ -85,7 +103,7 @@ def _translator() -> i18n.Translator:
     and changing the locale did not. The Translator itself caches on mtime,
     so this is a stat and a dict lookup unless something actually changed.
     """
-    return i18n.Translator(load_locale())
+    return i18n.Translator(ribbon._pref("locale", load_locale()))
 
 app = FastAPI(title="MacroWire", docs_url=None, redoc_url=None)
 
@@ -142,6 +160,9 @@ def bootstrap():
         # The whole catalogue, once, on load. It is a few kilobytes and it
         # means the page never renders a label before its text arrives.
         "locale": translator.locale,
+        # Everything the panel needs, resolved, with which level answered.
+        "preferences": preferences.effective(conn),
+        "window_days": _window(),
         # Without `cli`: ninety terminal strings the page can never render,
         # sent on every load.
         "strings": translator.merged(exclude=("cli",)),
@@ -158,6 +179,140 @@ def first_run_sweep():
     swept = queries.mark_all_read(conn, USER_ID) if queries.first_run(conn, USER_ID) else 0
     conn.close()
     return {"marked": swept}
+
+
+def _install_config() -> list[dict]:
+    """What sources.yaml says, resolved, for READ-ONLY display.
+
+    Values, not just key names, and the fallback stated where a key is
+    unset - "backup.path unset -> data/backups, same disk as the database"
+    is the thing worth knowing, and it is not in the file to be read.
+    """
+    from ..config import (ABSOLUTE_MIN_INTERVAL, DEFAULT_CONFIG_PATH,
+                          DEFAULT_TIMEOUT, load_backup_settings)
+    import yaml as pyyaml
+
+    document = pyyaml.safe_load(DEFAULT_CONFIG_PATH.read_text()) or {}
+    declared = document.get("defaults") or {}
+    rows = []
+
+    def row(key, value, note=None, unset=False):
+        rows.append({"key": key, "value": str(value), "note": note,
+                     "unset": unset})
+
+    sources = _sources()
+    web = load_web_settings()
+    row("web.host / web.port", f"{web['host']}:{web['port']}",
+        "127.0.0.1 only; never bound to another interface")
+    row("defaults.user_agent", declared.get("user_agent", ""),
+        "sent to every source; they expect to know who is calling")
+    row("defaults.min_interval_seconds",
+        declared.get("min_interval_seconds", ABSOLUTE_MIN_INTERVAL),
+        f"floor is {ABSOLUTE_MIN_INTERVAL}s and is not overridable downward")
+    row("defaults.timeout_seconds",
+        declared.get("timeout_seconds", DEFAULT_TIMEOUT),
+        "raise it on a slow link; a timeout is reported as unreachable, "
+        "not as a failing source")
+    row("defaults.stagger_seconds", declared.get("stagger_seconds", 0))
+    row("defaults.collapse_repeats", declared.get("collapse_repeats", True),
+        "install-only for now: per source it states a fact about that "
+        "source, not a preference")
+
+    try:
+        export = load_export_settings()
+        row("export.path", export["path"],
+            ("off this disk - a drive failure costs nothing"
+             if export["external"] else
+             "same disk as the database - protects a mistake, not a drive "
+             "failure"),
+            unset="path" not in (declared.get("export") or {}))
+        row("export.auto", export["auto"])
+    except Exception as exc:
+        row("export.path", f"misconfigured: {exc}")
+
+    backup = load_backup_settings()
+    row("backup.enabled", backup["enabled"])
+    row("backup.path", backup["path"],
+        ("off this disk" if backup["external"] else
+         "same disk as the database - protects a mistake, not a drive failure"),
+        unset="path" not in (declared.get("backup") or {}))
+    row("backup.interval_seconds", backup["interval_seconds"])
+    row("backup.keep", backup["keep"])
+    row("sources", f"{sum(1 for s in sources if s.enabled)} enabled "
+                   f"of {len(sources)}",
+        "enabled, intervals, vocabularies and thresholds are per source")
+    return rows
+
+
+@app.get("/api/settings")
+def settings_get():
+    conn = _conn()
+    from .. import preferences as prefs
+    payload = {
+        "preferences": prefs.effective(conn),
+        "settable": list(prefs.SETTABLE),
+        "window_choices": list(prefs.WINDOW_CHOICES),
+        "locales": [{"code": code,
+                     "name": (i18n.load(code).get("_meta") or {}).get("name", code)}
+                    for code in i18n.available()],
+        "timezones": _timezone_choices(),
+        "jurisdictions": sorted(JURISDICTIONS),
+        "install": _install_config(),
+        "config_path": str(DEFAULT_CONFIG_PATH),
+    }
+    conn.close()
+    return payload
+
+
+def _timezone_choices() -> dict:
+    """Not a 400-entry dropdown.
+
+    The detected zone, the five the band already draws, and UTC as quick
+    picks; everything else through a text input backed by the full list as
+    a <datalist>, which the browser filters as you type and never renders
+    whole.
+    """
+    from ..config import system_timezone
+    from . import ribbon as ribbon_mod
+
+    quick = ["UTC"] + [s["tz"] for s in ribbon_mod.SESSIONS]
+    detected = system_timezone()
+    if detected not in quick:
+        quick.insert(0, detected)
+    try:
+        from zoneinfo import available_timezones
+        every = sorted(available_timezones())
+    except Exception:
+        every = quick
+    return {"detected": detected, "quick": quick, "all": every}
+
+
+class PreferenceRequest(BaseModel):
+    key: str
+    value: str | None = None
+
+
+@app.post("/api/settings")
+def settings_set(request: PreferenceRequest):
+    """Set or clear ONE preference.
+
+    Writes to the database and never to sources.yaml: the YAML is the
+    floor and a viewer preference must not be able to edit the
+    installation. A null value clears the override.
+    """
+    from .. import preferences as prefs
+    conn = _conn()
+    try:
+        if request.value is None or request.value == "":
+            prefs.clear(conn, request.key)
+        else:
+            prefs.set_one(conn, request.key, request.value)
+    except ConfigError as exc:
+        conn.close()
+        raise HTTPException(status_code=400, detail=str(exc))
+    payload = {"preferences": prefs.effective(conn)}
+    conn.close()
+    return payload
 
 
 @app.get("/api/watchlist")
@@ -214,7 +369,7 @@ def ribbon_data(day: str | None = None):
 
 
 @app.get("/api/tape")
-def tape(days: int = 30, sources: str | None = None, jurisdictions: str | None = None,
+def tape(days: int | None = None, sources: str | None = None, jurisdictions: str | None = None,
          tickers: str | None = None, types: str | None = None,
          fx: str | None = None, collapse: bool = True, limit: int = 400):
     conn = _conn()
@@ -223,11 +378,15 @@ def tape(days: int = 30, sources: str | None = None, jurisdictions: str | None =
     ticks = [t for t in tickers.split(",") if t] if tickers else None
     kinds = [t for t in types.split("|") if t] if types else None
     fx_states = [f for f in fx.split(",") if f] if fx else None
-    rows = queries.tape(conn, _sources(), USER_ID, days=days, only=only,
+    rows = queries.tape(conn, _sources(), USER_ID, days=_window(days), only=only,
                         jurisdictions=juris, tickers=ticks, types=kinds,
                         fx_states=fx_states, collapse=collapse, limit=limit)
+    # Boundaries travel WITH the tape: a coverage limit is a chronological
+    # event and belongs in the same payload as the rows it sits between.
+    cover = queries.coverage(conn, _sources(), _window(days))
     conn.close()
-    return {"items": rows, "collapsed": collapse}
+    return {"items": rows, "collapsed": collapse, "coverage": cover,
+            "window_days": _window(days)}
 
 
 @app.get("/api/rail")
@@ -254,16 +413,18 @@ def _export_state(conn, sources):
 
 
 @app.get("/api/facets")
-def facets(days: int = 30):
+def facets(days: int | None = None):
     conn = _conn()
+    days = _window(days)
     payload = queries.facets(conn, _sources(), USER_ID, days=days)
     conn.close()
     return payload
 
 
 @app.get("/api/unread")
-def unread(days: int = 30):
+def unread(days: int | None = None):
     conn = _conn()
+    days = _window(days)
     payload = queries.unread_counts(conn, _sources(), USER_ID, days=days)
     conn.close()
     return payload

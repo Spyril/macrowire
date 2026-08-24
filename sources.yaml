@@ -94,50 +94,20 @@
 # time. An unset name is a hard error, never an empty string, so secrets
 # stay out of this tracked file.
 
-defaults:
-  # Sent on every outbound request. RBA is a public government server.
-  # Sent on every outbound request. These are public government servers and
-  # they expect to know who is calling.
-  #
-  # MACROWIRE_CONTACT is required - config load fails without it, rather
-  # than letting a nameless request reach a server that may block for it.
-  # MACROWIRE_PROJECT_URL has a default: change it (or set the variable) if
-  # you fork this, so your traffic identifies your project rather than the
-  # canonical one.
-  user_agent: "MacroWire/0.1 (personal news wire; +${MACROWIRE_PROJECT_URL:-https://github.com/Spyril/macrowire}; ${MACROWIRE_CONTACT})"
-  # Floor on how often any one source may be polled. Enforced against
-  # fetch_log, so it survives restarts. Values below 60 are rejected.
-  min_interval_seconds: 60
-  # Per-source, overridable under a source's config. 30s was too tight:
-  # the NBS feeds are ~4.5MB and take ~50s to arrive, and a timeout
-  # mid-download is exactly what produced a truncated, mojibaked feed.
-  #
-  # ON A SLOW OR CONGESTED INTERNATIONAL LINK, RAISE IT - here for every
-  # source, or under one source's `config:` for just that one. A timeout is
-  # recorded as error_kind='timeout', and a source whose entire failure
-  # streak is timeouts or connections that never landed is reported as
-  # "network unreachable - may be connectivity rather than the source",
-  # never as failing: nothing came back, so nothing has been learned about
-  # the feed. 300 is not unreasonable where 120 is marginal.
-  timeout_seconds: 120
-  # Pause between sources within one cycle. Fetching is sequential, so
-  # servers are never hit simultaneously anyway; this spaces them out
-  # rather than firing nine back-to-back requests in under a second.
-  stagger_seconds: 2
-  # Days without a NEW item before `status` marks a source stale.
-  # null = off. Staleness is INFORMATION only and never raises.
-  staleness_days: null
-  # Days to keep raw payloads for a source. null = keep forever, which is
-  # the right default: for most feeds here the stored bytes are the only
-  # copy that will ever exist. Set it ONLY where the payload is genuinely
-  # re-fetchable. See README, "raw_responses retention".
-  raw_retention_days: null
-
-  # The interface. 127.0.0.1 only - this binds no other interface.
-  # `serve` uses these unless --port / --host override for a one-off, and it
-  # never falls back to a different port: a silently relocated server is how
-  # you end up with three of them running.
-
+# ---------------------------------------------------------------------------
+# VIEWER PREFERENCES — what belongs to whoever is LOOKING.
+#
+# These are DEFAULTS. The settings panel overrides them per user and writes
+# to the database, never to this file, so editing here changes what a fresh
+# install starts with and nothing else. `python -m macrowire prefs` shows
+# which level is answering for each one.
+#
+# Everything under `defaults:` below belongs to the INSTALLATION instead —
+# poll intervals, timeouts, paths, contacts — and the panel shows those
+# read-only. The distinction is the whole design, so it is in the file and
+# not only in the interface.
+# ---------------------------------------------------------------------------
+viewer:
   # WHERE THE READER IS. Day headers, the clock, session bars and mark
   # positions are all in this zone. A SOURCE's publication time is not -
   # the RBA fixes at 4pm Sydney whether you read it in Sydney or Stuttgart,
@@ -185,6 +155,56 @@ defaults:
   # complete each one is - it reads the directory, so this comment cannot
   # go stale by naming them here.
   locale: en
+
+  # How far back the tape looks. A viewer preference, and it was hardcoded
+  # as `days=30` in five separate places - three in app.js and two as
+  # endpoint defaults - which is a bug whether or not anyone wants to change
+  # it. One definition now.
+  window_days: 30
+
+defaults:
+  # Sent on every outbound request. RBA is a public government server.
+  # Sent on every outbound request. These are public government servers and
+  # they expect to know who is calling.
+  #
+  # MACROWIRE_CONTACT is required - config load fails without it, rather
+  # than letting a nameless request reach a server that may block for it.
+  # MACROWIRE_PROJECT_URL has a default: change it (or set the variable) if
+  # you fork this, so your traffic identifies your project rather than the
+  # canonical one.
+  user_agent: "MacroWire/0.1 (personal news wire; +${MACROWIRE_PROJECT_URL:-https://github.com/Spyril/macrowire}; ${MACROWIRE_CONTACT})"
+  # Floor on how often any one source may be polled. Enforced against
+  # fetch_log, so it survives restarts. Values below 60 are rejected.
+  min_interval_seconds: 60
+  # Per-source, overridable under a source's config. 30s was too tight:
+  # the NBS feeds are ~4.5MB and take ~50s to arrive, and a timeout
+  # mid-download is exactly what produced a truncated, mojibaked feed.
+  #
+  # ON A SLOW OR CONGESTED INTERNATIONAL LINK, RAISE IT - here for every
+  # source, or under one source's `config:` for just that one. A timeout is
+  # recorded as error_kind='timeout', and a source whose entire failure
+  # streak is timeouts or connections that never landed is reported as
+  # "network unreachable - may be connectivity rather than the source",
+  # never as failing: nothing came back, so nothing has been learned about
+  # the feed. 300 is not unreasonable where 120 is marginal.
+  timeout_seconds: 120
+  # Pause between sources within one cycle. Fetching is sequential, so
+  # servers are never hit simultaneously anyway; this spaces them out
+  # rather than firing nine back-to-back requests in under a second.
+  stagger_seconds: 2
+  # Days without a NEW item before `status` marks a source stale.
+  # null = off. Staleness is INFORMATION only and never raises.
+  staleness_days: null
+  # Days to keep raw payloads for a source. null = keep forever, which is
+  # the right default: for most feeds here the stored bytes are the only
+  # copy that will ever exist. Set it ONLY where the payload is genuinely
+  # re-fetchable. See README, "raw_responses retention".
+  raw_retention_days: null
+
+  # The interface. 127.0.0.1 only - this binds no other interface.
+  # `serve` uses these unless --port / --host override for a one-off, and it
+  # never falls back to a different port: a silently relocated server is how
+  # you end up with three of them running.
 
   web:
     host: 127.0.0.1

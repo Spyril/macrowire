@@ -162,11 +162,41 @@ ALTER TABLE items ADD COLUMN fx_state TEXT;
 CREATE INDEX IF NOT EXISTS idx_items_fx ON items(source_id, fx_state);
 """
 
+# --- 005 -------------------------------------------------------------------
+# Viewer preferences: what belongs to whoever is LOOKING, as opposed to what
+# belongs to the installation (sources.yaml) or to the data (watchlists).
+#
+# In the DATABASE and not in localStorage, and the reason is specific rather
+# than architectural taste: locale, timezone, session_order and
+# jurisdiction_order are all consumed SERVER-SIDE - by the Translator, by the
+# ribbon's projection arithmetic, and by the rail and facet payloads. Kept in
+# the browser they would have to ride along on every request as parameters,
+# and config-driven behaviour and preference-driven behaviour would become
+# two sources of truth for one value. That is the bug this project has
+# already fixed twice, most recently as a locale catalogue frozen at import
+# while the JavaScript that asked for it was served fresh from disk.
+#
+# Key/value rather than a column per preference: theme is coming and the
+# tape window is already here, and one migration beats one per setting.
+# Values are strings; validation stays in Python beside the config loaders
+# that already know the rules, so there is one definition of "a valid
+# timezone" rather than two.
+PREFERENCES = """
+CREATE TABLE IF NOT EXISTS preferences (
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    key        TEXT    NOT NULL,
+    value      TEXT    NOT NULL,
+    updated_at TEXT    NOT NULL,
+    PRIMARY KEY (user_id, key)
+);
+"""
+
 MIGRATIONS: list[tuple[int, str, str]] = [
     (1, "baseline", BASELINE),
     (2, "fetch_log.error_kind", ERROR_KIND),
     (3, "items type_primary / type_tags", TYPE_FIELDS),
     (4, "items.fx_state", FX_STATE),
+    (5, "preferences", PREFERENCES),
 ]
 
 

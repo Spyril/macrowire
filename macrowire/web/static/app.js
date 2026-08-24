@@ -229,7 +229,10 @@ function tokenHtml({ axis, value }) {
 function drawTokens() {
   const active = activeFilters();
   $("tokens").innerHTML = active.map(tokenHtml).join("");
-  $("fclear").hidden = active.length === 0;
+  // The whole ROW goes, not just its contents: an empty flex row still
+  // costs its padding, and the masthead must not take tape when nothing
+  // is filtered.
+  $("mast-tokens").hidden = active.length === 0;
   $("tokens").querySelectorAll("button").forEach((b) => {
     b.onclick = () => { state.f[b.dataset.axis].delete(b.dataset.value); afterFilterChange(); };
   });
@@ -282,6 +285,24 @@ function drawTape() {
     return;
   }
 
+  // Coverage boundaries, interleaved in chronological position. A boundary
+  // is a fact about WHEN the record starts, so it belongs in the timeline
+  // rather than in a banner - and it renders ONCE per source, at its own
+  // date, not once per day of an uncovered range.
+  const cov = state.coverage || { boundaries: [], complete: 0, total: 0 };
+  const pending = [...cov.boundaries].sort((a, b) => (a.earliest < b.earliest ? 1 : -1));
+
+  function boundaryHtml(b) {
+    const src = b.source.replace(/_/g, " ");
+    const cmd = `python -m macrowire backfill --source ${b.source}`;
+    const title = t(`coverage.${b.state}_title`, { source: src });
+    const body = t(`coverage.${b.state}_body`, {
+      date: b.earliest, first: b.first_fetch || "\u2014", command: cmd });
+    return `<div class="cbound cbound-${esc(b.state)}">
+      <div class="cb-t">${esc(title)}</div>
+      <div class="cb-b">${esc(body)}</div></div>`;
+  }
+
   let html = "", lastDay = null;
   for (const r of rows) {
     const syd = dayKeySydney(r.published_at);
@@ -293,6 +314,12 @@ function drawTape() {
       // in FACT rather than here.
       html += `<div class="dayhead">${syd.toLocaleDateString(state.locale,
         { weekday: "long", day: "numeric", month: "long" })}</div>`;
+    }
+    // Anything whose coverage begins after this row's date has now been
+    // passed; emit it here, once.
+    const rowDay = syd.toISOString().slice(0, 10);
+    while (pending.length && pending[0].earliest > rowDay) {
+      html += boundaryHtml(pending.shift());
     }
     const hh = String(syd.getHours()).padStart(2, "0");
     const mm = String(syd.getMinutes()).padStart(2, "0");
@@ -313,6 +340,9 @@ function drawTape() {
         </div>
       </article>`;
   }
+  // Anything still pending begins before the oldest row we hold.
+  while (pending.length) html += boundaryHtml(pending.shift());
+  html += endOfWindow(cov);
   $("tape").innerHTML = html;
   observeItems();
 }
@@ -340,6 +370,29 @@ function observeItems() {
     }
   }, { threshold: 0.6 });
   document.querySelectorAll(".item.unread").forEach((el) => observer.observe(el));
+}
+
+// MEASURE, never warn unconditionally: when nothing is missing this says
+// so plainly rather than staying silent, which would be indistinguishable
+// from the feature being broken.
+function endOfWindow(cov) {
+  const rows = cov.boundaries || [];
+  const span = t("coverage.end_heading", {
+    from_date: cov.window_start || "\u2014",
+    to_date: new Date().toISOString().slice(0, 10) });
+  if (!rows.length) {
+    return `<div class="cend"><div class="cb-t">${esc(span)}</div>
+      <div class="cb-b">${esc(t("coverage.end_complete", { n: cov.total }))}</div></div>`;
+  }
+  const lines = rows.map((b) => `<div class="cend-row">${esc(t("coverage.end_row", {
+      source: b.source.replace(/_/g, " "), date: b.earliest,
+      note: t(`coverage.note_${b.state}`) }))}</div>`).join("");
+  const rest = cov.complete > 0
+    ? `<div class="cb-b">${esc(t("coverage.end_rest_complete", { n: cov.complete }))}</div>`
+    : "";
+  return `<div class="cend"><div class="cb-t">${esc(span)}</div>
+    <div class="cb-b">${esc(t("coverage.end_missing"))}</div>
+    ${lines}${rest}</div>`;
 }
 
 /* ---------------- filter panel ---------------- */
@@ -451,21 +504,25 @@ function drawPanel(unread) {
       }).join("")
     : `<span class="fempty">${esc(t("filter.empty_type"))}</span>`, f.type.length]);
 
-  // One <details> per axis, so the closed panel is five summary lines
-  // rather than five wrapped chip fields. Native disclosure: keyboard
-  // handling, screen-reader semantics and the open/closed state all come
-  // free, and there is no state to keep in sync with anything.
+  // FIVE OPEN SECTIONS, NOT FIVE DISCLOSURES. These were <details> to save
+  // vertical space; the panel scrolls instead. Everything the panel can do
+  // is on screen the moment it opens - no expanding, no drilling, no click
+  // to reveal - which is how the settings dialog already worked and the
+  // reason it never grew this class of bug.
   //
-  // An axis holding an active filter opens itself. A collapsed section
-  // hiding a filter that is narrowing the tape would be the drawer's own
-  // problem in miniature: something acting on what you see, out of sight.
+  // The <details> also could not survive its own stylesheet. `.fgroup` is
+  // `display: flex`, an AUTHOR rule, and author origin outranks the UA
+  // origin that hides a closed disclosure's content - regardless of
+  // specificity. So a closed axis laid its chips out anyway, outside the
+  // panel's painted box and outside its scroll height. Exactly the cascade
+  // trap the settings dialog hit with `.settings { display: flex }`.
   $("fgrid").innerHTML = rows.map(([axis, label, body, n]) => {
     const on = state.f[axis] ? state.f[axis].size : 0;
-    return `<details class="fax"${on ? " open" : ""}>
-      <summary><span class="faxis">${esc(label)}</span>` +
+    return `<section class="fax">
+      <div class="fhead"><span class="faxis">${esc(label)}</span>` +
       `<span class="fcount">${n}</span>` +
       (on ? `<span class="fon">${on} \u2713</span>` : "") +
-      `</summary><div class="fgroup">${body}</div></details>`;
+      `</div><div class="fgroup">${body}</div></section>`;
   }).join("");
 
   wireWatchlistControls();
@@ -532,13 +589,14 @@ function setWlMessage(text, isError) {
 }
 
 async function reloadAfterWatchlistChange(message) {
-  state.facets = await get("/api/facets?days=30");
+  state.facets = await get("/api/facets");
   drawTokens();
   drawTape();
   drawPanel(state.unread || {});
   setWlMessage(t("watchlist.after_change", { message }), false);
   const input = $("wl-ticker");
-  if (input) input.focus();
+  // Same reason: the panel is open over a tape the reader is deep inside.
+  if (input) input.focus({ preventScroll: true });
 }
 
 function afterFilterChange({ keepPanel = false } = {}) {
@@ -560,23 +618,46 @@ function clearFilters() {
 }
 
 let lastFocus = null;
+// preventScroll ON EVERY focus() THAT IS NOT THE USER NAVIGATING.
+//
+// This was the worst bug in the tool and it was not what it looked like.
+// Opening the panel appeared to shove the tape down; measured, the panel's
+// height moves the tape by ZERO - Firefox's scroll anchoring absorbs it
+// exactly. What actually happened is that focus() scrolls its target into
+// view, so focusing the first chip while three weeks deep threw the page
+// 2,984 pixels back to the top.
+//
+// The Tab handler below deliberately does NOT use this: there, moving the
+// viewport to the newly focused control is the correct behaviour, because
+// the user is navigating.
+// Anchor the floating panel to the bottom of the masthead, whatever height
+// the masthead currently is - it grows by one line when filters are active.
+function positionPanel() {
+  const bar = $("masthead").getBoundingClientRect();
+  $("fpanel").style.top = `${Math.max(0, Math.round(bar.bottom))}px`;
+}
+
 function openPanel() {
   lastFocus = document.activeElement;
   $("fpanel").hidden = false;
+  positionPanel();
   $("fopen").setAttribute("aria-expanded", "true");
   drawPanel(state.unread || {});
   const first = $("fgrid").querySelector(".chip");
-  (first || $("fclose")).focus();
+  (first || $("fclose")).focus({ preventScroll: true });
 }
 function closePanel() {
   $("fpanel").hidden = true;
   $("fopen").setAttribute("aria-expanded", "false");
-  (lastFocus && lastFocus.focus) ? lastFocus.focus() : $("fopen").focus();
+  const back = (lastFocus && lastFocus.focus) ? lastFocus : $("fopen");
+  back.focus({ preventScroll: true });
 }
 const panelOpen = () => !$("fpanel").hidden;
 
 function wireKeyboard() {
   $("fopen").onclick = () => (panelOpen() ? closePanel() : openPanel());
+  // <dialog> handles Esc, focus trapping and the backdrop itself.
+  $("settings-open").onclick = openSettings;
   $("fclose").onclick = closePanel;
   $("fclear").onclick = clearFilters;
 
@@ -599,7 +680,7 @@ function wireKeyboard() {
 }
 
 async function refreshUnread() {
-  const u = await get("/api/unread?days=30");
+  const u = await get("/api/unread");
   state.unread = u;
   // Both numbers, together, each labelled. They were on two surfaces with
   // no scope stated - "7 unread" in the masthead and "61 80 51" in the
@@ -762,6 +843,151 @@ function drawRail(d) {
   }
 }
 
+/* ---------------- settings ---------------- */
+
+let settingsData = null;
+
+function provenance(row, key, label) {
+  // Which level answered, and a way back down to the floor. A preference
+  // that cannot be removed is a one-way door, and sources.yaml has to stay
+  // the thing underneath.
+  if (row.source !== "preference") {
+    return `<span class="prov">${esc(t("settings.from_config"))}</span>`;
+  }
+  const back = row.config_value === "" ? t("settings.unset") : row.config_value;
+  return `<span class="prov">${esc(t("settings.from_preference"))}</span>` +
+    ` <button class="sreset" data-reset="${esc(key)}"
+        title="${esc(t("settings.reset_title", { label, value: back }))}"
+        >${esc(t("settings.reset"))}</button>`;
+}
+
+function drawSettings(data) {
+  settingsData = data;
+  const p = data.preferences;
+  const rows = [];
+
+  const pick = (key, label, options, current) => {
+    const opts = options.map(([v, text]) =>
+      `<option value="${esc(v)}"${v === current ? " selected" : ""}>${esc(text)}</option>`
+    ).join("");
+    rows.push([label,
+      `<select data-pref="${esc(key)}">${opts}</select>` +
+      provenance(p[key], key, label)]);
+  };
+
+  // Named in their OWN language. A switcher labelled in a language you
+  // cannot read is useless to the person who needs it.
+  pick("locale", t("settings.locale"),
+       data.locales.map((l) => [l.code, l.name]), p.locale.value);
+
+  // Not a 400-entry dropdown: detected, the five the band draws, UTC, and
+  // a text field backed by a <datalist> the browser filters as you type.
+  const tz = data.timezones;
+  const quick = [["system", t("settings.timezone_detected", { zone: tz.detected })]]
+    .concat(tz.quick.filter((z) => z !== tz.detected).map((z) => [z, z]));
+  const known = quick.some(([v]) => v === p.timezone.value);
+  rows.push([t("settings.timezone"),
+    `<select data-pref="timezone">${
+      quick.map(([v, text]) =>
+        `<option value="${esc(v)}"${v === p.timezone.value ? " selected" : ""}
+        >${esc(text)}</option>`).join("")
+    }<option value="__other"${known ? "" : " selected"}
+      >${esc(t("settings.timezone_other"))}</option></select>` +
+    `<input type="text" list="tz-all" id="tz-other" spellcheck="false"
+       value="${known ? "" : esc(p.timezone.value)}"
+       ${known ? "hidden" : ""} aria-label="${esc(t("settings.timezone"))}">` +
+    provenance(p.timezone, "timezone", t("settings.timezone")) +
+    `<span class="snote">${esc(t("settings.timezone_note"))}</span>`]);
+
+  pick("session_order", t("settings.session_order"),
+       [["viewer", t("settings.session_viewer")],
+        ["fixed", t("settings.session_fixed")]], p.session_order.value);
+  pick("jurisdiction_order", t("settings.jurisdiction_order"),
+       [["viewer", t("settings.jur_viewer")],
+        ["alphabetical", t("settings.jur_alpha")]], p.jurisdiction_order.value);
+
+  const auto = state.jurisdiction
+    ? t("settings.jurisdiction_auto", { code: state.jurisdiction })
+    : t("settings.jurisdiction_none");
+  pick("jurisdiction", t("settings.jurisdiction"),
+       [["", auto]].concat(data.jurisdictions.map((j) => [j, j])),
+       p.jurisdiction.value);
+
+  pick("window_days", t("settings.window_days"),
+       data.window_choices.map((n) => [String(n), t("settings.window_value", { n })]),
+       p.window_days.value);
+
+  $("settings-viewer").innerHTML = rows.map(
+    ([label, body]) => `<div class="lab">${esc(label)}</div><div class="val">${body}</div>`
+  ).join("");
+
+  $("settings-install-note").textContent =
+    t("settings.install_note", { path: data.config_path });
+  $("settings-install").innerHTML = data.install.map((r) => {
+    const shown = r.unset ? t("settings.falls_back", { value: r.value }) : r.value;
+    return `<div class="lab">${esc(r.key)}</div><div class="val${r.unset ? " unset" : ""}"
+      >${esc(shown)}${r.note ? `<span class="rnote">${esc(r.note)}</span>` : ""}</div>`;
+  }).join("");
+  $("tz-all").innerHTML = tz.all.map((z) => `<option value="${esc(z)}">`).join("");
+
+  wireSettings();
+}
+
+function wireSettings() {
+  const other = $("tz-other");
+  $("settings-viewer").querySelectorAll("select[data-pref]").forEach((el) => {
+    el.onchange = () => {
+      if (el.dataset.pref === "timezone" && el.value === "__other") {
+        other.hidden = false; other.focus();
+        return;
+      }
+      if (el.dataset.pref === "timezone") { other.hidden = true; }
+      savePreference(el.dataset.pref, el.value);
+    };
+  });
+  if (other) {
+    other.onchange = () => other.value && savePreference("timezone", other.value);
+  }
+  $("settings-viewer").querySelectorAll("[data-reset]").forEach((b) => {
+    b.onclick = () => savePreference(b.dataset.reset, null);
+  });
+}
+
+async function savePreference(key, value) {
+  try {
+    const result = await post("/api/settings", { key, value });
+    settingsData.preferences = result.preferences;
+    drawSettings(settingsData);
+    // Language and timezone change what the SERVER renders, so the page is
+    // redrawn from scratch rather than patched in place - a half-updated
+    // interface is worse than a blink.
+    await reloadEverything();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function reloadEverything() {
+  const b = await get("/api/bootstrap");
+  STRINGS = b.strings || {};
+  state.locale = b.locale || "en";
+  state.zoneLabel = b.now.label;
+  state.offsetHours = b.now.offset;
+  state.facets = b.facets;
+  document.documentElement.lang = state.locale;
+  applyStaticStrings();
+  drawRibbon(await get("/api/ribbon"));
+  state.tape = (await get("/api/tape")).items;
+  drawTape(); drawTokens();
+  await refreshUnread();
+  drawRail(await get("/api/rail"));
+}
+
+async function openSettings() {
+  drawSettings(await get("/api/settings"));
+  $("settings").showModal();
+}
+
 /* ---------------- boot ---------------- */
 
 // Static chrome in index.html carries a key, not a sentence, so the markup
@@ -794,6 +1020,7 @@ async function boot() {
   state.watchlist = b.watchlist || [];
   state.zone = b.now.zone;
   state.zoneLabel = b.now.label;
+  state.jurisdiction = b.now.jurisdiction;
   state.locale = b.locale || "en";
   if (b.first_run) {
     // bootstrap only REPORTS this; the sweep is a POST so a GET never mutates.
@@ -807,18 +1034,30 @@ async function boot() {
   wireKeyboard(); drawTokens();
   drawHours(); tickClock(); setInterval(tickClock, 1000);
   drawRibbon(await get("/api/ribbon"));
-  state.tape = (await get("/api/tape?days=30")).items;
+  const tape = await get("/api/tape");
+  state.tape = tape.items;
+  state.coverage = tape.coverage;
   drawTape();
   await refreshUnread();
   drawRail(await get("/api/rail"));
 
   setInterval(async () => {
-    state.tape = (await get("/api/tape?days=30")).items;
-    state.facets = await get("/api/facets?days=30");
+    const fresh = await get("/api/tape");
+    state.tape = fresh.items;
+    state.coverage = fresh.coverage;
+    state.facets = await get("/api/facets");
     drawTape(); refreshUnread();
     drawRail(await get("/api/rail"));
   }, 120000);
-  window.addEventListener("resize", () => { drawHours(); layoutMarkLanes(); });
+  window.addEventListener("resize", () => {
+    drawHours(); layoutMarkLanes();
+    if (panelOpen()) positionPanel();
+  });
+  // The masthead is sticky, so its bottom edge moves as the page scrolls
+  // until it pins. An open panel follows it.
+  window.addEventListener("scroll", () => {
+    if (panelOpen()) positionPanel();
+  }, { passive: true });
 }
 
 boot().catch((e) => {

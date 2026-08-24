@@ -102,6 +102,7 @@
     "risk_heading": "If this disk dies",
     "no_data": "no data",
     "week": "wk",
+    "_note_source_facts": "!! DO NOT PUT A PUBLICATION TIME IN THESE. The {time}, {day} and {release} placeholders are filled with facts about the PUBLISHER - '4pm AEST', '09:15 CST', '~16:00 CET', 'Fri 15:30 ET' - and those are true for every reader in every timezone. Translate the words around them. Writing '4pm 澳东标准时间 · {period}' here looks like doing the job and silently breaks a source fact. A test fails if any of those strings appears in a locale file.",
     "cot_asof": "CFTC non-commercial net, contracts · as of {period} ({day}), released {release}",
     "cny_asof": "fix {period} {time} · change vs {prior}",
     "ecb_asof": "reference rate {period} · {time} · base {base}",
@@ -149,7 +150,7 @@
       "action": ""
     },
     "throttled": {
-      "label": "waiting on interval",
+      "label": "within interval",
       "meaning": "The rate limiter blocked this cycle before any request went out, to stay inside the source's polite interval.",
       "action": ""
     },
@@ -178,7 +179,7 @@
       "short": "network unreachable — may be connectivity rather than the source"
     },
     "disabled": {
-      "label": "not polled",
+      "label": "disabled",
       "meaning": "enabled: false in sources.yaml. This source is not contacted at all. Anything already collected from it is kept and still shows on the tape.",
       "action": "Set enabled: true in sources.yaml to start polling it."
     }
@@ -194,8 +195,8 @@
   "cli": {
     "fetch": {
       "ok": "ok",
-      "no_change": "no change",
-      "throttled": "throttled",
+      "no_change": "polled, nothing new",
+      "throttled": "within interval",
       "throttled_detail": "not contacted; {seconds}s until next allowed",
       "entries": "{n} entries",
       "new_items": "{n} new item(s)",
@@ -266,7 +267,9 @@
       "unreachable": "network unreachable - may be connectivity rather than the source. Every attempt since the last good cycle timed out or never connected, so nothing has come back to judge the source by.",
       "unreachable_hint": "Raise timeout_seconds for this source if the link is slow, or set enabled: false to stop polling it.",
       "disabled_flag": "[DISABLED]",
-      "fx_unmeasured": "not measured yet - {reason}"
+      "fx_unmeasured": "not measured yet - {reason}",
+      "coverage": "coverage starts",
+      "coverage_note": "{date}  ({note})"
     },
     "watchlist": {
       "empty": "watchlist is empty",
@@ -386,7 +389,9 @@
       "status": "per-source health",
       "debug": "show the full traceback instead of a summary",
       "locales": "list interface languages and their coverage",
-      "locales_all": "list every missing key, not the first few"
+      "locales_all": "list every missing key, not the first few",
+      "prefs": "show viewer preferences and where each comes from",
+      "prefs_clear": "remove one preference so sources.yaml applies"
     },
     "locales": {
       "header": "interface languages in {path}",
@@ -400,6 +405,67 @@
       "orphaned_note": "A key with no English original cannot fall back, so it renders in one language only. Usually a typo or a string removed from en.",
       "partial_note": "A partial locale is usable: every missing key falls back to {default} on its own, so nothing renders blank or as a raw key.",
       "contribute": "To add one: copy {default}.json, translate the values, save it as <code>.json alongside, and set locale in sources.yaml. Translate values only - never the keys, and never a publication time."
+    },
+    "prefs": {
+      "header": "viewer preferences (user {user})",
+      "row": "{key}  {value}  [{source}]",
+      "from_config": "sources.yaml",
+      "from_pref": "set, was {config}",
+      "note": "Stored in the database, never written to sources.yaml. Set them in the interface, or clear one with: python -m macrowire prefs --clear <key>",
+      "cleared": "cleared {key}; sources.yaml applies again",
+      "not_set": "{key} was not set"
     }
+  },
+  "settings": {
+    "open": "Settings",
+    "title": "Settings",
+    "close": "Done",
+    "viewer_heading": "This view",
+    "viewer_note": "Yours, stored per user. Changing these never edits sources.yaml.",
+    "install_heading": "This installation",
+    "install_note": "From {path}, shown read-only. Edit the file to change them.",
+    "locale": "Language",
+    "timezone": "Timezone",
+    "timezone_detected": "{zone} — detected",
+    "timezone_other": "Other",
+    "timezone_note": "Where YOU are. A source's publication time never moves with it.",
+    "session_order": "Session band",
+    "session_viewer": "start at my market",
+    "session_fixed": "always start at Sydney",
+    "jurisdiction_order": "Jurisdiction chips",
+    "jur_viewer": "my market first",
+    "jur_alpha": "alphabetical",
+    "jurisdiction": "My market",
+    "jurisdiction_auto": "from timezone ({code})",
+    "jurisdiction_none": "from timezone (none of the seven)",
+    "window_days": "Tape window",
+    "window_value": "{n} days",
+    "from_config": "from sources.yaml",
+    "from_preference": "set here",
+    "reset": "reset",
+    "reset_title": "Reset {label} to the sources.yaml value: {value}",
+    "unset": "unset",
+    "falls_back": "unset → {value}",
+    "saved": "saved",
+    "reload_note": "Language and timezone changes redraw the page."
+  },
+  "coverage": {
+    "recoverable_title": "{source} · nothing earlier collected",
+    "recoverable_body": "Coverage starts {date}. This source answers for older dates — {command} reaches further back.",
+    "unwired_title": "{source} · nothing earlier collected",
+    "unwired_body": "Coverage starts {date}. This source has a queryable archive, but no backfill is configured for it in sources.yaml.",
+    "lost_title": "{source} · nothing earlier",
+    "lost_body": "Coverage starts {date}. This feed carries only its most recent entries; what scrolled off before the first fetch on {first} is gone and cannot be recovered.",
+    "never_title": "{source} · nothing earlier, ever",
+    "never_body": "Coverage starts {date} — the day collection began. This feed carries one item and no archive, so nothing before that date exists in any copy.",
+    "end_heading": "end of window · {from_date} – {to_date}",
+    "end_missing": "Not in the record for this period:",
+    "end_row": "{source}  from {date}  {note}",
+    "note_recoverable": "recoverable — backfill reaches further back",
+    "note_unwired": "recoverable, backfill not configured",
+    "note_lost": "lost — rolling feed",
+    "note_never": "never existed — no archive",
+    "end_complete": "All {n} sources are complete for this window.",
+    "end_rest_complete": "The other {n} are complete for this window."
   }
 }

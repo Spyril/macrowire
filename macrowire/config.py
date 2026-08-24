@@ -433,6 +433,41 @@ def load_backup_settings(path: Path | None = None) -> dict:
 DEFAULT_WEB_PORT = 8917
 
 
+def _viewer_block(path: Path | None = None) -> dict:
+    """The `viewer:` block, falling back to `defaults:` for older files.
+
+    The two blocks exist so the line between "belongs to the reader" and
+    "belongs to the installation" is visible in the file. A config written
+    before the split keeps working: these keys used to live under
+    `defaults:` and are still read from there if `viewer:` is absent.
+    """
+    load_dotenv(REPO_ROOT / ".env")
+    path = path or DEFAULT_CONFIG_PATH
+    document = yaml.safe_load(path.read_text()) or {}
+    viewer = document.get("viewer")
+    if isinstance(viewer, dict):
+        return viewer
+    return document.get("defaults") or {}
+
+
+def load_window_days(path: Path | None = None) -> int:
+    """How far back the tape looks.
+
+    A viewer preference that was hardcoded as `days=30` in five places -
+    three in app.js and two as endpoint defaults. One definition.
+    """
+    raw = _viewer_block(path).get("window_days", 30)
+    try:
+        days = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{path or DEFAULT_CONFIG_PATH}: window_days "
+                          f"{raw!r} is not a number") from exc
+    if not 1 <= days <= 3650:
+        raise ConfigError(f"{path or DEFAULT_CONFIG_PATH}: window_days {days} "
+                          f"must be between 1 and 3650")
+    return days
+
+
 def system_timezone() -> str:
     """The machine's own zone, or UTC if it cannot be determined.
 
@@ -466,7 +501,7 @@ def system_timezone() -> str:
     return "UTC"
 
 
-def load_timezone(path: Path | None = None) -> str:
+def load_timezone(path: Path | None = None, raw: bool = False) -> str:
     """Which zone the VIEWER reads in. Never a source's own zone.
 
     Day headers, the clock, session bars and mark positions are all the
@@ -481,12 +516,12 @@ def load_timezone(path: Path | None = None) -> str:
     where both hemispheres have switched out of step. A stored offset gets
     that wrong twice a year in each direction.
     """
-    load_dotenv(REPO_ROOT / ".env")
-    path = path or DEFAULT_CONFIG_PATH
-    document = yaml.safe_load(path.read_text()) or {}
-    declared = (document.get("defaults") or {}).get("timezone")
+    declared = _viewer_block(path).get("timezone")
     if not declared or str(declared).strip().lower() == "system":
-        return system_timezone()
+        # `raw` asks what the FILE says rather than what it resolves to, so
+        # the settings panel can show "system (Australia/Sydney)" instead of
+        # silently presenting a detected zone as if it had been chosen.
+        return "system" if raw else system_timezone()
     declared = str(declared).strip()
     try:
         ZoneInfo(declared)
@@ -507,10 +542,8 @@ def load_ordering(path: Path | None = None) -> dict:
     while the chips put the reader's own market first and alphabetise the
     rest. See macrowire/ordering.py for why the two differ.
     """
-    load_dotenv(REPO_ROOT / ".env")
+    defaults = _viewer_block(path)
     path = path or DEFAULT_CONFIG_PATH
-    document = yaml.safe_load(path.read_text()) or {}
-    defaults = document.get("defaults") or {}
 
     sessions = defaults.get("session_order", "viewer")
     if not isinstance(sessions, (str, list)):
@@ -553,10 +586,7 @@ def load_locale(path: Path | None = None) -> str:
     which is the right trade for a typo in a config file. A missing English
     catalogue IS fatal, and raises in i18n.load().
     """
-    load_dotenv(REPO_ROOT / ".env")
-    path = path or DEFAULT_CONFIG_PATH
-    document = yaml.safe_load(path.read_text()) or {}
-    return str((document.get("defaults") or {}).get("locale", "en"))
+    return str(_viewer_block(path).get("locale", "en"))
 
 
 def load_web_settings(path: Path | None = None) -> dict:

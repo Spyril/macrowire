@@ -33,6 +33,37 @@ written down rather than remembered.
      `assertIn` - it fails loudly when the range is wrong, while
      `assertNotIn` passes.
 
+  4. A SCANNER MUST NOT READ THE PROSE.
+     `strip_comments(text, syntax)` / `read_code(path)`. This bit THREE
+     times before it was consolidated and an audit then found SEVEN more
+     that nobody had tripped: a CSS scanner reading a /* */ line as a
+     selector, a t() scanner counting a call written in a # comment to
+     explain the API, a markup scanner landing inside the <!-- --> above
+     the element it was looking for. Strip unless the question is ABOUT
+     the documentation - `test_the_tightest_pair_is_written_down` reads a
+     header comment on purpose, which is why TestLegibility keeps both
+     `self.css` (raw) and `self.code` (stripped) under different names.
+
+A BROWSER DRIVER IS AVAILABLE. USE IT.
+--------------------------------------------------------------------------
+geckodriver and firefox are on this machine, and geckodriver speaks
+WebDriver over plain HTTP, which httpx - already a dependency - can drive.
+`DialogBrowserTests` does exactly that in about eighteen seconds and skips
+cleanly where the binaries are absent. NO NEW PACKAGES ARE NEEDED.
+
+"I cannot verify this without a browser" is not a reason to skip a test.
+It was assumed rather than checked, and three defects reached the screen
+past a green suite partly because of that assumption:
+
+    ribbon.VIEW      a rename nothing crossed - no test called /api/ribbon
+    stale catalogue  runtime state no static read could see
+    the settings dialog  an author `display` beating the UA stylesheet's
+                     `dialog:not([open])`, which is a CASCADE interaction
+                     and invisible in any amount of reading the file
+
+All three were BEHAVIOUR, not code. Assert behaviour where behaviour is
+what is claimed.
+
 MUTATION TESTING, AND ITS OWN TRAP
 --------------------------------------------------------------------------
 The way to know a guard bites is to break the thing it guards and watch it
@@ -52,6 +83,7 @@ import contextlib
 import dataclasses
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -71,6 +103,158 @@ from macrowire.errors import (                                    # noqa: E402
 from macrowire.parsers import get_parser                          # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+# Comment syntaxes, by the file extensions this project actually has.
+_COMMENTS = {
+    ".css":  (r"/\*.*?\*/",),
+    # `(?<!:)` so a `//` in a URL survives. There is none in the scanned
+    # files today and a test below keeps it that way, because a `//` inside
+    # a string literal would be mis-stripped and this is not a parser.
+    ".js":   (r"/\*.*?\*/", r"(?m)(?<!:)//.*$"),
+    ".html": (r"<!--.*?-->",),
+    ".py":   (r"(?m)^[ \t]*#.*$",),
+    ".yaml": (r"(?m)^[ \t]*#.*$",),
+    ".yml":  (r"(?m)^[ \t]*#.*$",),
+}
+
+
+def decode_png(data):
+    """PNG bytes -> (width, height, rows), rows[y][x] = (r, g, b).
+
+    THE ONLY WAY TO SEE A SCROLLBAR. A scrollbar is not an element, so
+    `elementsFromPoint` never returns one; and it is drawn INSIDE its
+    element's border box, so `getBoundingClientRect` can never place one
+    outside anything. Every rect-and-hit-test assertion in this file was
+    structurally blind to scrollbars until this existed - which is how a
+    6px trackless bar the same colour as the panel border passed a suite
+    written for exactly that class of defect.
+
+    stdlib zlib only: numpy is installed in this environment but is not in
+    requirements.txt, and a test helper is not the place to add a
+    dependency the tool does not have.
+    """
+    import struct, zlib
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+    pos, idat, ihdr = 8, [], None
+    while pos < len(data):
+        length, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        if kind == b"IHDR":
+            ihdr = struct.unpack(">IIBBBBB", body)
+        elif kind == b"IDAT":
+            idat.append(body)
+        elif kind == b"IEND":
+            break
+        pos += 12 + length
+    width, height, depth, ctype, _, _, interlace = ihdr
+    assert depth == 8 and interlace == 0, f"unsupported PNG {depth=} {interlace=}"
+    channels = {0: 1, 2: 3, 4: 2, 6: 4}[ctype]
+    raw = zlib.decompress(b"".join(idat))
+    stride = width * channels
+    rows, prev, at = [], bytearray(stride), 0
+    for _ in range(height):
+        f = raw[at]; at += 1
+        cur = bytearray(raw[at:at + stride]); at += stride
+        if f == 2:                                  # Up, the common case
+            for i in range(stride):
+                cur[i] = (cur[i] + prev[i]) & 0xFF
+        elif f == 1:                                # Sub
+            for i in range(channels, stride):
+                cur[i] = (cur[i] + cur[i - channels]) & 0xFF
+        elif f == 3:                                # Average
+            for i in range(stride):
+                a = cur[i - channels] if i >= channels else 0
+                cur[i] = (cur[i] + ((a + prev[i]) >> 1)) & 0xFF
+        elif f == 4:                                # Paeth
+            for i in range(stride):
+                a = cur[i - channels] if i >= channels else 0
+                b = prev[i]
+                c = prev[i - channels] if i >= channels else 0
+                q = a + b - c
+                pa, pb, pc = abs(q - a), abs(q - b), abs(q - c)
+                cur[i] = (cur[i] +
+                          (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 0xFF
+        rows.append([tuple(cur[x * channels:x * channels + 3]) for x in range(width)])
+        prev = cur
+    return width, height, rows
+
+
+def strip_comments(text, syntax):
+    """Source with its comments removed, for scanning.
+
+    ONE helper, because this has now bitten three times in three places and
+    three local fixes for one problem is the signal to consolidate - the
+    same call as CONTACT_STATUSES and db.PATH_KINDS:
+
+      * a CSS scanner read the last line of a /* */ block as a selector;
+      * a t() scanner counted `t("x", key="y")` written in a # comment to
+        EXPLAIN the API as a real call, and reported a missing key;
+      * a markup scanner located the first "<dialog" and landed inside the
+        <!-- --> comment above the element.
+
+    Every one of them was a scanner answering a question about the CODE
+    while reading the PROSE. `syntax` is a file extension or a bare name
+    ("css", "py"); an unknown one raises rather than silently returning
+    the text unchanged, because a scanner that thinks it stripped and did
+    not is the bug this exists to close.
+
+    Deliberately NOT a parser. It does not know that "/*" inside a CSS
+    string literal is not a comment, and this project has no such string.
+    If one ever appears, the fix is a parser, not a cleverer regex.
+    """
+    import re
+
+    key = syntax if syntax.startswith(".") else "." + syntax
+    if key not in _COMMENTS:
+        raise ValueError(
+            f"no comment syntax for {syntax!r}; known: "
+            f"{', '.join(sorted(_COMMENTS))}")
+    for pattern in _COMMENTS[key]:
+        text = re.sub(pattern, "", text, flags=re.S if ".*?" in pattern else 0)
+    return text
+
+
+def read_code(path, syntax=None):
+    """A source file with its comments stripped, by extension."""
+    path = Path(path)
+    return strip_comments(path.read_text(encoding="utf-8"),
+                          syntax or path.suffix)
+
+
+def seeded(case, conn, **expected):
+    """Assert a fixture produced what it claims, AT CREATION.
+
+    `floor()` catches an empty collection where it is iterated. This
+    catches it one level earlier, where it was made - and the difference
+    matters because four vacuous tests have now been found downstream,
+    each one a fixture that produced less than it claimed:
+
+        test_every_axis_carries_both_counts   TempDB with no rows
+        the tape-stability set                browser DB with no items
+        test_every_rail_value_is_inside...    browser DB with no observations
+        the locale scans                      available() returning nothing
+
+    Every one failed in whichever test happened to notice, naming a
+    symptom rather than the fixture. One failure at the source beats N
+    failures downstream.
+
+        seeded(self, conn, items=200, observations=18, sources=5)
+    """
+    TABLES = {"items": "items", "observations": "observations",
+              "sources": "sources", "watchlists": "watchlists",
+              "fetch_log": "fetch_log", "preferences": "preferences"}
+    for what, least in expected.items():
+        table = TABLES.get(what)
+        if table is None:
+            raise ValueError(f"seeded() does not know the table {what!r}; "
+                             f"known: {', '.join(sorted(TABLES))}")
+        n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        case.assertGreaterEqual(
+            n, least,
+            f"fixture claims to seed {least}+ {what} and produced {n}; "
+            f"every assertion against this fixture is vacuous")
+    return conn
 
 
 def floor(case, collection, what, least=1):
@@ -1671,7 +1855,9 @@ class TestNeverWarnUnconditionally(unittest.TestCase):
 
     def test_no_git_instruction_in_the_interface(self):
         """My git workflow is not a feature and this is going to be published."""
-        js = self.JS.read_text()
+        # Code, not comments: a comment explaining WHY the interface gives
+        # no git instruction is not the interface giving one.
+        js = read_code(self.JS)
         for word in ("git ", "Commit ", "git commit", "git push"):
             self.assertNotIn(word, js, f"interface instructs {word!r}")
 
@@ -1887,12 +2073,19 @@ class TestFilterUI(unittest.TestCase):
         self.assertIn("function drawTokens", self.js)
         self.assertIn("state.f[b.dataset.axis].delete", self.js)
 
-    def test_filter_bar_sits_between_ribbon_and_tape(self):
-        ribbon = self.html.index('class="ribbon"')
-        bar = self.html.index('class="filterbar"')
-        tape = self.html.index('id="tape"')
-        self.assertLess(ribbon, bar)
-        self.assertLess(bar, tape)
+    def test_the_filter_control_lives_in_the_sticky_masthead(self):
+        """It used to sit in a bar between the ribbon and the tape, which
+        meant scrolling a hundred rows back up to reach it. Both controls
+        are now in the masthead because both are controls."""
+        head = self.html[self.html.index("<header"):self.html.index("</header>")]
+        self.assertIn('id="fopen"', head)
+        self.assertIn('id="settings-open"', head)
+        self.assertIn('id="tokens"', head, "the active filters are not visible")
+        self.assertNotIn('class="filterbar"', self.html,
+                         "the old in-flow filter bar is back")
+        # and the masthead precedes the ribbon, which precedes the tape
+        self.assertLess(self.html.index("<header"), self.html.index('class="ribbon"'))
+        self.assertLess(self.html.index('class="ribbon"'), self.html.index('id="tape"'))
 
     def test_keyboard_bindings_exist(self):
         for key in ('"Escape"', '"f"', '"c"', '"Tab"'):
@@ -1908,9 +2101,12 @@ class TestFilterUI(unittest.TestCase):
         self.assertNotEqual(t("tape.no_match_title"), t("tape.empty_title"))
         self.assertNotEqual(t("tape.no_match_body"), t("tape.empty_body"))
 
-    def test_clear_all_exists_and_hides_when_inactive(self):
+    def test_clear_all_exists_and_the_whole_row_hides_when_inactive(self):
+        """The ROW goes, not just the button: an empty flex row still costs
+        its padding, and the masthead must not take tape when nothing is
+        filtered."""
         self.assertIn("function clearFilters", self.js)
-        self.assertIn('$("fclear").hidden', self.js)
+        self.assertIn('$("mast-tokens").hidden = active.length === 0', self.js)
 
     # Selectors permitted to spend a signal colour, each with the reason.
     # An allowlist of SELECTORS, not a character range: the previous version
@@ -1936,10 +2132,10 @@ class TestFilterUI(unittest.TestCase):
         is covered the moment it is written.
         """
         import re
-        # Comments first. A rule preceded by a /* ... */ block otherwise
-        # yields the last line of the COMMENT as its selector, which reads
-        # as a violation and is only ever noise.
-        css = re.sub(r"/\*.*?\*/", " ", self.css, flags=re.S)
+        # One helper for every syntax; see strip_comments(). A rule preceded
+        # by a comment block otherwise yields the comment's last line as its
+        # selector, which reads as a violation and is only ever noise.
+        css = strip_comments(self.css, "css")
         out = []
         for rule in re.finditer(r"([^{}]+)\{([^}]*)\}", css):
             if f"var({token})" not in rule.group(2):
@@ -1983,8 +2179,9 @@ class TestFilterUI(unittest.TestCase):
         unread count depending on the axis, so `fx 61` rendered 61 window
         items in the colour that means unread."""
         import re
-        self.assertNotIn(".chip .n {", self.css, "the merged badge is back")
-        bucket = re.search(r"\.chip \.n-bucket \{([^}]*)\}", self.css)
+        code = strip_comments(self.css, "css")
+        self.assertNotIn(".chip .n {", code, "the merged badge is back")
+        bucket = re.search(r"\.chip \.n-bucket \{([^}]*)\}", code)
         self.assertIsNotNone(bucket, "no bucket badge rule")
         self.assertNotIn("--accent", bucket.group(1))
         self.assertIn("--chrome", bucket.group(1))
@@ -2025,8 +2222,14 @@ class TestLegibility(unittest.TestCase):
 
     def setUp(self):
         import re
+        # BOTH views, on purpose. Most tests here ask a question about the
+        # CODE and must not see comments. One asks a question about the
+        # DOCUMENTATION - the tightest-pair line is deliberately recorded in
+        # the header comment - so it needs the raw text. Naming them apart
+        # stops the next reader stripping the one that must not be.
         self.css = self.CSS.read_text()
-        self.tokens = dict(re.findall(r"(--[\w-]+):\s*(#[0-9a-f]{6})", self.css))
+        self.code = strip_comments(self.css, "css")
+        self.tokens = dict(re.findall(r"(--[\w-]+):\s*(#[0-9a-f]{6})", self.code))
 
     SURFACES = ("--ground", "--raised", "--sunken")
     VENUES = ("--syd", "--tyo", "--hkg", "--lon", "--nyc")
@@ -2115,7 +2318,7 @@ class TestLegibility(unittest.TestCase):
 
     def test_nothing_renders_below_12px(self):
         import re
-        sizes = [float(x) for x in re.findall(r"font-size:\s*([\d.]+)px", self.css)]
+        sizes = [float(x) for x in re.findall(r"font-size:\s*([\d.]+)px", self.code)]
         self.assertTrue(sizes)
         self.assertGreaterEqual(min(sizes), 12.0, f"smallest is {min(sizes)}px")
 
@@ -2126,7 +2329,7 @@ class TestLegibility(unittest.TestCase):
         import re
         js = (Path(__file__).resolve().parent.parent
               / "macrowire/web/static/app.js").read_text()
-        stem = float(re.search(r"\.mark \.stem \{[^}]*height:\s*([\d.]+)px", self.css).group(1))
+        stem = float(re.search(r"\.mark \.stem \{[^}]*height:\s*([\d.]+)px", self.code).group(1))
         line = float(re.search(r"\.mark \.tag \{[^}]*line-height:\s*([\d.]+)px",
                                self.css, re.S).group(1))
         axis = float(re.search(r"AXIS_H = (\d+)", js).group(1))
@@ -2147,7 +2350,7 @@ class TestLegibility(unittest.TestCase):
         """A second amber thing would make unread stop meaning unread."""
         import re
         users = set()
-        for m in re.finditer(r"([^{}]+)\{([^}]*)\}", self.css):
+        for m in re.finditer(r"([^{}]+)\{([^}]*)\}", self.code):
             if "var(--accent)" in m.group(2):
                 for sel in m.group(1).strip().split(","):
                     users.add(sel.strip().split("\n")[-1].strip())
@@ -2238,8 +2441,10 @@ class LocaleTests(unittest.TestCase):
     def setUp(self):
         from macrowire import i18n
         self.i18n = i18n
-        self.en = {k: v for k, v in i18n.flatten(i18n.load("en")).items()
-                   if not k.startswith("_meta")}
+        # renderable(), not flatten(): `_meta` and `_note_*` are guidance
+        # for translators and never reach a screen, so they are not part of
+        # what a locale must be complete against.
+        self.en = dict(i18n.renderable(i18n.load("en")))
 
     def test_english_catalogue_is_not_empty(self):
         self.assertGreater(len(self.en), 100)
@@ -2249,8 +2454,7 @@ class LocaleTests(unittest.TestCase):
         self.assertTrue(others, "no second locale is shipped")
         for locale in others:
             with self.subTest(locale=locale):
-                keys = {k for k in self.i18n.flatten(self.i18n.load(locale))
-                        if not k.startswith("_meta")}
+                keys = set(self.i18n.renderable(self.i18n.load(locale)))
                 self.assertFalse(set(self.en) - keys,
                                  f"{locale} is missing keys present in en")
 
@@ -2261,8 +2465,7 @@ class LocaleTests(unittest.TestCase):
             if locale == "en":
                 continue
             with self.subTest(locale=locale):
-                keys = {k for k in self.i18n.flatten(self.i18n.load(locale))
-                        if not k.startswith("_meta")}
+                keys = set(self.i18n.renderable(self.i18n.load(locale)))
                 self.assertFalse(keys - set(self.en),
                                  f"{locale} has keys absent from en")
 
@@ -2322,7 +2525,7 @@ class LocaleTests(unittest.TestCase):
         # fact instead of the label around it.
         facts = ("4pm AEST", "09:15 CST", "16:00 CET", "15:30 ET")
         for locale in floor(self, self.i18n.available(), "locale files", 2):
-            blob = "\n".join(self.i18n.flatten(self.i18n.load(locale)).values())
+            blob = "\n".join(self.i18n.renderable(self.i18n.load(locale)).values())
             for fact in facts:
                 with self.subTest(locale=locale, fact=fact):
                     self.assertNotIn(fact, blob)
@@ -3172,9 +3375,12 @@ class FilterPanelTests(TempDB):
 
     def setUp(self):
         super().setUp()
-        self.css = (ROOT / "macrowire/web/static/style.css").read_text()
-        self.js = (ROOT / "macrowire/web/static/app.js").read_text()
-        self.html = (ROOT / "macrowire/web/static/index.html").read_text()
+        # strip_comments, not read_text: the code comments explain what the
+        # markup used to be, and a scanner looking for "<details" found the
+        # sentence saying there are none.
+        self.css = strip_comments(read_code(ROOT / "macrowire/web/static/style.css"), "css")
+        self.js = strip_comments(read_code(ROOT / "macrowire/web/static/app.js"), "js")
+        self.html = read_code(ROOT / "macrowire/web/static/index.html")
         self.seed()
 
     def seed(self):
@@ -3199,19 +3405,34 @@ class FilterPanelTests(TempDB):
                      "fx" if k else "unclassified",
                      "Press Release" if k else "Speech"))
         self.conn.commit()
+        seeded(self, self.conn, items=9, sources=3)
 
     # --- 1. the ceiling ---------------------------------------------------
 
     def test_the_panel_cannot_grow_past_a_fraction_of_the_viewport(self):
         import re
-        rule = re.search(r"\.fpanel \{([^}]*)\}", self.css)
-        self.assertIsNotNone(rule)
-        body = rule.group(1)
+        # Every .fpanel rule together: the ceiling and the positioning are
+        # declared in separate blocks now that the panel floats.
+        body = "".join(m.group(1) for m in re.finditer(r"\.fpanel \{([^}]*)\}",
+                                                      strip_comments(self.css, "css")))
+        floor(self, body, "characters of .fpanel rules", 40)
         self.assertIn("max-height", body,
-                      "the panel has no ceiling; it pushes the tape off screen")
-        self.assertIn("overflow-y: auto", body,
-                      "a ceiling without a scroll just clips the last axis")
+                      "the panel has no ceiling; it could cover the whole tape")
         self.assertIn("vh", body, "the ceiling must be relative to the viewport")
+        self.assertIn("position: fixed", body,
+                      "the panel is in flow again and will displace the tape")
+        # The panel keeps the ceiling and clips; the BODY scrolls. Split the
+        # same way the settings dialog splits it, so the footer stays put.
+        self.assertIn("overflow: hidden", body,
+                      "the panel does not clip, so content can paint over the tape")
+        inner = "".join(m.group(1) for m in re.finditer(r"\.fpanel-body \{([^}]*)\}",
+                                                       strip_comments(self.css, "css")))
+        floor(self, inner, "characters of .fpanel-body rules", 40)
+        self.assertIn("overflow-y: auto", inner,
+                      "a ceiling without a scroll just clips the last axis")
+        self.assertIn("min-height: 0", inner,
+                      "a flex child with no min-height:0 refuses to shrink, so "
+                      "the panel grows past its ceiling instead of scrolling")
 
     def test_the_ceiling_leaves_more_than_half_the_viewport_for_the_tape(self):
         import re
@@ -3313,20 +3534,32 @@ class FilterPanelTests(TempDB):
         self.assertIn("window", legend)
         self.assertIn("unread", legend)
 
-    # --- 5. per-axis collapse --------------------------------------------
+    # --- 5. nothing collapses --------------------------------------------
 
-    def test_each_axis_is_its_own_disclosure(self):
-        self.assertIn("<details class=\"fax\"", self.js)
-        self.assertIn("<summary>", self.js)
-        # native disclosure, so keyboard and screen-reader behaviour is free
-        self.assertNotIn("aria-expanded=\"${", self.js)
+    def test_no_axis_is_a_disclosure(self):
+        """The axes were <details> to save vertical space. They are open
+        sections now and the panel scrolls: open it and everything it can
+        do is on screen, which is how the settings dialog always worked.
 
-    def test_an_axis_with_an_active_filter_opens_itself(self):
-        """A collapsed section hiding a filter that is narrowing the tape is
-        the drawer's own problem in miniature."""
-        self.assertIn('${on ? " open" : ""}', self.js)
+        This is a DESIGN CHANGE, not a regression. The tests that asserted
+        the disclosure were correct about the old design and were replaced
+        with it, not worked around."""
+        self.assertNotIn("<details", self.js)
+        self.assertNotIn("<summary", self.js)
+        self.assertIn('<section class="fax"', self.js)
 
-    def test_a_closed_axis_still_shows_how_many_chips_it_holds(self):
+    def test_no_axis_can_hide_a_filter_that_is_narrowing_the_tape(self):
+        """The point the disclosure version had to solve with `open` on an
+        active axis. Nothing hides anything now, so there is nothing to
+        solve - but the panel must not grow a second way to hide."""
+        panel = self.css[self.css.index(".fpanel {"):]
+        panel = panel[:panel.index("\n.tape")] if "\n.tape" in panel else panel
+        for hiding in ("display: none", "visibility: hidden", "content-visibility"):
+            with self.subTest(rule=hiding):
+                self.assertNotIn(hiding, panel[:panel.index(".nomatch")]
+                                 if ".nomatch" in panel else panel)
+
+    def test_every_axis_shows_how_many_chips_it_holds(self):
         self.assertIn('class="fcount"', self.js)
 
     def test_the_active_filter_marker_is_not_amber(self):
@@ -3372,7 +3605,11 @@ class TranslationKeyReachTests(unittest.TestCase):
         files = list(self.SCANNED) + [
             str(p.relative_to(ROOT)) for p in (ROOT / "macrowire").rglob("*.py")]
         for name in files:
-            src = (ROOT / name).read_text(encoding="utf-8")
+            # One helper for every syntax; see strip_comments(). A
+            # `t("x", key="y")` written in a comment to EXPLAIN the API is
+            # not a call, and counting it reports a missing key that was
+            # never referenced.
+            src = read_code(ROOT / name)
             # t("a.b") / t('a.b') / t(`a.b`) — no interpolation, no escapes
             for m in re.finditer(r"""\bt\(\s*(["'`])([a-z][\w.]*)\1""", src):
                 found.setdefault(m.group(2), set()).add(name)
@@ -3500,7 +3737,8 @@ class CatalogueFreshnessTests(unittest.TestCase):
         its catalogue and exits; there is no window in which the file can
         change underneath a long-running server."""
         src = (ROOT / "macrowire/__main__.py").read_text()
-        self.assertIn("t = i18n.Translator(load_locale())", src)
+        self.assertIn("t = i18n.Translator(_cli_locale())", src)
+        self.assertIn("process reads and exits", src)   # wrapped in the source
 
 
 class ViewerTimezoneTests(unittest.TestCase):
@@ -3539,7 +3777,7 @@ class ViewerTimezoneTests(unittest.TestCase):
         import tempfile, yaml as pyyaml
         from macrowire import config
         doc = pyyaml.safe_load((ROOT / "sources.yaml").read_text())
-        doc["defaults"]["timezone"] = zone
+        doc.setdefault("viewer", {})["timezone"] = zone
         with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
             pyyaml.safe_dump(doc, fh, allow_unicode=True)
             temp = Path(fh.name)
@@ -3581,7 +3819,7 @@ class ViewerTimezoneTests(unittest.TestCase):
     def test_no_source_fact_leaked_into_a_catalogue(self):
         from macrowire import i18n
         for locale in floor(self, i18n.available(), "locale files", 2):
-            blob = "\n".join(i18n.flatten(i18n.load(locale)).values())
+            blob = "\n".join(i18n.renderable(i18n.load(locale)).values())
             for fact in self.facts().values():
                 if len(fact) < 4:          # "EUR" is also a legitimate word
                     continue
@@ -3612,7 +3850,7 @@ class ViewerTimezoneTests(unittest.TestCase):
         import tempfile, yaml as pyyaml
         from macrowire.config import ConfigError, load_timezone
         doc = pyyaml.safe_load((ROOT / "sources.yaml").read_text())
-        doc["defaults"]["timezone"] = "+10:00"
+        doc.setdefault("viewer", {})["timezone"] = "+10:00"
         with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
             pyyaml.safe_dump(doc, fh, allow_unicode=True)
             temp = Path(fh.name)
@@ -4029,8 +4267,8 @@ class SessionOrderingTests(ViewerTimezoneTests):
 
         def geometry(mode):
             doc = pyyaml.safe_load((ROOT / "sources.yaml").read_text())
-            doc["defaults"]["timezone"] = "America/New_York"
-            doc["defaults"]["session_order"] = mode
+            doc.setdefault("viewer", {})["timezone"] = "America/New_York"
+            doc.setdefault("viewer", {})["session_order"] = mode
             with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
                 pyyaml.safe_dump(doc, fh, allow_unicode=True)
                 temp = Path(fh.name)
@@ -4084,9 +4322,10 @@ class JurisdictionOrderingTests(ViewerTimezoneTests):
         """They disagreed: chips alphabetical in SQL, health hardcoded in
         JavaScript."""
         js = (ROOT / "macrowire/web/static/app.js").read_text()
-        self.assertNotIn('["AU", "CN", "HK", "JP", "US", "EU", "UK"]', js)
+        self.assertNotIn('["AU", "CN", "HK", "JP", "US", "EU", "UK"]',
+                         strip_comments(js, "js"))
         self.assertIn("d.jurisdiction_order", js)
-        queries = (ROOT / "macrowire/web/queries.py").read_text()
+        queries = read_code(ROOT / "macrowire/web/queries.py")
         self.assertEqual(queries.count("def jurisdiction_order"), 1)
 
     def test_an_explicit_list_is_honoured(self):
@@ -4099,7 +4338,7 @@ class JurisdictionOrderingTests(ViewerTimezoneTests):
         import tempfile, yaml as pyyaml
         from macrowire.config import ConfigError, load_ordering
         doc = pyyaml.safe_load((ROOT / "sources.yaml").read_text())
-        doc["defaults"]["jurisdiction_order"] = ["US", "ZZ"]
+        doc.setdefault("viewer", {})["jurisdiction_order"] = ["US", "ZZ"]
         with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
             pyyaml.safe_dump(doc, fh, allow_unicode=True)
             temp = Path(fh.name)
@@ -4109,3 +4348,2069 @@ class JurisdictionOrderingTests(ViewerTimezoneTests):
             self.assertIn("ZZ", str(caught.exception))
         finally:
             temp.unlink()
+
+
+class FactMatrixTests(unittest.TestCase):
+    """Source facts, across EVERY viewer preference the panel can change.
+
+    The timezone version of this test was inert once - the harness restored
+    the config path before anything was asserted, so five zones all read as
+    Sydney and the guard passed without ever moving a viewer. A matrix that
+    passes by never changing anything is the same failure at four times the
+    surface, so each axis carries its own guard-on-the-guard: a test that
+    proves the axis actually moved before any fact is compared.
+    """
+
+    AXES = {
+        "locale": ("en", "zh-CN"),
+        "timezone": ("Australia/Sydney", "America/New_York", "Europe/London", "UTC"),
+        "session_order": ("viewer", "fixed"),
+        "jurisdiction_order": ("viewer", "alphabetical"),
+    }
+
+    def setUp(self):
+        import tempfile
+        self._dir = tempfile.TemporaryDirectory()
+        self._prev = os.environ.get("MACROWIRE_DB")
+        os.environ["MACROWIRE_DB"] = str(Path(self._dir.name) / "m.db")
+        conn = db.connect(Path(self._dir.name) / "m.db")
+        db.initialise(conn)
+        conn.close()
+
+    def tearDown(self):
+        if self._prev is None:
+            os.environ.pop("MACROWIRE_DB", None)
+        else:
+            os.environ["MACROWIRE_DB"] = self._prev
+        self._dir.cleanup()
+
+    def apply(self, **prefs):
+        from macrowire import preferences
+        conn = db.connect()
+        for key, value in prefs.items():
+            if value is None:
+                preferences.clear(conn, key)
+            else:
+                preferences.set_one(conn, key, value)
+        conn.close()
+
+    def facts(self):
+        import re
+        js = (ROOT / "macrowire/web/static/app.js").read_text()
+        block = re.search(r"const FACT = \{(.*?)\n\};", js, re.S)
+        self.assertIsNotNone(block, "the FACT constant is gone")
+        pairs = dict(re.findall(r"(\w+):\s*\"([^\"]*)\"", block.group(1)))
+        floor(self, pairs, "source facts in FACT", 5)
+        return pairs
+
+    def observed(self):
+        """What each axis is actually doing right now, from the real code."""
+        import importlib
+        from macrowire import i18n, preferences
+        from macrowire.web import queries, ribbon
+        importlib.reload(ribbon)
+        from datetime import date
+        conn = db.connect()
+        resolved = preferences.resolve(conn)
+        conn.close()
+        return {
+            "locale": i18n.Translator(resolved["locale"])("rail.health_heading"),
+            "timezone": ribbon.view_label(),
+            "session_order": [r["label"] for r in ribbon.sessions_for(date(2026, 7, 29))],
+            "jurisdiction_order": queries.jurisdiction_order(
+                ["US", "AU", "CN", "EU", "HK", "JP", "UK"]),
+        }
+
+    # --- guard on the guard, one per axis --------------------------------
+
+    def test_each_axis_actually_changes_something(self):
+        """If an axis cannot move the interface, every fact assertion about
+        it below is vacuous. This is the test that would have caught the
+        inert harness the first time."""
+        # timezone has to be somewhere other than the machine's own zone for
+        # the label to differ, so pick a value the detected zone is not.
+        from macrowire.config import system_timezone
+        here = system_timezone()
+        elsewhere = "UTC" if here != "UTC" else "America/New_York"
+        # jurisdiction_order needs a market that is NOT alphabetically
+        # first, or the two modes produce the same list and the axis looks
+        # inert when it is working. With the machine in Sydney, "AU first"
+        # and "alphabetical" are the same answer - which is exactly the
+        # blind spot this guard exists to expose.
+        cases = {
+            "locale": ("en", "zh-CN", {}),
+            "timezone": (here, elsewhere, {}),
+            # session_order needs a viewer who is NOT at the canonical
+            # start. For a Sydney reader "rotate to my market" and "always
+            # start at Sydney" are the same band - the second blind spot
+            # this guard found, and the reason it exists.
+            "session_order": ("viewer", "fixed", {"timezone": "America/New_York"}),
+            "jurisdiction_order": ("viewer", "alphabetical", {"jurisdiction": "US"}),
+        }
+        for axis, (a, b, fixture) in cases.items():
+            with self.subTest(axis=axis):
+                self.apply(**fixture, **{axis: a})
+                first = self.observed()[axis]
+                self.apply(**{axis: b})
+                second = self.observed()[axis]
+                self.apply(**{axis: None},
+                           **{k: None for k in fixture})
+                self.assertNotEqual(
+                    first, second,
+                    f"setting {axis} to {a!r} then {b!r} changed nothing; "
+                    f"every fact assertion on this axis is vacuous")
+
+    # --- the matrix -------------------------------------------------------
+
+    def test_source_facts_hold_across_the_whole_matrix(self):
+        import itertools
+        baseline = self.facts()
+        names = list(self.AXES)
+        for combo in itertools.product(*(self.AXES[n] for n in names)):
+            prefs = dict(zip(names, combo))
+            self.apply(**prefs)
+            with self.subTest(**prefs):
+                self.assertEqual(self.facts(), baseline,
+                                 f"a source fact moved under {prefs}")
+
+    def test_the_matrix_is_not_one_cell(self):
+        import itertools
+        cells = list(itertools.product(*self.AXES.values()))
+        self.assertEqual(len(cells), 2 * 4 * 2 * 2)
+        self.assertGreater(len(cells), 1)
+
+    def test_no_preference_puts_a_fact_into_a_catalogue(self):
+        from macrowire import i18n
+        for locale in floor(self, i18n.available(), "locale files", 2):
+            blob = "\n".join(i18n.renderable(i18n.load(locale)).values())
+            for name, fact in self.facts().items():
+                if len(fact) < 4:
+                    continue
+                with self.subTest(locale=locale, fact=fact):
+                    self.assertNotIn(fact, blob)
+
+    def test_the_rail_renders_the_facts_unchanged_in_every_locale(self):
+        """The FACT constant is one thing; what the rail actually prints is
+        another. A locale could in principle reorder them out of the line."""
+        from macrowire import i18n
+        facts = self.facts()
+        for locale in floor(self, i18n.available(), "locale files", 2):
+            t = i18n.Translator(locale)
+            rendered = {
+                "rba": t("rail.rba_asof", time=facts["rbaFix"], period="2026-08-21"),
+                "cny": t("rail.cny_asof", period="2026-08-21",
+                         time=facts["cfetsFix"], prior="2026-08-20"),
+                "ecb": t("rail.ecb_asof", period="2026-08-21",
+                         time=facts["ecbPublish"], base=facts["ecbBase"]),
+            }
+            for which, line in rendered.items():
+                with self.subTest(locale=locale, line=which):
+                    self.assertIn(facts["rbaFix"] if which == "rba" else
+                                  facts["cfetsFix"] if which == "cny" else
+                                  facts["ecbPublish"], line)
+
+    def test_a_preference_is_removable_and_the_yaml_is_the_floor(self):
+        from macrowire import preferences
+        from macrowire.config import load_locale
+        conn = db.connect()
+        preferences.set_one(conn, "locale", "zh-CN")
+        self.assertEqual(preferences.effective(conn)["locale"]["source"], "preference")
+        preferences.clear(conn, "locale")
+        row = preferences.effective(conn)["locale"]
+        self.assertEqual(row["source"], "config")
+        self.assertEqual(row["value"], load_locale())
+        conn.close()
+
+    def test_the_panel_never_writes_sources_yaml(self):
+        before = (ROOT / "sources.yaml").read_bytes()
+        self.apply(locale="zh-CN", timezone="UTC", window_days="7",
+                   session_order="fixed", jurisdiction_order="alphabetical")
+        self.assertEqual((ROOT / "sources.yaml").read_bytes(), before,
+                         "a viewer preference edited the installation config")
+        src = (ROOT / "macrowire/preferences.py").read_text()
+        for writer in ("write_text", "safe_dump", "open("):
+            self.assertNotIn(writer, src, f"preferences module can {writer}")
+
+
+class SettingsSurfaceTests(unittest.TestCase):
+    """The panel itself: shape, provenance, and what it must not touch."""
+
+    def setUp(self):
+        import tempfile, warnings
+        warnings.filterwarnings("ignore")
+        self._dir = tempfile.TemporaryDirectory()
+        self._prev = os.environ.get("MACROWIRE_DB")
+        os.environ["MACROWIRE_DB"] = str(Path(self._dir.name) / "s.db")
+        conn = db.connect(Path(self._dir.name) / "s.db")
+        db.initialise(conn)
+        conn.close()
+        from fastapi.testclient import TestClient
+        from macrowire.web.app import app
+        self.client = TestClient(app)
+        self.html = (ROOT / "macrowire/web/static/index.html").read_text()
+        self.js = (ROOT / "macrowire/web/static/app.js").read_text()
+
+    def tearDown(self):
+        if self._prev is None:
+            os.environ.pop("MACROWIRE_DB", None)
+        else:
+            os.environ["MACROWIRE_DB"] = self._prev
+        self._dir.cleanup()
+
+    # --- shape ------------------------------------------------------------
+
+    def test_it_is_a_native_dialog_not_another_push_down_drawer(self):
+        """Settings are modal in nature and filters are not: you adjust a
+        filter WHILE watching the tape react. A dialog also cannot push the
+        tape, so the drawer's height bug is unreachable here."""
+        self.assertIn("<dialog", self.html)
+        self.assertIn("showModal()", self.js)
+        self.assertNotIn("max-height", (ROOT / "macrowire/web/static/style.css")
+                         .read_text().split(".settings {")[1].split("}")[0]
+                         .replace("max-height: 86vh;", ""))
+
+    def test_esc_focus_trap_and_backdrop_come_from_the_platform(self):
+        css = (ROOT / "macrowire/web/static/style.css").read_text()
+        self.assertIn("::backdrop", css)
+        # showModal() gives Esc, focus trapping and inert background; no
+        # hand-rolled keydown handler should exist for the dialog.
+        self.assertNotIn('id === "settings"', self.js)
+
+    def test_it_is_reachable_in_one_action_from_the_masthead(self):
+        self.assertIn('id="settings-open"', self.html)
+        head = self.html[self.html.index("<header"):self.html.index("</header>")]
+        self.assertIn("settings-open", head)
+
+    def test_the_tape_is_not_inside_the_dialog(self):
+        dialog = self.html[self.html.index("<dialog"):self.html.index("</dialog>")]
+        self.assertNotIn('id="tape"', dialog)
+
+    # --- what it shows ----------------------------------------------------
+
+    def test_locales_come_from_the_directory_each_in_its_own_language(self):
+        payload = self.client.get("/api/settings").json()
+        from macrowire import i18n
+        self.assertEqual([l["code"] for l in payload["locales"]], i18n.available())
+        names = {l["code"]: l["name"] for l in payload["locales"]}
+        self.assertEqual(names["zh-CN"], "简体中文")
+        self.assertNotIn('"zh-CN"', read_code(ROOT / "macrowire/web/static/app.js"),
+                         "a locale is hardcoded in the client")
+
+    def test_the_timezone_picker_is_not_a_four_hundred_entry_dropdown(self):
+        tz = self.client.get("/api/settings").json()["timezones"]
+        self.assertLessEqual(len(tz["quick"]), 8)
+        self.assertGreater(len(tz["all"]), 300)
+        # the long list is a <datalist>, which the browser filters and never
+        # renders whole
+        self.assertIn('list="tz-all"', self.js)
+        self.assertIn('id="tz-all"', self.html)
+        self.assertIn(tz["detected"], tz["quick"])
+
+    def test_install_config_shows_values_and_the_fallback_when_unset(self):
+        rows = {r["key"]: r for r in self.client.get("/api/settings").json()["install"]}
+        floor(self, rows, "install config rows", 8)
+        backup = rows["backup.path"]
+        self.assertTrue(backup["value"], "no value shown, only a key name")
+        self.assertTrue(backup["unset"], "backup.path is unset in this repo")
+        self.assertIn("same disk", backup["note"])
+        self.assertIn("settings.falls_back", self.js)
+
+    def test_install_rows_are_not_editable(self):
+        css = (ROOT / "macrowire/web/static/style.css").read_text()
+        self.assertIn(".sgrid.ro", css)
+        install = self.js[self.js.index('$("settings-install").innerHTML'):]
+        install = install[:install.index("$(\"tz-all\")")]
+        for control in ("<select", "<input", "data-pref"):
+            self.assertNotIn(control, install)
+
+    # --- provenance and removal ------------------------------------------
+
+    def test_every_row_says_which_level_answered(self):
+        prefs = self.client.get("/api/settings").json()["preferences"]
+        floor(self, prefs, "preference rows", 5)
+        for key, row in prefs.items():
+            with self.subTest(key=key):
+                self.assertIn(row["source"], ("preference", "config"))
+                self.assertIn("config_value", row)
+
+    def test_a_preference_can_always_be_reset_to_the_config_value(self):
+        self.client.post("/api/settings", json={"key": "locale", "value": "zh-CN"})
+        row = self.client.get("/api/settings").json()["preferences"]["locale"]
+        self.assertEqual(row["source"], "preference")
+        self.assertEqual(row["config_value"], "en")
+        self.client.post("/api/settings", json={"key": "locale", "value": None})
+        row = self.client.get("/api/settings").json()["preferences"]["locale"]
+        self.assertEqual((row["source"], row["value"]), ("config", "en"))
+        self.assertIn("data-reset", self.js)
+
+    def test_a_preference_survives_a_reload(self):
+        self.client.post("/api/settings", json={"key": "window_days", "value": "90"})
+        from fastapi.testclient import TestClient
+        from macrowire.web.app import app
+        fresh = TestClient(app)
+        self.assertEqual(fresh.get("/api/bootstrap").json()["window_days"], 90)
+
+    def test_nothing_is_hidden_state(self):
+        """Everything the panel writes is a row you can read."""
+        self.client.post("/api/settings", json={"key": "window_days", "value": "7"})
+        conn = db.connect()
+        rows = conn.execute("SELECT key, value FROM preferences").fetchall()
+        conn.close()
+        self.assertIn(("window_days", "7"), [(r[0], r[1]) for r in rows])
+
+    # --- validation -------------------------------------------------------
+
+    def test_an_install_setting_cannot_be_set_as_a_preference(self):
+        for key in ("min_interval_seconds", "backup.keep", "user_agent"):
+            with self.subTest(key=key):
+                r = self.client.post("/api/settings", json={"key": key, "value": "1"})
+                self.assertEqual(r.status_code, 400)
+
+    def test_an_invalid_value_is_refused_and_not_stored(self):
+        for key, bad in (("timezone", "+10:00"), ("locale", "kl-KL"),
+                         ("window_days", "3"), ("session_order", "nearest"),
+                         ("jurisdiction", "ZZ")):
+            with self.subTest(key=key):
+                r = self.client.post("/api/settings", json={"key": key, "value": bad})
+                self.assertEqual(r.status_code, 400)
+                conn = db.connect()
+                stored = conn.execute(
+                    "SELECT 1 FROM preferences WHERE key = ?", (key,)).fetchone()
+                conn.close()
+                self.assertIsNone(stored, f"{key}={bad!r} was stored anyway")
+
+    def test_the_window_is_defined_once_not_five_times(self):
+        self.assertNotIn("days=30", strip_comments(self.js, "js"))
+        app_src = read_code(ROOT / "macrowire/web/app.py")
+        self.assertNotIn("days: int = 30", app_src)
+        self.assertIn("def _window(", app_src)
+
+    def test_the_yaml_separates_viewer_from_install(self):
+        import yaml
+        doc = yaml.safe_load((ROOT / "sources.yaml").read_text())
+        self.assertIn("viewer", doc, "the line is not visible in the file")
+        for key in ("locale", "timezone", "session_order", "jurisdiction_order",
+                    "window_days"):
+            self.assertIn(key, doc["viewer"])
+            self.assertNotIn(key, doc["defaults"])
+        for key in ("min_interval_seconds", "user_agent", "backup"):
+            self.assertIn(key, doc["defaults"])
+
+    def test_collapse_repeats_stays_install_only_for_now(self):
+        from macrowire import preferences
+        self.assertNotIn("collapse_repeats", preferences.SETTABLE)
+        self.assertIn("first candidate for promotion",
+                      (ROOT / "macrowire/preferences.py").read_text())
+
+
+class LicenceTests(unittest.TestCase):
+    """The licence covers the CODE. Someone will assume it covers the data."""
+
+    def setUp(self):
+        self.licence = (ROOT / "LICENSE").read_text(encoding="utf-8")
+        self.readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.section = self.flat(self.readme[self.readme.index("## Licence"):])
+
+    @staticmethod
+    def flat(text):
+        """Prose with its line breaks removed.
+
+        Matching a raw phrase against wrapped Markdown fails on where the
+        author happened to break the line, which says nothing about whether
+        the sentence is there. This has now bitten twice.
+        """
+        return " ".join(text.split()).lower()
+
+    def test_the_full_licence_text_is_present_and_is_the_affero_one(self):
+        # Not the ordinary GPL. Section 13 is the difference and the reason
+        # for choosing it: this is a thing you run as a server.
+        self.assertIn("GNU AFFERO GENERAL PUBLIC LICENSE", self.licence)
+        self.assertIn("Version 3, 19 November 2007", self.licence)
+        self.assertIn("13. Remote Network Interaction", self.licence)
+        self.assertIn("END OF TERMS AND CONDITIONS", self.licence)
+        self.assertGreater(len(self.licence.splitlines()), 600,
+                           "the licence looks truncated")
+
+    def test_the_spdx_identifier_is_declared(self):
+        self.assertIn("SPDX-License-Identifier: AGPL-3.0-or-later", self.readme)
+
+    def test_no_per_file_licence_headers(self):
+        """Forty files of boilerplate for no practical benefit on a
+        single-repo project. Deliberately absent."""
+        # The TOP of the file, which is where a licence header lives. A
+        # mention further down is prose about licensing - this file talks
+        # about SPDX in order to test it, and matching anywhere would make
+        # the test fail on itself.
+        offenders, scanned = [], 0
+        for pattern in ("macrowire/**/*.py", "tests/*.py",
+                        "macrowire/web/static/*"):
+            for path in ROOT.glob(pattern):
+                if not path.is_file():
+                    continue
+                scanned += 1
+                head = "".join(path.read_text(encoding="utf-8",
+                                              errors="ignore").splitlines(True)[:5])
+                if "SPDX-License-Identifier" in head:
+                    offenders.append(str(path.relative_to(ROOT)))
+        self.assertGreater(scanned, 20, "the file scan is broken")
+        self.assertEqual(offenders, [])
+
+    def test_the_code_data_split_is_explicit(self):
+        """The thing most likely to be got wrong."""
+        floor(self, self.section, "licence section characters", 500)
+        for phrase in ("it does not cover the data",
+                       "each publisher, under their own terms",
+                       "not this project's to license",
+                       "nothing in the agpl grants you any right to "
+                       "redistribute what the tool fetched",
+                       "sec edgar is us federal work and public domain"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.section)
+
+    def test_the_plain_language_note_disclaims_itself(self):
+        self.assertIn("it is not legal advice", self.section)
+        # and says which text wins where they disagree
+        self.assertIn("the licence text is what holds", self.section)
+
+    def test_it_does_not_contradict_the_source_terms_section(self):
+        """The AGPL must not read as permission to redistribute what the
+        tool fetched, and the not-polled sources stay named."""
+        for prohibited in ("pboc", "asx", "hkex"):
+            self.assertIn(prohibited, self.section)
+        self.assertIn("deliberately **not polled**", self.section)
+        self.assertIn("The licensing position, stated plainly", self.readme)
+
+    def test_the_licence_file_is_not_modified_boilerplate(self):
+        """A licence with local edits is not that licence any more."""
+        self.assertNotIn("MacroWire", self.licence)
+        self.assertNotIn("Spyril", self.licence)
+        self.assertIn("Copyright (C) 2007 Free Software Foundation",
+                      self.licence)
+
+
+class DialogStaticTests(unittest.TestCase):
+    """What can be asserted without a browser.
+
+    These would NOT have caught the bug that shipped - the CSS one below
+    would. Kept because they pin the JS contract cheaply and run everywhere.
+    """
+
+    def setUp(self):
+        import re
+        self.js = (ROOT / "macrowire/web/static/app.js").read_text()
+        self.css = (ROOT / "macrowire/web/static/style.css").read_text()
+        # One helper for every syntax; see strip_comments(). The comment
+        # ABOVE the dialog contains the literal "<dialog>" while explaining
+        # it, and a scanner that finds the first "<dialog" lands in the
+        # prose.
+        self.html = read_code(ROOT / "macrowire/web/static/index.html")
+
+    def test_the_open_handler_calls_showModal_and_not_show(self):
+        """show() gives no top layer, no backdrop and no inert background."""
+        body = self.js[self.js.index("async function openSettings"):]
+        body = body[:body.index("\n}")]
+        self.assertIn("showModal()", body)
+        import re
+        self.assertIsNone(re.search(r"\.show\(\)", body),
+                          "show() opens a non-modal dialog")
+
+    def test_open_and_close_target_the_same_element(self):
+        body = self.js[self.js.index("async function openSettings"):]
+        body = body[:body.index("\n}")]
+        import re
+        opened = re.search(r'\$\("([\w-]+)"\)\.showModal\(\)', body).group(1)
+        self.assertEqual(opened, "settings")
+        # Done is a <form method="dialog"> submit button INSIDE that same
+        # dialog, which is the platform's own close path - no second id to
+        # get wrong.
+        dialog = self.html[self.html.index("<dialog"):self.html.index("</dialog>")]
+        self.assertIn(f'id="{opened}"', dialog[:80])
+        self.assertIn('method="dialog"', dialog)
+
+    def test_the_backdrop_rule_exists_and_is_not_transparent(self):
+        import re
+        rule = re.search(r"\.settings::backdrop \{([^}]*)\}", self.css)
+        self.assertIsNotNone(rule, "no ::backdrop rule")
+        alpha = re.search(r"rgba\([^)]*,\s*([\d.]+)\s*\)", rule.group(1))
+        self.assertIsNotNone(alpha, "backdrop has no alpha to check")
+        self.assertGreater(float(alpha.group(1)), 0.4,
+                           "the backdrop is too transparent to read as modal")
+
+    def test_display_is_scoped_to_the_open_state(self):
+        """THE BUG THAT SHIPPED.
+
+        The UA stylesheet hides a closed dialog with
+        `dialog:not([open]) { display: none }`. An AUTHOR rule beats a UA
+        rule regardless of specificity, so an unscoped `display` on
+        `.settings` overrode it: the panel rendered in normal flow from page
+        load, closed, over the ribbon, with no backdrop - because
+        ::backdrop only paints in the top layer and only showModal() puts it
+        there. close() was working the whole time.
+        """
+        import re
+        base = re.search(r"\n\.settings \{([^}]*)\}", self.css)
+        self.assertIsNotNone(base, "no .settings rule")
+        self.assertNotIn("display", base.group(1),
+                         "an unscoped display on .settings defeats the UA's "
+                         "closed-state rule and the dialog renders inline")
+        scoped = re.search(r"\.settings\[open\] \{([^}]*)\}", self.css)
+        self.assertIsNotNone(scoped, "nothing gives the OPEN dialog a display")
+        self.assertIn("display", scoped.group(1))
+
+    def test_no_ancestor_can_pull_it_out_of_the_top_layer(self):
+        """A transform, filter or perspective on an ancestor creates a
+        containing block and breaks top-layer positioning. The dialog is a
+        direct child of <body> so there is no ancestor to do it."""
+        import re
+        before = self.html[:self.html.index("<dialog")]
+        stack = []
+        for m in re.finditer(r"<(/?)(\w+)([^>]*)>", before):
+            close, tag, attrs = m.groups()
+            if tag in ("meta", "link", "br", "img", "input", "hr"):
+                continue
+            if attrs.rstrip().endswith("/"):
+                continue
+            if close:
+                if stack and stack[-1] == tag:
+                    stack.pop()
+            else:
+                stack.append(tag)
+        self.assertEqual(stack, ["html", "body"],
+                         f"the dialog is nested inside {stack}")
+
+
+def _webdriver_available():
+    """geckodriver AND firefox, both on PATH. Neither is a dependency."""
+    import shutil
+    return bool(shutil.which("geckodriver") and shutil.which("firefox"))
+
+
+# ONE geckodriver PER PROCESS, not one per test class.
+#
+# MEASURED, not assumed: signals to this geckodriver are refused outright.
+# It is /snap/firefox/*/usr/lib/firefox/geckodriver, and snap's confinement
+# denies SIGKILL to it from the very process that spawned it -
+#
+#     killpg SIGKILL -> PermissionError: [Errno 13] Permission denied
+#     kill    SIGKILL -> PermissionError: [Errno 13] Permission denied
+#     Popen.kill      -> PermissionError: [Errno 13] Permission denied
+#
+# - so tearDownClass was RUNNING and could not succeed, and its bare
+# `except Exception: pass` turned that into silence. Three browser classes
+# meant three unkillable drivers per suite run; 39 accumulated.
+#
+# There is no fix that kills them, so the fix is to stop making them: one
+# driver, created on first use, shared by every browser class, and one
+# Firefox session inside it. What CAN be reclaimed is the browser - DELETE
+# /session closes Firefox, which is the heavy process - and that is done at
+# interpreter exit by every path we can reach: normal exit, an exception,
+# Ctrl-C, and SIGTERM (which is what a shell timeout sends, and which
+# atexit does not cover).
+_DRIVER = {"proc": None, "base": None, "sid": None}
+
+
+def _driver_session():
+    """The shared driver and browser session, started once."""
+    import atexit, signal, socket, subprocess, time
+    import httpx
+    if _DRIVER["sid"]:
+        return _DRIVER
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    _DRIVER["proc"] = subprocess.Popen(
+        ["geckodriver", "--port", str(port)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True)
+    base = f"http://127.0.0.1:{port}"
+    for _ in range(80):
+        try:
+            httpx.get(f"{base}/status", timeout=1)
+            break
+        except Exception:
+            time.sleep(0.25)
+    sid = httpx.post(f"{base}/session", timeout=120, json={
+        "capabilities": {"alwaysMatch": {
+            "browserName": "firefox",
+            "moz:firefoxOptions": {"args": ["-headless"]}}}}
+        ).json()["value"]["sessionId"]
+    _DRIVER.update(base=base, sid=sid)
+    atexit.register(_release_driver)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        previous = signal.getsignal(sig)
+
+        def handler(signum, frame, _prev=previous):
+            _release_driver()
+            if callable(_prev):
+                _prev(signum, frame)
+            else:
+                raise SystemExit(128 + signum)
+        try:
+            signal.signal(sig, handler)
+        except ValueError:
+            pass          # not the main thread; atexit still covers us
+    return _DRIVER
+
+
+def _release_driver():
+    """Idempotent. Closes Firefox; SAYS SO if the driver cannot be killed.
+
+    Reporting beats swallowing: a leak you are told about is a leak you can
+    decide about, and this one cannot be fixed from inside the process."""
+    import os, signal
+    import httpx
+    if not _DRIVER["sid"]:
+        return
+    base, sid, proc = _DRIVER["base"], _DRIVER["sid"], _DRIVER["proc"]
+    _DRIVER.update(sid=None)          # idempotent before anything can throw
+    try:
+        httpx.delete(f"{base}/session/{sid}", timeout=30)
+    except Exception:
+        pass
+    if proc is None or proc.poll() is not None:
+        return
+    for attempt in (lambda: os.killpg(os.getpgid(proc.pid), signal.SIGTERM),
+                    lambda: os.killpg(os.getpgid(proc.pid), signal.SIGKILL),
+                    proc.kill):
+        try:
+            attempt()
+        except Exception:
+            continue
+    try:
+        proc.wait(timeout=5)
+        return
+    except Exception:
+        pass
+    print(f"\ngeckodriver pid {proc.pid} survived: this build refuses signals "
+          f"from its own parent, so it stays until the session ends. "
+          f"Firefox was closed.", file=sys.stderr)
+
+
+class HarnessCleanupTests(unittest.TestCase):
+    """The test harness leaked 39 geckodriver processes.
+
+    Two causes, and the interesting one is not the obvious one:
+
+    1. Signals to a snap-confined geckodriver are REFUSED, even from the
+       parent that spawned it. tearDownClass was running and could not
+       succeed, and `except Exception: pass` made that silent.
+    2. unittest does not call tearDownClass when setUpClass raises, and the
+       session POST raising on a port held by a previous leak was exactly
+       how a stale process turned into another stale process.
+
+    So: one driver per process instead of one per class, released on every
+    exit path reachable from inside Python, and a refusal REPORTED rather
+    than swallowed.
+    """
+
+    def harness(self):
+        return strip_comments(read_code(ROOT / "tests/test_macrowire.py"), "py")
+
+    def section(self, code, start, end):
+        """A slice of the harness, anchored on COLUMN-ZERO definitions.
+
+        The first version anchored on "def setUpClass" and found the string
+        literal inside this very test - the self-referential scanner the
+        module docstring already warns about, made again."""
+        at = code.index(start)
+        stop = code.find(end, at + len(start))
+        return code[at:stop if stop > 0 else len(code)]
+
+    def test_a_kill_that_fails_is_not_swallowed_silently(self):
+        """The bare `except Exception: pass` around the killpg is what let
+        39 accumulate without a word. Scanned with comments stripped: the
+        block explaining this defect contains the very text of it."""
+        code = self.harness()
+        body = self.section(code, "\ndef _release_driver", "\ndef ")
+        self.assertIn("print(", body,
+                      "a driver that cannot be killed must say so; a silent "
+                      "leak is how this reached 39")
+        self.assertIn("stderr", body, "the report belongs on stderr")
+
+    def test_the_driver_is_released_on_every_exit_path_python_can_see(self):
+        code = self.harness()
+        session = self.section(code, "\ndef _driver_session",
+                               "\ndef _release_driver")
+        self.assertIn("atexit.register(_release_driver)", session,
+                      "a normal exit or an uncaught exception leaves it running")
+        self.assertIn("SIGTERM", session,
+                      "a shell timeout sends SIGTERM, which atexit does not "
+                      "cover - and that is the path that leaked most of them")
+        self.assertIn("SIGINT", session, "Ctrl-C is not covered")
+
+    def test_setupclass_cleans_up_after_itself_when_it_raises(self):
+        """unittest calls tearDownClass only if setUpClass SUCCEEDED."""
+        code = self.harness()
+        cls_body = self.section(code, "\nclass BrowserTestCase", "\nclass ")
+        body = cls_body[cls_body.index("def setUpClass"):]
+        body = body[:body.index("def tearDownClass")]
+        self.assertIn("_release_class()", body,
+                      "setUpClass can raise after starting a server and a "
+                      "temp directory, and nothing would release them")
+        self.assertIn("raise", body, "the failure must still propagate")
+
+    def test_releasing_twice_is_a_no_op(self):
+        """It runs from atexit AND from a signal handler, so it will be
+        called twice on a Ctrl-C during teardown."""
+        import unittest.mock as mock
+        calls = []
+        fake = {"proc": None, "base": "http://127.0.0.1:1", "sid": "abc"}
+        # globals() IS this module's namespace, which is where
+        # _release_driver reads _DRIVER from.
+        with mock.patch.dict(globals(), {"_DRIVER": fake}):
+            with mock.patch("httpx.delete", side_effect=lambda *a, **k:
+                            calls.append(1)):
+                _release_driver()
+                _release_driver()
+        self.assertEqual(fake["sid"], None, "the session was not marked gone")
+        self.assertEqual(len(calls), 1,
+                         f"the session was deleted {len(calls)} times")
+
+    def test_no_port_in_the_harness_is_a_literal(self):
+        """A written-down port is a stale process away from failing every
+        later run with KeyError: 'sessionId'."""
+        import re
+        code = self.harness()
+        driver = self.section(code, "\ndef _driver_session",
+                              "\ndef _release_driver")
+        setup = self.section(code, "\nclass BrowserTestCase", "\nclass ")
+        for name, part in (("_driver_session", driver), ("BrowserTestCase", setup)):
+            with self.subTest(part=name):
+                literals = re.findall(r"(?:PORT|port)\s*=\s*(\d{4,5})", part)
+                self.assertEqual(literals, [],
+                                 f"hardcoded port in {name}: {literals}")
+                # Counted per SECTION, not over the file: counting the file
+                # counts this test's own string literal.
+                self.assertEqual(part.count('probe.bind(("127.0.0.1", 0))'), 1,
+                                 f"{name} does not bind a free port")
+
+
+@unittest.skipUnless(_webdriver_available(),
+                     "geckodriver/firefox not installed - browser behaviour "
+                     "cannot be asserted here; see the module docstring")
+class BrowserTestCase(unittest.TestCase):
+    """One uvicorn per class, ONE browser for the whole process.
+
+    geckodriver speaks WebDriver over plain HTTP and httpx is already a
+    dependency, so this adds no packages. Skips cleanly where the binaries
+    are absent.
+
+    The driver is process-wide (see _driver_session): a per-class driver
+    could not be killed and could not be reclaimed, so the only way to stop
+    leaking them was to stop creating them. Ports are bound free rather
+    than written down - a literal 4477 meant one stale process broke every
+    later run with `KeyError: 'sessionId'`, which reads as a broken suite.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import os, socket, tempfile, threading, time
+        import httpx
+
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls._prev_db = os.environ.get("MACROWIRE_DB")
+        os.environ["MACROWIRE_DB"] = str(Path(cls._tmp.name) / "b.db")
+        conn = db.connect(Path(cls._tmp.name) / "b.db")
+        db.initialise(conn)
+        cls._seed(conn)
+        conn.close()
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            cls.app_port = probe.getsockname()[1]
+
+        import uvicorn
+        from macrowire.web.app import app
+        cls._server = uvicorn.Server(uvicorn.Config(
+            app, host="127.0.0.1", port=cls.app_port, log_level="error"))
+        cls._thread = threading.Thread(target=cls._server.run, daemon=True)
+        cls._thread.start()
+        for _ in range(80):
+            try:
+                httpx.get(f"http://127.0.0.1:{cls.app_port}/api/bootstrap", timeout=1)
+                break
+            except Exception:
+                time.sleep(0.25)
+
+        # Anything from here that raises must not leave the server and the
+        # temp directory behind: unittest does NOT call tearDownClass when
+        # setUpClass raises, and the session POST failing on a held port is
+        # exactly how this used to leak on every retry.
+        try:
+            shared = _driver_session()
+            cls.base, cls.sid = shared["base"], shared["sid"]
+            httpx.post(f"{cls.base}/session/{cls.sid}/url", timeout=120,
+                       json={"url": f"http://127.0.0.1:{cls.app_port}/"})
+            time.sleep(3)
+        except Exception:
+            cls._release_class()
+            raise
+
+    @classmethod
+    def _seed(cls, conn):
+        """A tape long enough to scroll, and facets rich enough to filter.
+
+        WITHOUT THIS EVERY TEST HERE PASSED VACUOUSLY. An empty database
+        renders no .item elements, so "the first visible item did not move"
+        compared None with None and succeeded. Same failure as a loop over
+        an empty collection - the floor rule, in a browser.
+        """
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        n = 0
+        for source in ("rba_media_releases", "hkma_press", "ecb_press",
+                       "boe_news", "fed_press_monetary"):
+            src = SOURCES[source]
+            sid = db.upsert_source(conn, src.name, src.kind, src.config)
+            for k in range(40):
+                n += 1
+                conn.execute(
+                    """INSERT INTO items (id, source_id, title, url, fetched_at,
+                                          published_at, fx_state, type_primary)
+                       VALUES (?, ?, ?, 'http://x', ?, ?, ?, ?)""",
+                    (f"seed{n}", sid, f"{src.name} item {k}", now.isoformat(),
+                     (now - timedelta(hours=n)).isoformat(),
+                     "fx" if k % 2 else "unclassified",
+                     "Press Release" if k % 3 else "Speech"))
+        # Observations too, or the rail renders empty headings with no
+        # values - and a test asserting "every rail value is on screen"
+        # passes by finding no values at all.
+        series = {
+            "sse_southbound": [("SOUTHBOUND/amount/net", -51.34),
+                               ("SOUTHBOUND/amount/buy", 298.18),
+                               ("SOUTHBOUND/amount/sell", 349.52),
+                               ("SOUTHBOUND/amount/total", 647.70)],
+            "cftc_cot": [("COT/AUD/net", -44159.0), ("COT/JPY/net", -158166.0)],
+            "cfets_ccpr": [("USD/CNY", 7.1234), ("EUR/CNY", 8.4321)],
+            "ecb_fx": [("EUR/USD", 1.0912), ("EUR/JPY", 163.44)],
+            "rba_exchange_rates": [("AUD/USD", 0.7211)],
+        }
+        for source, rows in series.items():
+            src = SOURCES[source]
+            sid = db.upsert_source(conn, src.name, src.kind, src.config)
+            for period in ("2026-08-20", "2026-08-21"):
+                for name, value in rows:
+                    conn.execute(
+                        """INSERT INTO observations (source_id, series, period, value,
+                             unit, base_currency, target_currency, rate_type,
+                             frequency, decimals, external_id, observed_at, fetched_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (sid, name, period, value + (0.5 if period.endswith("1") else 0),
+                         "100 million HKD" if "SOUTHBOUND" in name else "contracts",
+                         None, None, "seeded", "daily", 2,
+                         f"{period}#{name}", period, now.isoformat()))
+        conn.commit()
+        # The fixture checks ITSELF. A browser DB with no items made every
+        # tape-stability assertion compare None with None and pass.
+        class _Assert:
+            @staticmethod
+            def assertGreaterEqual(a, b, msg=None):
+                if a < b:
+                    raise AssertionError(msg or f"{a} < {b}")
+        seeded(_Assert, conn, items=150, observations=20, sources=8)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._release_class()
+
+    @classmethod
+    def _release_class(cls):
+        """The per-class half only. The browser outlives the class and is
+        released at interpreter exit, because it cannot be re-made cheaply
+        and its driver cannot be killed at all."""
+        import os
+        cls._server.should_exit = True
+        if cls._prev_db is None:
+            os.environ.pop("MACROWIRE_DB", None)
+        else:
+            os.environ["MACROWIRE_DB"] = cls._prev_db
+        cls._tmp.cleanup()
+
+    def js(self, script):
+        import httpx
+        return httpx.post(f"{self.base}/session/{self.sid}/execute/sync",
+                          timeout=30, json={"script": script, "args": []}
+                          ).json()["value"]
+
+    def screenshot(self):
+        """The rendered page as pixels. See decode_png: rects and hit-tests
+        cannot see a scrollbar, and a scrollbar is what this class kept
+        failing to notice."""
+        import base64
+        import httpx
+        b64 = httpx.get(f"{self.base}/session/{self.sid}/screenshot",
+                        timeout=60).json()["value"]
+        return decode_png(base64.b64decode(b64))
+
+    def press(self, key):
+        import httpx
+        httpx.post(f"{self.base}/session/{self.sid}/actions", timeout=30,
+                   json={"actions": [{"type": "key", "id": "kb", "actions": [
+                       {"type": "keyDown", "value": key},
+                       {"type": "keyUp", "value": key}]}]})
+
+    def state(self):
+        return self.js("""const d = document.getElementById('settings');
+            return {open: d.open, display: getComputedStyle(d).display,
+                    modal: d.matches(':modal'),
+                    height: Math.round(d.getBoundingClientRect().height)};""")
+
+    def open_it(self):
+        import time
+        self.js("document.getElementById('settings-open').click(); return 1;")
+        time.sleep(2)
+
+    def setUp(self):
+        import time
+        # Always start closed, whatever the previous test did.
+        self.js("""const d = document.getElementById('settings');
+                   if (d.open) d.close(); return 1;""")
+        time.sleep(0.3)
+
+
+class DialogBrowserTests(BrowserTestCase):
+    """The tests that would actually have caught the settings dialog bug.
+
+    Everything static asserts SOURCE. This asserts BEHAVIOUR, in a real
+    engine, because the bug was a cascade interaction between an author
+    rule and the UA stylesheet - invisible to any amount of reading.
+    """
+
+
+    def test_it_is_invisible_before_it_is_opened(self):
+        """THE BUG. It rendered in normal flow from page load, closed, over
+        the ribbon, because an author `display` beat the UA's
+        `dialog:not([open]) { display: none }`."""
+        s = self.state()
+        self.assertFalse(s["open"])
+        self.assertEqual(s["display"], "none",
+                         "a closed dialog is being painted")
+        self.assertEqual(s["height"], 0)
+
+    def test_opening_it_puts_it_in_the_top_layer(self):
+        """:modal is true only for showModal(). It is what makes the
+        backdrop paint and the background inert."""
+        self.open_it()
+        s = self.state()
+        self.assertTrue(s["open"])
+        self.assertTrue(s["modal"], "opened, but not as a modal - no backdrop")
+        self.assertEqual(s["display"], "flex")
+        self.assertGreater(s["height"], 100)
+
+    def test_escape_closes_it(self):
+        self.open_it()
+        self.assertTrue(self.state()["open"])
+        import time
+        self.press("")          # Escape
+        time.sleep(0.6)
+        s = self.state()
+        self.assertFalse(s["open"], "Esc did not close it")
+        self.assertEqual(s["display"], "none")
+
+    def test_done_closes_it(self):
+        self.open_it()
+        self.assertTrue(self.state()["open"])
+        import time
+        self.js("""document.querySelector('#settings .settings-head button')
+                     .click(); return 1;""")
+        time.sleep(0.6)
+        s = self.state()
+        self.assertFalse(s["open"], "Done did not close it")
+        self.assertEqual(s["display"], "none")
+
+    def test_the_backdrop_actually_covers_the_page(self):
+        """The reported symptom was 'the ribbon shows straight through it'."""
+        self.open_it()
+        covered = self.js("""
+            const d = document.getElementById('settings');
+            const r = d.getBoundingClientRect();
+            // What is on top at the dialog's centre, and at a point well
+            // outside it where the backdrop should be intercepting clicks.
+            const inside = document.elementFromPoint(r.left + r.width / 2,
+                                                     r.top + r.height / 2);
+            const outside = document.elementFromPoint(5, 5);
+            return {insideIsInDialog: d.contains(inside),
+                    outsideTag: outside ? outside.tagName : null};""")
+        self.assertTrue(covered["insideIsInDialog"],
+                        "something is painting over the open dialog")
+        # With a modal open the background is inert: a hit test outside it
+        # must not land on tape or ribbon content.
+        self.assertIn(covered["outsideTag"], ("HTML", "BODY", "DIALOG", None),
+                      f"the background is still hit-testable "
+                      f"({covered['outsideTag']}) - it is not inert")
+
+    def test_the_tape_is_still_there_underneath(self):
+        """A dialog must not push the tape; that was the whole argument for
+        choosing one over another drawer."""
+        before = self.js("const t = document.getElementById('tape');"
+                         "return Math.round(t.getBoundingClientRect().top);")
+        self.open_it()
+        after = self.js("const t = document.getElementById('tape');"
+                        "return Math.round(t.getBoundingClientRect().top);")
+        self.assertEqual(before, after, "opening settings moved the tape")
+
+
+class CommentStrippingTests(unittest.TestCase):
+    """One helper, because this bit three times in three places.
+
+    A CSS scanner read the last line of a /* */ block as a selector; a t()
+    scanner counted a call written in a # comment to explain the API; a
+    markup scanner located the first "<dialog" inside the <!-- --> above the
+    element. Every one was a scanner answering a question about the CODE
+    while reading the PROSE.
+    """
+
+    def test_it_strips_each_syntax(self):
+        cases = [
+            ("css", "/* .b { color: var(--accent) } */ .c { top: 0 }",
+             "--accent", ".c"),
+            ("js", 'const a = 1; // t("ghost.key")\nconst b = 2;',
+             "ghost.key", "const b"),
+            ("js", "/* showModal() */ const c = 3;", "showModal", "const c"),
+            ("html", '<!-- <dialog id="fake"> --><dialog id="real">',
+             'id="fake"', 'id="real"'),
+            ("py", 'x = 1\n# t("ghost.key", key="y")\ny = 2', "ghost.key", "y = 2"),
+            ("yaml", "a: 1\n# enabled: false\nb: 2", "enabled: false", "b: 2"),
+        ]
+        for syntax, text, gone, kept in cases:
+            with self.subTest(syntax=syntax, text=text[:28]):
+                out = strip_comments(text, syntax)
+                self.assertNotIn(gone, out)
+                self.assertIn(kept, out)
+
+    def test_an_unknown_syntax_raises_rather_than_passing_text_through(self):
+        """A scanner that thinks it stripped and did not is the bug."""
+        with self.assertRaises(ValueError):
+            strip_comments("x", "rs")
+
+    def test_a_url_survives_the_js_stripper(self):
+        out = strip_comments('const u = "https://example.com/x"; // note', "js")
+        self.assertIn("https://example.com/x", out)
+        self.assertNotIn("note", out)
+
+    def test_the_scanned_files_hold_the_assumption_this_relies_on(self):
+        """Not a parser. A `//` inside a JS string literal would be
+        mis-stripped, and a `/*` inside a CSS string likewise. Neither
+        exists; this fails if one appears rather than letting the helper be
+        quietly wrong."""
+        import re
+        js = (ROOT / "macrowire/web/static/app.js").read_text()
+        css = (ROOT / "macrowire/web/static/style.css").read_text()
+        for name, text in (("app.js", js), ("style.css", css)):
+            with self.subTest(file=name):
+                literals = re.findall(r"'[^'\n]*'|\"[^\"\n]*\"", text)
+                offenders = [l for l in literals if "//" in l or "/*" in l]
+                self.assertEqual(
+                    offenders, [],
+                    f"{name} has a comment marker inside a string literal; "
+                    f"strip_comments would corrupt it and needs a parser")
+
+    def test_the_known_comment_sensitive_scanners_use_the_helper(self):
+        """Positive, not self-referential: an earlier version searched for
+        the very regexes it contained, and failed on itself."""
+        source = (ROOT / "tests/test_macrowire.py").read_text()
+        self.assertIn("def strip_comments(", source)
+        self.assertIn("def read_code(", source)
+        for scanner in ("DialogStaticTests", "TranslationKeyReachTests",
+                        "TestFilterUI", "FilterPanelTests"):
+            block = source[source.index(f"class {scanner}"):]
+            block = block[:block.index("\nclass ", 10)]
+            with self.subTest(scanner=scanner):
+                self.assertIn("strip_comments", block,
+                              f"{scanner} reads source without stripping "
+                              f"comments; a comment can change its answer")
+
+class TranslatedColumnWidthTests(unittest.TestCase):
+    """A column carrying a translated word cannot have a literal width.
+
+    `_pad(t('cli.fetch.ok'), 8)` appeared at ten call sites. `no change`
+    was already 9 and 无新内容 is 8, so the fetch column was ragged in both
+    locales; `within interval` at 15 made one row of a cycle sit seven
+    columns right of the others. cmd_status had learned this once already
+    and measured its label column at runtime - the fetch column had not.
+    """
+
+    STATUS_KEYS = ("cli.fetch.ok", "cli.fetch.no_change", "cli.fetch.throttled",
+                   "cli.fetch.disabled", "cli.fetch.revised", "cli.backup.failed")
+
+    def test_no_translated_column_is_padded_to_a_literal(self):
+        import re
+        code = strip_comments(read_code(ROOT / "macrowire/__main__.py"), "py")
+        literal = re.findall(r"_pad\(\s*t\([^)]*\)\s*,\s*\d+\s*\)", code)
+        self.assertEqual(literal, [],
+                         f"a translated string padded to a hardcoded width: "
+                         f"{literal}")
+
+    def test_the_column_holds_every_word_it_has_to_carry(self):
+        from macrowire import i18n
+        from macrowire.__main__ import _width
+        for locale in floor(self, i18n.available(), "locale files", 2):
+            tr = i18n.Translator(locale)
+            widths = {k: _width(tr(k)) for k in self.STATUS_KEYS}
+            col = max(widths.values()) + 1
+            for key, w in widths.items():
+                with self.subTest(locale=locale, key=key):
+                    self.assertLess(w, col,
+                                    f"{locale}: {key} is {w} wide in a {col} column")
+
+    def test_the_measured_column_names_every_word_that_lands_in_it(self):
+        """Guard on the guard: the width is measured over a LIST, and a
+        new status word that is not in the list widens the column without
+        widening the measurement."""
+        import re
+        code = strip_comments(read_code(ROOT / "macrowire/__main__.py"), "py")
+        used = set(re.findall(r"_pad\(t\('(cli\.(?:fetch|backup)\.\w+)'\)", code))
+        floor(self, used, "padded status words", 5)
+        measured = set(self.STATUS_KEYS)
+        self.assertEqual(used - measured, set(),
+                         f"printed in the column but not measured for it: "
+                         f"{sorted(used - measured)}")
+        src = code[code.index("def _status_col"):]
+        src = src[:src.index("\ndef ", 5)]
+        for key in used:
+            with self.subTest(key=key):
+                self.assertIn(key, src,
+                              f"{key} lands in the column but _status_col "
+                              f"does not measure it")
+
+
+class OneStateOneNameTests(unittest.TestCase):
+    """A state must not have two names on two surfaces.
+
+    `health.disabled.label` rendered 未轮询 in the panel while
+    `cli.status.disabled_flag` rendered 已停用 in the terminal - the same
+    state, two Chinese words, found by a person reading. The fix for that
+    one left a HAND-WRITTEN list of state groups, so when a second pair
+    turned up (`cli.fetch.throttled` 已限流 against `health.throttled.label`
+    等待间隔) the test said nothing: the list had never grown when the
+    surfaces did. A guard you have to remember to extend is not a guard.
+
+    So the groups are DERIVED from HEALTH_SEVERITY and the key names. A key
+    NAMES a state when its last segment is the state, the state plus
+    `_flag`, or `label` directly under it. A key that merely mentions one
+    (`throttled_detail`, `stale.meaning`, `staleness`) is not a name and is
+    not collected. Add a tenth state, or a fourth surface that names one,
+    and it is checked without editing this file.
+
+    The panel label is the canonical name. A longer surface may say MORE -
+    the terminal spends a whole sentence on `unreachable` - but it must
+    OPEN with that name, never substitute a different word for it.
+
+    There is no exemption list. The one pair that did not fit the rule
+    (`cli.fetch.no_change` said `no change` / 无新内容 against the panel's
+    `polled, nothing new` / 已检查，无新内容) was fixed by changing the
+    string. An exception list is a hand-written list with better
+    documentation, and a hand-written list is what failed here twice.
+    """
+
+    def canonical(self, state):
+        return f"health.{state}.label"
+
+    def named_by_surface(self):
+        """{state: [keys that NAME it]}, derived, canonical key excluded."""
+        from macrowire import i18n
+        from macrowire.web.queries import HEALTH_SEVERITY
+        en = i18n.renderable(i18n.load("en"))
+        out = {}
+        for state in HEALTH_SEVERITY:
+            keys = []
+            for key in sorted(en):
+                if key == self.canonical(state):
+                    continue
+                seg = key.split(".")
+                names_it = (seg[-1] in (state, f"{state}_flag")
+                            or (len(seg) >= 2 and seg[-2] == state
+                                and seg[-1] == "label"))
+                if names_it:
+                    keys.append(key)
+            out[state] = keys
+        return out
+
+    def normalise(self, text):
+        """Bracket and case decoration is presentation, not a second name."""
+        return text.strip().strip("[]（）()【】").upper()
+
+    def test_a_state_reads_the_same_wherever_it_appears(self):
+        from macrowire import i18n
+        surfaces = self.named_by_surface()
+        for locale in floor(self, i18n.available(), "locale files", 2):
+            t = i18n.Translator(locale)
+            for state, keys in surfaces.items():
+                name = self.normalise(t(self.canonical(state)))
+                for key in keys:
+                    with self.subTest(locale=locale, key=key):
+                        self.assertTrue(
+                            self.normalise(t(key)).startswith(name),
+                            f"{locale}: {state} is '{name}' in the panel but "
+                            f"{key} opens with '{self.normalise(t(key))[:40]}'")
+
+    def test_the_derivation_finds_the_surfaces_it_is_meant_to_guard(self):
+        """Guard on the guard: rename the keys out from under the rule and
+        it collects nothing, passing vacuously. Six states are named on
+        more than one surface today."""
+        surfaces = self.named_by_surface()
+        multi = {s: k for s, k in surfaces.items() if k}
+        floor(self, multi, "states named on a second surface", 5)
+        for state in ("disabled", "stale", "throttled"):
+            with self.subTest(state=state):
+                self.assertIn(state, multi,
+                              f"{state} is named on one surface only - the "
+                              f"pair that caused this test has gone missing")
+
+    def test_every_state_has_a_panel_label_to_be_canonical(self):
+        from macrowire import i18n
+        from macrowire.web.queries import HEALTH_SEVERITY
+        en = i18n.renderable(i18n.load("en"))
+        for state in floor(self, HEALTH_SEVERITY, "health states", 9):
+            with self.subTest(state=state):
+                self.assertIn(self.canonical(state), en)
+
+    def test_no_health_state_label_is_reused_for_a_different_state(self):
+        """The converse: two DIFFERENT states must not share one name, or
+        the panel cannot tell you which one you are in."""
+        from macrowire import i18n
+        from macrowire.web.queries import HEALTH_SEVERITY
+        for locale in floor(self, i18n.available(), "locale files", 2):
+            t = i18n.Translator(locale)
+            labels = {}
+            for state in HEALTH_SEVERITY:
+                label = t(f"health.{state}.label")
+                labels.setdefault(label, []).append(state)
+            clashes = {k: v for k, v in labels.items() if len(v) > 1}
+            with self.subTest(locale=locale):
+                self.assertEqual(clashes, {},
+                                 f"{locale}: one label, several states -> {clashes}")
+
+class TapeStabilityTests(BrowserTestCase):
+    """Opening the filter must not move the tape by a single pixel.
+
+    Reading weeks back is what this tool turned out to be for, and losing
+    your place makes the filter unusable. The cause was NOT what it looked
+    like: the panel's height moves the tape by zero - Firefox's scroll
+    anchoring absorbs it exactly - while focus() scrolling its target into
+    view threw the page 2,984px to the top. Four proposed remedies all
+    addressed displacement, which measures zero.
+
+    So this asserts the OBSERVABLE thing, not the mechanism: the first
+    visible item does not move. That stays true whichever way a future
+    change breaks it.
+    """
+
+
+    PROBE = """const it = [...document.querySelectorAll('.item')];
+        const vis = it.find(e => e.getBoundingClientRect().top >= 0);
+        return {y: Math.round(window.scrollY),
+                key: vis ? vis.dataset.key : null,
+                top: vis ? Math.round(vis.getBoundingClientRect().top) : null,
+                count: it.length};"""
+
+    def setUp(self):
+        import time
+        # Clear any filter a previous test left on. Without this the tests
+        # are order-coupled: clicking "the first chip" TOGGLES it, so a
+        # leftover filter makes the next test un-apply instead of apply,
+        # and the failure looks like the feature is broken.
+        self.js("""const c = document.getElementById('fclear');
+                   if (c && !document.getElementById('mast-tokens').hidden) c.click();
+                   const p = document.getElementById('fpanel');
+                   if (p && !p.hidden) document.getElementById('fclose').click();
+                   window.scrollTo(0, 0); return 1;""")
+        time.sleep(0.4)
+        # A floor, not a skip. Skipping on an empty tape is how these tests
+        # passed while asserting nothing.
+        count = self.js("return document.querySelectorAll('.item').length;")
+        self.assertGreater(count, 30,
+                           f"only {count} items rendered; these tests assert "
+                           f"nothing without a tape to scroll")
+        self.assertGreater(self.js("return document.body.scrollHeight;"), 2000)
+        self.js("window.scrollTo(0, 1500); return 1;")
+        time.sleep(0.8)
+
+    def snap(self):
+        return self.js(self.PROBE)
+
+    def test_opening_the_filter_moves_nothing(self):
+        import time
+        before = self.snap()
+        self.js("document.getElementById('fopen').click(); return 1;")
+        time.sleep(1.2)
+        after = self.snap()
+        self.assertEqual(after["top"], before["top"],
+                         "the first visible item moved when the filter opened")
+        self.assertEqual(after["key"], before["key"],
+                         "a different item is now at the top of the viewport")
+
+    def test_scrolling_inside_the_panel_moves_nothing(self):
+        """What expanding an axis used to be. Nothing expands now, so the
+        interaction that could displace the tape is scrolling the panel -
+        and `overscroll-behavior: contain` is what stops the scroll
+        chaining to the document once the body hits its end."""
+        import time
+        self.js("document.getElementById('fopen').click(); return 1;")
+        time.sleep(1.2)
+        before = self.snap()
+        self.js("""const b = document.getElementById('fpanel-body');
+                   b.scrollTop = 99999; b.scrollTop = 0; b.scrollTop = 99999;
+                   return 1;""")
+        time.sleep(1)
+        after = self.snap()
+        self.assertEqual(after["top"], before["top"],
+                         "scrolling the panel scrolled the tape behind it")
+        self.assertEqual(after["key"], before["key"])
+
+    def test_closing_the_filter_moves_nothing(self):
+        import time
+        self.js("document.getElementById('fopen').click(); return 1;")
+        time.sleep(1.2)
+        before = self.snap()
+        self.js("document.getElementById('fclose').click(); return 1;")
+        time.sleep(1.2)
+        after = self.snap()
+        self.assertEqual(after["top"], before["top"],
+                         "the first visible item moved when the filter closed")
+        self.assertEqual(after["key"], before["key"])
+
+    def test_a_full_open_close_cycle_returns_to_exactly_where_it_started(self):
+        import time
+        before = self.snap()
+        for _ in range(2):
+            self.js("document.getElementById('fopen').click(); return 1;")
+            time.sleep(1)
+            self.js("document.getElementById('fclose').click(); return 1;")
+            time.sleep(1)
+        after = self.snap()
+        self.assertEqual((after["y"], after["top"], after["key"]),
+                         (before["y"], before["top"], before["key"]),
+                         "two open/close cycles drifted the tape")
+
+    def test_the_settings_dialog_moves_nothing_either(self):
+        import time
+        before = self.snap()
+        self.js("document.getElementById('settings-open').click(); return 1;")
+        time.sleep(2.5)
+        after = self.snap()
+        self.js("document.getElementById('settings').close(); return 1;")
+        time.sleep(0.6)
+        self.assertEqual(after["top"], before["top"])
+
+    def test_the_tokens_line_appearing_moves_nothing(self):
+        """The second masthead line materialising is itself a displacement
+        risk: it grows the sticky header by ~42px while the reader is deep
+        in the tape."""
+        import time
+        self.js("document.getElementById('fopen').click(); return 1;")
+        time.sleep(1.2)
+        before = self.snap()
+        self.js("""const c = document.querySelector('#fgrid .chip[data-axis]');
+                   if (c) c.click(); return 1;""")
+        time.sleep(1.5)
+        after = self.snap()
+        grew = self.js("""return Math.round(document.getElementById('masthead')
+                            .getBoundingClientRect().height);""")
+        self.assertFalse(self.js("return document.getElementById('mast-tokens').hidden;"),
+                         "a filter is active but the tokens row did not appear")
+        self.assertGreater(grew, 60, "the tokens row did not actually grow the masthead")
+        self.assertEqual(after["top"], before["top"],
+                         "the tape moved when the tokens row appeared")
+
+    def test_the_tokens_line_disappearing_moves_nothing(self):
+        import time
+        self.js("document.getElementById('fopen').click(); return 1;")
+        time.sleep(1.2)
+        self.js("""const c = document.querySelector('#fgrid .chip[data-axis]');
+                   if (c) c.click(); return 1;""")
+        time.sleep(1.5)
+        before = self.snap()
+        self.js("document.getElementById('fclear').click(); return 1;")
+        time.sleep(1.5)
+        after = self.snap()
+        self.assertTrue(self.js("return document.getElementById('mast-tokens').hidden;"),
+                        "filters cleared but the tokens row is still there")
+        self.assertEqual(after["top"], before["top"],
+                         "the tape moved when the tokens row went away")
+
+    def test_the_masthead_costs_nothing_when_nothing_is_filtered(self):
+        height = self.js("""return Math.round(document.getElementById('masthead')
+                              .getBoundingClientRect().height);""")
+        hidden = self.js("return document.getElementById('mast-tokens').hidden;")
+        self.assertTrue(hidden, "the tokens row is present with no filters active")
+        self.assertLessEqual(height, 60,
+                             f"the masthead is {height}px unfiltered; it must stay "
+                             f"one line")
+
+    def test_the_masthead_stays_reachable_from_deep_in_the_tape(self):
+        """The reason it is sticky: a Filter button at the top of the
+        document meant scrolling a hundred rows to reach it."""
+        top = self.js("""return Math.round(document.getElementById('masthead')
+                           .getBoundingClientRect().top);""")
+        self.assertEqual(top, 0, "the masthead scrolled away")
+        for control in ("fopen", "settings-open"):
+            with self.subTest(control=control):
+                visible = self.js(f"""const e = document.getElementById('{control}');
+                    const r = e.getBoundingClientRect();
+                    return r.top >= 0 && r.bottom <= window.innerHeight;""")
+                self.assertTrue(visible, f"#{control} is not on screen")
+
+    def test_the_ribbon_scrolls_away_rather_than_sticking(self):
+        """Measured at 275px against a 49px masthead - 34% of the viewport,
+        answering a question asked once at the start of a session. The
+        sticky day headers do the orientation job for a backwards read at
+        30px instead."""
+        pos = self.js("""const r = document.querySelector('.ribbon');
+            return getComputedStyle(r).position;""")
+        self.assertEqual(pos, "static", "the ribbon is pinned and eating tape")
+        offscreen = self.js("""const r = document.querySelector('.ribbon');
+            return r.getBoundingClientRect().bottom < 0;""")
+        self.assertTrue(offscreen, "the ribbon is still on screen at this depth")
+
+    def test_the_page_never_overflows_horizontally(self):
+        """A document wider than the viewport puts a horizontal scrollbar
+        under everything and carries the right-hand rail off screen. It was
+        10px, from `.marks .track` switching to position:relative while
+        keeping the `left: 42px` that had been an inset."""
+        over = self.js("""const out = [];
+            for (const el of document.querySelectorAll('*')) {
+              const r = el.getBoundingClientRect();
+              if (r.right > window.innerWidth + 1 && r.width > 0)
+                out.push(el.tagName + '.' + (el.className || '').toString().slice(0, 30));
+            }
+            return out.slice(0, 6);""")
+        self.assertEqual(over, [], f"these run past the right edge: {over}")
+        self.assertLessEqual(
+            self.js("return document.documentElement.scrollWidth - window.innerWidth;"),
+            1, "the document is wider than the viewport")
+
+    def test_every_rail_value_is_inside_the_viewport(self):
+        """A rail showing labels with no numbers looks like missing data."""
+        rows = self.js("""return [...document.querySelectorAll(
+            '#sb .v, #cot .v, #fx .v, #ecb .v, #rba .v')].map(e => ({
+              txt: e.textContent.trim().slice(0, 20),
+              right: Math.round(e.getBoundingClientRect().right),
+              off: e.getBoundingClientRect().right > window.innerWidth}));""")
+        floor(self, rows, "rail values", 4)
+        offscreen = [r for r in rows if r["off"]]
+        self.assertEqual(offscreen, [], f"rail values off the right edge: {offscreen}")
+
+    def test_the_open_panel_can_be_scrolled_to_its_footer(self):
+        """A ceiling without a reachable bottom is worse than no ceiling:
+        with every axis open, Type and the footer were unreachable."""
+        import time
+        self.js("document.getElementById('fopen').click(); return 1;")
+        time.sleep(1.2)
+        state = self.js("""const p = document.getElementById('fpanel-body');
+            // From the TOP. scrollTop survives the panel being hidden and
+            // shown, so an earlier test in this class left the body already
+            // at its end: "scrollTop did not increase" was true, and had
+            // nothing to do with whether the panel scrolls.
+            p.scrollTop = 0;
+            const before = p.scrollTop; p.scrollTop = 99999;
+            const foot = document.querySelector('.fpanel-foot')
+                           .getBoundingClientRect();
+            const box = document.getElementById('fpanel').getBoundingClientRect();
+            return {scrollH: p.scrollHeight, clientH: p.clientHeight,
+                    overflowY: getComputedStyle(p).overflowY,
+                    moved: p.scrollTop > before,
+                    reachesBottom: p.scrollTop + p.clientHeight >= p.scrollHeight - 2,
+                    footInside: foot.bottom <= box.bottom + 1 && foot.top >= box.top};""")
+        self.assertGreater(state["scrollH"], state["clientH"],
+                           "not enough content to test scrolling")
+        self.assertIn(state["overflowY"], ("auto", "scroll"))
+        self.assertTrue(state["moved"],
+                        f"the panel body does not scroll: {state}")
+        self.assertTrue(state["reachesBottom"], "the end of the axes is unreachable")
+        self.assertTrue(state["footInside"],
+                        "the footer is not pinned inside the panel")
+
+    def test_the_panel_scrollbar_is_visible_not_an_overlay(self):
+        """It scrolled the whole time; the platform's overlay scrollbar
+        only appears once you are already scrolling, so it read as clipped
+        content with no way down."""
+        css = strip_comments((ROOT / "macrowire/web/static/style.css").read_text(), "css")
+        import re
+        rule = "".join(m.group(1) for m in re.finditer(r"\.fpanel-body \{([^}]*)\}", css))
+        self.assertIn("scrollbar-width", rule,
+                      "nothing tells the reader the panel scrolls")
+        self.assertIn("scrollbar-color", rule)
+
+    def test_every_axis_opens_expanded(self):
+        """Replaces test_every_axis_starts_closed, which was right about the
+        old design. Collapsing was a way to save vertical space; the panel
+        scrolls instead, and nothing in it is a click away from being seen.
+        Every axis renders its chips, including the two that used to nest a
+        level down: the type sub-groups and the watchlist add-form."""
+        import time
+        self.js("document.getElementById('fopen').click(); return 1;")
+        time.sleep(1.2)
+        seen = self.js("""const out = [];
+            for (const ax of document.querySelectorAll('#fgrid .fax')) {
+              const g = ax.querySelector('.fgroup');
+              const r = g.getBoundingClientRect();
+              out.push({axis: ax.querySelector('.faxis').textContent.trim(),
+                        shown: getComputedStyle(g).display !== 'none' && r.height > 0,
+                        chips: g.querySelectorAll('.chip, input, select').length});
+            }
+            return out;""")
+        floor(self, seen, "filter axes", 5)
+        hidden = [a for a in seen if not a["shown"]]
+        self.assertEqual(hidden, [], f"an axis is not showing its chips: {hidden}")
+        empty = [a["axis"] for a in seen if a["chips"] == 0]
+        self.assertEqual(empty, [], f"an axis rendered no controls at all: {empty}")
+        self.assertTrue(
+            self.js("""const w = document.querySelector('#fgrid .wl-add');
+                       return !!w && w.getBoundingClientRect().height > 0;"""),
+            "the watchlist add-form is not visible without a further click")
+
+    def test_a_coverage_boundary_renders_once_per_source(self):
+        """Reading six months back crosses five boundaries, not five hundred
+        lines. A source-string check missed this - `.shift()` appears twice
+        and the mutation only changed one - so it is measured in the DOM."""
+        rendered = self.js("""return [...document.querySelectorAll('.cbound')]
+            .map(e => e.className);""")
+        floor(self, rendered, "coverage boundaries", 3)
+        titles = self.js("""return [...document.querySelectorAll('.cbound .cb-t')]
+            .map(e => e.textContent.trim());""")
+        self.assertEqual(len(titles), len(set(titles)),
+                         f"a source produced more than one boundary: {titles}")
+        rows = self.js("return document.querySelectorAll('.item').length;")
+        self.assertLess(len(titles), rows / 4,
+                        f"{len(titles)} boundaries against {rows} rows - this is "
+                        f"rendering per row, not per source")
+
+    def test_the_end_of_window_summary_is_present_and_honest(self):
+        end = self.js("""const e = document.querySelector('.cend');
+            return e ? e.textContent.replace(/\\s+/g, ' ').trim() : null;""")
+        self.assertIsNotNone(end, "no end-of-window summary")
+        listed = self.js("return document.querySelectorAll('.cend-row').length;")
+        bounds = self.js("return document.querySelectorAll('.cbound').length;")
+        self.assertEqual(listed, bounds,
+                         "the summary and the boundaries disagree about what "
+                         "is missing")
+
+    def test_focus_calls_that_are_not_navigation_prevent_scrolling(self):
+        """The mechanism, pinned separately from the behaviour above.
+
+        The Tab handler is deliberately excluded: there, scrolling to the
+        newly focused control is correct, because the user is navigating.
+        """
+        src = read_code(ROOT / "macrowire/web/static/app.js")
+        for fn in ("function openPanel", "function closePanel"):
+            block = src[src.index(fn):]
+            block = block[:block.index("\n}")]
+            with self.subTest(fn=fn):
+                self.assertIn("preventScroll: true", block,
+                              f"{fn} focuses without preventScroll and will "
+                              f"throw the reader back to the top")
+
+
+class ContainedRegionTests(BrowserTestCase):
+    """A region that is supposed to CONTAIN its content, must.
+
+    Three symptoms reached a screenshot at once - a transparent panel
+    background, a doubled rail region, and content clipped above the
+    panel's top edge - and they were one defect. `.fgroup { display: flex }`
+    is an AUTHOR rule; the UA rule that hides a closed <details>'s content
+    is a USER-AGENT rule; author origin outranks UA origin whatever the
+    specificity. So every closed axis laid its chips out anyway, outside
+    the panel's painted box (hence "transparent": those chips had the tape
+    behind them, not the panel) and outside its scrollHeight, which stayed
+    240 and never offered a way down. The panel meeting the rail with no
+    border between two --raised surfaces did the rest.
+
+    Identical to the settings-dialog bug: `.settings { display: flex }`
+    beating `dialog:not([open]) { display: none }`.
+
+    So these tests take the CLASS, not the instance, and run it over both
+    regions. Nothing here mentions <details>: the next version of this bug
+    will not either.
+    """
+
+    # (id, how to open, how to close). Both regions, so a fix to one that
+    # would have broken the other cannot pass.
+    REGIONS = (
+        ("fpanel", "document.getElementById('fopen').click();",
+         "document.getElementById('fclose').click();"),
+        ("settings", "document.getElementById('settings-open').click();",
+         "document.getElementById('settings').close();"),
+    )
+
+    def open_region(self, rid, opener):
+        import time
+        self.js(opener + " return 1;")
+        time.sleep(1.2)
+
+    def close_region(self, closer):
+        import time
+        self.js(closer + " return 1;")
+        time.sleep(0.5)
+
+    def at_depth(self, depth):
+        import time
+        self.js(f"window.scrollTo(0, {depth}); return 1;")
+        time.sleep(0.6)
+
+    def test_a_closed_region_is_not_rendered_at_all(self):
+        """The third time this exact cascade trap has bitten. An author
+        `display` on a region that a UA rule hides - `[hidden]` for the
+        panel, `dialog:not([open])` for the settings dialog - wins on
+        ORIGIN, not specificity, so the closed region stays on screen.
+
+        Introduced again while rebuilding the panel to fix the same bug in
+        its content. It gets a test rather than a note this time."""
+        for rid, opener, closer in self.REGIONS:
+            with self.subTest(region=rid):
+                self.at_depth(0)
+                shut = self.js(f"""const e = document.getElementById('{rid}');
+                    return {{display: getComputedStyle(e).display,
+                             h: Math.round(e.getBoundingClientRect().height),
+                             w: Math.round(e.getBoundingClientRect().width)}};""")
+                self.assertEqual(
+                    (shut["h"], shut["w"]), (0, 0),
+                    f"{rid} is closed but still occupies "
+                    f"{shut['w']}x{shut['h']}px with display: {shut['display']}")
+                self.open_region(rid, opener)
+                shown = self.js(f"""const r = document.getElementById('{rid}')
+                    .getBoundingClientRect(); return Math.round(r.height);""")
+                self.close_region(closer)
+                self.assertGreater(shown, 0, f"{rid} did not open")
+                again = self.js(f"""const r = document.getElementById('{rid}')
+                    .getBoundingClientRect(); return Math.round(r.height);""")
+                self.assertEqual(again, 0, f"{rid} is still drawn after closing")
+
+    def test_nothing_paints_outside_the_region_that_owns_it(self):
+        """The instance was 29 chips drawn past the panel's bottom edge.
+
+        Asks the browser what is PAINTED, not where boxes are. A first
+        version compared rectangles and failed the settings dialog, which
+        was correct all along: content scrolled out of a scroll container
+        has a rect outside the box and is clipped, not painted. So this
+        samples the band just outside each region and asks whether
+        anything belonging to it is hit-testable there."""
+        for rid, opener, closer in self.REGIONS:
+            for depth in (0, 2400):
+                with self.subTest(region=rid, scroll=depth):
+                    self.at_depth(depth)
+                    self.open_region(rid, opener)
+                    out = self.js(f"""
+                        const box = document.getElementById('{rid}');
+                        const b = box.getBoundingClientRect();
+                        // A modal <dialog> owns its ::backdrop, so every
+                        // point outside it hit-tests as the dialog itself.
+                        // The class of bug is a DESCENDANT painting outside
+                        // its region, which is what this asks about.
+                        const mine = e => e && e !== box && box.contains(e);
+                        const pts = [], W = window.innerWidth, H = window.innerHeight;
+                        for (let i = 0; i <= 10; i++) {{
+                          const x = b.left + b.width * i / 10;
+                          for (const y of [b.top - 3, b.top - 24,
+                                           b.bottom + 3, b.bottom + 60])
+                            if (y > 0 && y < H) pts.push([x, y]);
+                        }}
+                        for (let i = 0; i <= 10; i++) {{
+                          const y = b.top + b.height * i / 10;
+                          for (const x of [b.left - 3, b.left - 30,
+                                           b.right + 3, b.right + 40])
+                            if (x > 0 && x < W) pts.push([x, y]);
+                        }}
+                        const bad = [];
+                        for (const [x, y] of pts) {{
+                          const hit = document.elementsFromPoint(x, y).find(mine);
+                          if (hit) bad.push(Math.round(x) + ',' + Math.round(y) +
+                            ' -> ' + hit.tagName + '.' +
+                            (hit.className||'').toString().slice(0,20));
+                        }}
+                        return {{bad: bad.slice(0, 6), n: bad.length,
+                                 probes: pts.length,
+                                 children: box.querySelectorAll('*').length}};""")
+                    self.close_region(closer)
+                    floor(self, range(out["children"]), f"{rid} descendants", 20)
+                    floor(self, range(out["probes"]), f"{rid} probe points", 40)
+                    self.assertEqual(out["bad"], [],
+                                     f"{rid}: {out['n']} points outside it are "
+                                     f"painted by its own content")
+
+    def test_nothing_in_an_open_region_is_off_screen(self):
+        """The region's own box, not its descendants: the descendants are
+        clipped by it, so the box being on screen is what makes them
+        reachable. `top: 48px` came from positionPanel and a wrong ceiling
+        would put the bottom past the fold with no way to scroll to it."""
+        for rid, opener, closer in self.REGIONS:
+            for depth in (0, 2400):
+                with self.subTest(region=rid, scroll=depth):
+                    self.at_depth(depth)
+                    self.open_region(rid, opener)
+                    box = self.js(f"""
+                        const r = document.getElementById('{rid}')
+                                    .getBoundingClientRect();
+                        return {{t: Math.round(r.top), b: Math.round(r.bottom),
+                                 l: Math.round(r.left), r: Math.round(r.right),
+                                 vw: window.innerWidth, vh: window.innerHeight}};""")
+                    self.close_region(closer)
+                    self.assertGreaterEqual(box["t"], 0, f"{rid} starts above the fold")
+                    self.assertGreaterEqual(box["l"], 0, f"{rid} starts left of the page")
+                    self.assertLessEqual(box["b"], box["vh"],
+                                         f"{rid} runs {box['b'] - box['vh']}px past "
+                                         f"the bottom of the viewport")
+                    self.assertLessEqual(box["r"], box["vw"],
+                                         f"{rid} runs past the right edge")
+
+    def test_an_open_region_is_opaque_all_the_way_across(self):
+        """Not just `background is set`. The instance had the background
+        set the whole time - the content had escaped the box that carried
+        it. So this samples points across the region and asks the browser
+        what is painted there: at every point, the region or one of its own
+        descendants must be on top of anything behind it."""
+        for rid, opener, closer in self.REGIONS:
+            with self.subTest(region=rid):
+                self.at_depth(1200)
+                self.open_region(rid, opener)
+                out = self.js(f"""
+                    const box = document.getElementById('{rid}');
+                    const b = box.getBoundingClientRect();
+                    const cs = getComputedStyle(box);
+                    const bad = [];
+                    for (let i = 1; i <= 5; i++) {{
+                      for (let j = 1; j <= 5; j++) {{
+                        const x = b.left + b.width * i / 6;
+                        const y = b.top + b.height * j / 6;
+                        const top = document.elementsFromPoint(x, y)[0];
+                        if (!top || !(top === box || box.contains(top)))
+                          bad.push(Math.round(x) + ',' + Math.round(y) + ' -> ' +
+                            (top ? top.tagName + '.' +
+                             (top.className||'').toString().slice(0,18) : 'null'));
+                      }}
+                    }}
+                    return {{bad: bad.slice(0, 5), bg: cs.backgroundColor}};""")
+                self.close_region(closer)
+                self.assertNotIn("rgba", out["bg"].replace("rgba(0, 0, 0, 0)", "TRANSPARENT")
+                                 if out["bg"] != "rgba(0, 0, 0, 0)" else "TRANSPARENT",
+                                 f"{rid} background {out['bg']} is not opaque")
+                self.assertNotEqual(out["bg"], "rgba(0, 0, 0, 0)",
+                                    f"{rid} has no background of its own")
+                self.assertEqual(out["bad"], [],
+                                 f"{rid} shows the page through it at: {out['bad']}")
+
+    def test_the_element_that_scrolls_is_the_one_with_the_visible_bounds(self):
+        """A region with two scroll containers, or one whose scroll box is
+        not the box you can see, clips content at a boundary that does not
+        match its visible edge."""
+        for rid, opener, closer in self.REGIONS:
+            with self.subTest(region=rid):
+                self.at_depth(1200)
+                self.open_region(rid, opener)
+                out = self.js(f"""
+                    const box = document.getElementById('{rid}');
+                    const b = box.getBoundingClientRect();
+                    const cs = getComputedStyle(box);
+                    const pad = {{l: b.left + parseFloat(cs.borderLeftWidth),
+                                 r: b.right - parseFloat(cs.borderRightWidth),
+                                 t: b.top + parseFloat(cs.borderTopWidth),
+                                 b: b.bottom - parseFloat(cs.borderBottomWidth)}};
+                    const scrollers = [];
+                    for (const e of box.querySelectorAll('*')) {{
+                      const s = getComputedStyle(e);
+                      if (!/auto|scroll/.test(s.overflowY + s.overflowX)) continue;
+                      if (e.scrollHeight <= e.clientHeight &&
+                          e.scrollWidth <= e.clientWidth) continue;
+                      const r = e.getBoundingClientRect();
+                      scrollers.push({{
+                        el: e.tagName + '.' + (e.className||'').toString().slice(0,20),
+                        inside: r.left >= pad.l - 1 && r.right <= pad.r + 1 &&
+                                r.top >= pad.t - 1 && r.bottom <= pad.b + 1,
+                        gutter: Math.round(e.offsetWidth - e.clientWidth),
+                        box: {{l: Math.round(r.left), r: Math.round(r.right),
+                              t: Math.round(r.top), b: Math.round(r.bottom)}}}});
+                    }}
+                    return {{scrollers, pad: {{l: Math.round(pad.l), r: Math.round(pad.r),
+                             t: Math.round(pad.t), b: Math.round(pad.b)}}}};""")
+                self.close_region(closer)
+                self.assertEqual(
+                    len(out["scrollers"]), 1,
+                    f"{rid} has {len(out['scrollers'])} scrolling boxes, not one: "
+                    f"{out['scrollers']}")
+                one = out["scrollers"][0]
+                self.assertTrue(
+                    one["inside"],
+                    f"{rid} scrolls in {one['el']} at {one['box']}, which is not "
+                    f"inside its own padding box {out['pad']} - so its scrollbar "
+                    f"and its clip boundary are not where its edge is")
+                self.assertGreater(
+                    one["gutter"], 0,
+                    f"{rid} reserves no room for a scrollbar: an overlay bar "
+                    f"appears only once you are already scrolling")
+
+    def test_a_scrollbar_looks_like_a_scrollbar(self):
+        """Read off a SCREENSHOT, because nothing else can see this.
+
+        The gutter was 6px with a transparent track and an --edge-hi thumb -
+        1.00:1 against the panel border it sat one pixel inside. Sampled
+        down the strip, every pixel at the middle and bottom of the panel
+        was (35,42,53): the panel's own background. Geometrically perfect,
+        invisible, and the content below the fold read as clipped."""
+        rid, opener, closer = self.REGIONS[0]
+        self.at_depth(1200)
+        self.open_region(rid, opener)
+        geo = self.js(f"""
+            const box = document.getElementById('{rid}');
+            const b = [...box.querySelectorAll('*')].find(e =>
+              /auto|scroll/.test(getComputedStyle(e).overflowY) &&
+              e.scrollHeight > e.clientHeight);
+            const r = b.getBoundingClientRect();
+            const bg = getComputedStyle(box).backgroundColor;
+            const edge = getComputedStyle(box).borderRightColor;
+            return {{right: r.right, top: r.top, bottom: r.bottom,
+                     gutter: b.offsetWidth - b.clientWidth,
+                     bg, edge, dpr: window.devicePixelRatio}};""")
+        _, _, rows = self.screenshot()
+        self.close_region(closer)
+        d = geo["dpr"]
+        rgb = lambda css: tuple(int(v) for v in
+                                re.findall(r"\d+", css)[:3])
+        background, border = rgb(geo["bg"]), rgb(geo["edge"])
+        x0 = int(geo["right"] * d) - int(geo["gutter"] * d)
+        x1 = int(geo["right"] * d) - 1
+        self.assertGreater(x1 - x0, 2, "no gutter to sample")
+        samples = []
+        for frac in (0.15, 0.5, 0.85):
+            y = int((geo["top"] + (geo["bottom"] - geo["top"]) * frac) * d)
+            samples.append([rows[y][x] for x in range(x0, x1)])
+        floor(self, samples, "sampled heights", 3)
+        # Somewhere down the strip there must be something that is not the
+        # panel: a thumb, a track, anything a person could aim at.
+        distinct = {px for row in samples for px in row} - {background}
+        self.assertTrue(
+            distinct,
+            f"every pixel of the {geo['gutter']}px scroll strip is "
+            f"{background}, the panel's own background - there is nothing "
+            f"on screen to say this region scrolls")
+        # And it must not read as a thicker border.
+        self.assertNotEqual(
+            distinct, {border},
+            f"the only thing drawn in the scroll strip is {border}, the same "
+            f"colour as the border it sits against")
+        # The track is the part that is always there. Every sampled height
+        # must carry something, not just the one the thumb happens to be at.
+        blank = [i for i, row in enumerate(samples)
+                 if not (set(row) - {background})]
+        self.assertEqual(
+            blank, [],
+            f"heights {blank} of the scroll strip are pure background: the "
+            f"track is invisible, so only a short thumb is ever on screen")
+
+    def test_no_two_regions_of_the_page_overlap(self):
+        """The doubled-rail half of the screenshot. The panel stops exactly
+        where the rail starts and both are --raised, so the two read as one
+        widened rail unless the panel carries its own edge."""
+        self.at_depth(1200)
+        self.open_region("fpanel", "document.getElementById('fopen').click();")
+        out = self.js("""
+            // Pairs INVOLVING THE PANEL only. The rail scrolling under the
+            // sticky masthead is the design, not a collision; the panel
+            // floating into either of them is the defect.
+            const named = {panel: document.getElementById('fpanel'),
+                           rail: document.querySelector('.rail'),
+                           masthead: document.getElementById('masthead')};
+            const r = {};
+            for (const k in named) {
+              const b = named[k].getBoundingClientRect();
+              r[k] = {t: b.top, b: b.bottom, l: b.left, r: b.right};
+            }
+            const over = [];
+            const keys = Object.keys(r);
+            for (let i = 0; i < keys.length; i++)
+              for (let j = i + 1; j < keys.length; j++) {
+                if (keys[i] !== 'panel' && keys[j] !== 'panel') continue;
+                const a = r[keys[i]], c = r[keys[j]];
+                const w = Math.min(a.r, c.r) - Math.max(a.l, c.l);
+                const h = Math.min(a.b, c.b) - Math.max(a.t, c.t);
+                if (w > 1 && h > 1)
+                  over.push(keys[i] + ' x ' + keys[j] + ' = ' +
+                            Math.round(w) + 'x' + Math.round(h) + 'px');
+              }
+            const p = document.getElementById('fpanel');
+            return {over, edge: getComputedStyle(p).borderRightWidth,
+                    colour: getComputedStyle(p).borderRightColor,
+                    railBg: getComputedStyle(document.querySelector('.rail')).backgroundColor,
+                    panelBg: getComputedStyle(p).backgroundColor};""")
+        self.close_region("document.getElementById('fclose').click();")
+        self.assertEqual(out["over"], [], f"regions overlap: {out['over']}")
+        # Abutting two same-coloured surfaces with no edge is the defect,
+        # so the edge is required only while the colours match.
+        if out["railBg"] == out["panelBg"]:
+            self.assertNotEqual(
+                out["edge"], "0px",
+                "the panel and the rail are the same colour and share an "
+                "edge with no border: they read as one region")
+
+
+class CoverageDepthTests(TempDB):
+    """A month that looks quiet because five sources were not being
+    collected yet is misinformation, of the same class as a quiet feed
+    looking broken.
+
+    Split by WHAT YOU CAN DO, not by cause. Time never fills a gap in the
+    past - only backfilling does, and only where the source answers for
+    old dates.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from macrowire.web import queries
+        self.q = queries
+        self.sources = list(SOURCES.values())
+        self.plant()
+
+    def plant(self):
+        """One item per source, at a known earliest date."""
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        self.earliest = {}
+        for n, src in enumerate(self.sources):
+            sid = db.upsert_source(self.conn, src.name, src.kind, src.config)
+            # Spread them: some inside a 30-day window, some far outside.
+            age = 5 + n * 25
+            when = now - timedelta(days=age)
+            self.earliest[src.name] = when.date().isoformat()
+            for k in range(3):
+                self.conn.execute(
+                    """INSERT INTO items (id, source_id, title, url, fetched_at,
+                                          published_at)
+                       VALUES (?, ?, ?, 'http://x', ?, ?)""",
+                    (f"c{n}_{k}", sid, f"{src.name} {k}", now.isoformat(),
+                     (when + timedelta(hours=k)).isoformat()))
+            db.log_fetch(self.conn, src.name, status=db.STATUS_OK)
+        self.conn.commit()
+        seeded(self, self.conn, items=40, sources=10)
+
+    # --- the window rule you asked me to confirm -------------------------
+
+    def test_a_source_covering_the_whole_window_says_nothing(self):
+        """Reading a 30-day window, a source whose coverage starts three
+        years ago has no boundary and no summary line. It is complete."""
+        cov = self.q.coverage(self.conn, self.sources, 30)
+        inside = {b["source"] for b in cov["boundaries"]}
+        for name, earliest in self.earliest.items():
+            with self.subTest(source=name):
+                if earliest <= cov["window_start"]:
+                    self.assertNotIn(name, inside,
+                                     f"{name} covers the window and still "
+                                     f"produced a boundary")
+
+    def test_only_coverage_beginning_inside_the_window_appears(self):
+        for days in (7, 30, 180, 365):
+            cov = self.q.coverage(self.conn, self.sources, days)
+            with self.subTest(days=days):
+                for b in cov["boundaries"]:
+                    self.assertGreater(b["earliest"], cov["window_start"])
+
+    def test_a_wider_window_never_shows_fewer_boundaries(self):
+        counts = [len(self.q.coverage(self.conn, self.sources, d)["boundaries"])
+                  for d in (7, 30, 180, 365)]
+        self.assertEqual(counts, sorted(counts),
+                         f"boundary count is not monotonic in window: {counts}")
+
+    def test_complete_plus_boundaries_accounts_for_every_source(self):
+        cov = self.q.coverage(self.conn, self.sources, 365)
+        self.assertEqual(cov["complete"] + len(cov["boundaries"]), cov["total"])
+
+    # --- one boundary per source, not one per day ------------------------
+
+    def test_each_source_produces_exactly_one_boundary(self):
+        """Reading six months back should cross five boundaries, not five
+        hundred lines."""
+        cov = self.q.coverage(self.conn, self.sources, 365)
+        names = [b["source"] for b in cov["boundaries"]]
+        floor(self, names, "boundaries", 3)
+        self.assertEqual(len(names), len(set(names)),
+                         f"a source produced more than one boundary: {names}")
+
+    def test_the_renderer_emits_one_row_per_boundary(self):
+        js = read_code(ROOT / "macrowire/web/static/app.js")
+        # shift() consumes each boundary exactly once as the rows are walked
+        self.assertIn("pending.shift()", js)
+        self.assertNotIn("boundaries.forEach", js)
+
+    # --- the four states -------------------------------------------------
+
+    def test_the_four_states_are_distinguishable(self):
+        from macrowire.web.queries import (COVERAGE_LOST, COVERAGE_NEVER,
+                                           COVERAGE_RECOVERABLE, COVERAGE_UNWIRED)
+        states = {COVERAGE_RECOVERABLE, COVERAGE_UNWIRED, COVERAGE_LOST,
+                  COVERAGE_NEVER}
+        self.assertEqual(len(states), 4)
+        cov = self.q.coverage(self.conn, self.sources, 365)
+        for b in floor(self, cov["boundaries"], "boundaries", 3):
+            with self.subTest(source=b["source"]):
+                self.assertIn(b["state"], states)
+
+    def test_each_state_has_its_own_wording_in_every_locale(self):
+        from macrowire import i18n
+        for locale in floor(self, i18n.available(), "locale files", 2):
+            t = i18n.Translator(locale)
+            titles, bodies = set(), set()
+            for state in ("recoverable", "unwired", "lost", "never"):
+                titles.add(t(f"coverage.{state}_title", source="X"))
+                bodies.add(t(f"coverage.{state}_body",
+                             date="D", first="F", command="C"))
+            with self.subTest(locale=locale):
+                # recoverable and unwired share a title on purpose - both
+                # mean "not collected" - but their BODIES must differ,
+                # because only one of them has an action.
+                self.assertEqual(len(bodies), 4,
+                                 f"{locale}: four states, {len(bodies)} explanations")
+
+    def test_only_the_recoverable_state_offers_a_command(self):
+        """An action you cannot take is worse than saying it is gone."""
+        from macrowire import i18n
+        t = i18n.Translator("en")
+        self.assertIn("{command}", i18n.load("en")["coverage"]["recoverable_body"])
+        for state in ("unwired", "lost", "never"):
+            with self.subTest(state=state):
+                self.assertNotIn("{command}",
+                                 i18n.load("en")["coverage"][f"{state}_body"])
+
+    def test_the_permanent_states_say_so_without_a_second_sentence(self):
+        from macrowire import i18n
+        t = i18n.Translator("en")
+        self.assertIn("ever", t("coverage.never_title", source="X"))
+        self.assertIn("cannot be recovered", t("coverage.lost_body",
+                                               date="D", first="F"))
+
+    # --- measure, never warn unconditionally -----------------------------
+
+    def test_a_fully_covered_window_says_so_rather_than_staying_silent(self):
+        from macrowire import i18n
+        js = read_code(ROOT / "macrowire/web/static/app.js")
+        self.assertIn("coverage.end_complete", js)
+        line = i18n.Translator("en")("coverage.end_complete", n=16)
+        self.assertIn("16", line)
+        self.assertIn("complete", line)
+
+    def test_a_source_with_nothing_collected_is_not_reported_as_a_gap(self):
+        """No rows at all is 'not polled yet', which the health panel
+        already says. It is not a coverage boundary."""
+        conn = self.conn
+        conn.execute("DELETE FROM items")
+        conn.commit()
+        cov = self.q.coverage(conn, self.sources, 365)
+        self.assertEqual(cov["boundaries"], [])
+
+    # --- the CLI half ----------------------------------------------------
+
+    def test_status_reports_where_the_record_begins(self):
+        from macrowire import wire
+        src = SOURCES["rba_media_releases"]
+        st = wire.source_status(self.conn, src)
+        self.assertIn("earliest", st)
+        self.assertIn("coverage_state", st)
+        self.assertEqual(st["coverage_state"], "never")
+        cli = read_code(ROOT / "macrowire/__main__.py")
+        self.assertIn("cli.status.coverage_note", cli)
+
+    def test_the_state_matches_what_the_source_can_actually_do(self):
+        from macrowire import wire
+        expected = {"rba_media_releases": "never", "cftc_cot": "recoverable",
+                    "sec_edgar": "unwired", "hkma_press": "lost"}
+        for name, want in expected.items():
+            with self.subTest(source=name):
+                st = wire.source_status(self.conn, SOURCES[name])
+                self.assertEqual(st["coverage_state"], want)

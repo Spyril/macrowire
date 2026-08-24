@@ -129,7 +129,11 @@ class Translator:
         self.catalogue = load(locale)
         self.fallback = load(DEFAULT_LOCALE) if locale != DEFAULT_LOCALE else self.catalogue
 
-    def __call__(self, key: str, **fields) -> str:
+    def __call__(self, key: str, /, **fields) -> str:
+        # `key` is POSITIONAL-ONLY. Without the slash, a catalogue string
+        # with a {key} placeholder cannot be rendered - t("x", key="y")
+        # collides with this parameter and raises. Same for {self}. One
+        # character, and it removes the whole class of collision.
         text = _lookup(self.catalogue, key)
         if text is None:
             text = _lookup(self.fallback, key)
@@ -160,10 +164,10 @@ class Translator:
         fallback decision into JavaScript, where a missing key becomes an
         `undefined` on screen. Resolve it here, where it can be logged.
         """
-        flat = flatten(self.fallback)
-        flat.update(flatten(self.catalogue))
-        skip = ("_meta.",) + tuple(f"{name}." for name in exclude)
-        flat = {k: v for k, v in flat.items() if not k.startswith(skip)}
+        flat = renderable(self.fallback)
+        flat.update(renderable(self.catalogue))
+        skip = tuple(f"{name}." for name in exclude)
+        flat = {k: v for k, v in flat.items() if not skip or not k.startswith(skip)}
         out: dict = {}
         for path, text in flat.items():
             node = out
@@ -172,6 +176,21 @@ class Translator:
                 node = node.setdefault(part, {})
             node[parts[-1]] = text
         return out
+
+
+def renderable(catalogue: dict) -> dict[str, str]:
+    """Only the strings that reach a screen.
+
+    A key whose path contains a segment starting with `_` is DOCUMENTATION
+    for whoever is translating - `_meta.name`, `rail._note_source_facts` -
+    and is never rendered. The distinction has to exist because the notes
+    quote the very things they warn against: the note beside the as-of keys
+    spells out "4pm AEST" so a translator knows not to write it, and the
+    test that forbids that string in a catalogue would otherwise fire on
+    the warning itself.
+    """
+    return {k: v for k, v in flatten(catalogue).items()
+            if not any(part.startswith("_") for part in k.split("."))}
 
 
 def flatten(catalogue: dict, prefix: str = "") -> dict[str, str]:

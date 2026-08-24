@@ -18,7 +18,32 @@ from .config import (load_backup_settings, load_export_settings, load_locale,
                      load_sources, load_web_settings)
 from .errors import BackfillInterrupted, ConfigError, MacroWireError
 
-t = i18n.Translator(load_locale())
+def _cli_locale() -> str:
+    """The stored preference, or the config value.
+
+    Bound once at import, which is safe in a CLI and only in a CLI: the
+    process reads and exits, so there is no window for the value to change
+    underneath it. A long-running server must not do this - see config.py.
+
+    Defensive because the database may not exist yet: `macrowire --help`
+    before a first fetch must not fail on a missing table.
+    """
+    try:
+        conn = db.connect()
+    except Exception:
+        return load_locale()
+    try:
+        row = conn.execute(
+            "SELECT value FROM preferences WHERE user_id = ? AND key = 'locale'",
+            (db.LOCAL_USER_ID,)).fetchone()
+        return row[0] if row else load_locale()
+    except Exception:
+        return load_locale()
+    finally:
+        conn.close()
+
+
+t = i18n.Translator(_cli_locale())
 
 
 def _width(text: str) -> int:
@@ -34,6 +59,20 @@ def _width(text: str) -> int:
 
 def _pad(text: str, width: int) -> str:
     return text + " " * max(width - _width(text), 0)
+
+
+def _status_col() -> int:
+    """Width of the fetch status column, measured rather than assumed.
+
+    It was a literal 8 at ten call sites. `no change` was already 9 and
+    无新内容 is 8, so the column was ragged in both locales before
+    `within interval` at 15 put a whole row seven columns right of its
+    neighbours. Same lesson cmd_status learned for its label column: a
+    translated word has no width you can write down.
+    """
+    return max(_width(t(key)) for key in (
+        "cli.fetch.ok", "cli.fetch.no_change", "cli.fetch.throttled",
+        "cli.fetch.disabled", "cli.fetch.revised", "cli.backup.failed")) + 1
 
 
 def _duration(seconds: float | None) -> str:
@@ -71,13 +110,13 @@ def cmd_fetch(args) -> int:
             # Two different skips, and conflating them is what produced a
             # false alarm: one reached the source, the other never tried.
             if result.get("kind") == "disabled":
-                print(f"  {result['source']:<24} {_pad(t('cli.fetch.disabled'), 8)} "
+                print(f"  {result['source']:<24} {_pad(t('cli.fetch.disabled'), _status_col())} "
                       f"({t('cli.fetch.disabled_detail')})")
             elif result.get("kind") == "no_change":
-                print(f"  {result['source']:<24} {_pad(t('cli.fetch.no_change'), 8)} "
+                print(f"  {result['source']:<24} {_pad(t('cli.fetch.no_change'), _status_col())} "
                       f"({result['reason']})")
             else:
-                print(f"  {result['source']:<24} {_pad(t('cli.fetch.throttled'), 8)} "
+                print(f"  {result['source']:<24} {_pad(t('cli.fetch.throttled'), _status_col())} "
                       f"({t('cli.fetch.throttled_detail', seconds=result['wait_seconds'])})")
             continue
         parts = [t("cli.fetch.entries", n=result["entries"])]
@@ -87,9 +126,9 @@ def cmd_fetch(args) -> int:
             parts.append(t("cli.fetch.new_observations", n=result["new_observations"]))
         if not result["new_items"] and not result["new_observations"]:
             parts.append(t("cli.fetch.nothing_new"))
-        print(f"  {result['source']:<24} {_pad(t('cli.fetch.ok'), 8)} ({', '.join(parts)})")
+        print(f"  {result['source']:<24} {_pad(t('cli.fetch.ok'), _status_col())} ({', '.join(parts)})")
         for note in result["revisions"]:
-            print(f"  {'':<24} {_pad(t('cli.fetch.revised'), 8)} {note}")
+            print(f"  {'':<24} {_pad(t('cli.fetch.revised'), _status_col())} {note}")
 
     # MEASURE. A cycle that contacted nothing must say so: without this the
     # output of "everything switched off" is indistinguishable from the
@@ -183,14 +222,14 @@ def _maybe_export(conn, sources, results) -> None:
     try:
         settings = load_export_settings()
     except Exception as exc:
-        print(f"  {'export':<24} {_pad(t('cli.backup.failed'), 8)} ({exc})", file=sys.stderr)
+        print(f"  {'export':<24} {_pad(t('cli.backup.failed'), _status_col())} ({exc})", file=sys.stderr)
         return
     if not settings["auto"]:
         return
     try:
         result = export_mod.write(conn, sources, settings["path"])
     except Exception as exc:
-        print(f"  {'export':<24} {_pad(t('cli.backup.failed'), 8)} ({exc})", file=sys.stderr)
+        print(f"  {'export':<24} {_pad(t('cli.backup.failed'), _status_col())} ({exc})", file=sys.stderr)
         return
     if result["unchanged"]:
         return
@@ -198,7 +237,7 @@ def _maybe_export(conn, sources, results) -> None:
     detail = t("cli.fetch.export_ok", items=result["counts"]["item"],
                observations=result["counts"]["observation"],
                path=settings["path"], where=where)
-    print(f"  {'export':<24} {_pad(t('cli.fetch.ok'), 8)} ({detail})")
+    print(f"  {'export':<24} {_pad(t('cli.fetch.ok'), _status_col())} ({detail})")
 
 
 def _maybe_backup(conn, stored_something: bool) -> None:
@@ -221,9 +260,9 @@ def _maybe_backup(conn, stored_something: bool) -> None:
                                    directory=settings["path"])
         detail = t("cli.fetch.backup_ok", name=result["path"].name,
                    mb=f"{result['bytes']/1024/1024:.1f}")
-        print(f"  {'backup':<24} {_pad(t('cli.fetch.ok'), 8)} ({detail})")
+        print(f"  {'backup':<24} {_pad(t('cli.fetch.ok'), _status_col())} ({detail})")
     except Exception as exc:
-        print(f"  {'backup':<24} {_pad(t('cli.backup.failed'), 8)} ({exc})", file=sys.stderr)
+        print(f"  {'backup':<24} {_pad(t('cli.backup.failed'), _status_col())} ({exc})", file=sys.stderr)
 
 
 def cmd_backup(args) -> int:
@@ -568,6 +607,38 @@ def cmd_watchlist(args) -> int:
     return 1
 
 
+def cmd_prefs(args) -> int:
+    """Viewer preferences and which level is answering for each.
+
+    No hidden state: everything the settings panel writes is a row you can
+    read here or with SQL, and every one of them can be cleared so
+    sources.yaml applies again.
+    """
+    from . import preferences
+
+    conn = db.connect()
+    db.initialise(conn)
+    if args.clear:
+        removed = preferences.clear(conn, args.clear)
+        print(t("cli.prefs.cleared" if removed else "cli.prefs.not_set",
+                key=args.clear))
+        conn.close()
+        return 0
+
+    rows = preferences.effective(conn)
+    print(t("cli.prefs.header", user=db.LOCAL_USER_ID))
+    width = max(len(k) for k in rows)
+    for key, row in rows.items():
+        origin = (t("cli.prefs.from_pref", config=row["config_value"] or "unset")
+                  if row["source"] == "preference" else t("cli.prefs.from_config"))
+        print("  " + t("cli.prefs.row", key=_pad(key, width),
+                       value=_pad(row["value"] or "-", 22), source=origin))
+    print()
+    _wrapped(t("cli.prefs.note"))
+    conn.close()
+    return 0
+
+
 def cmd_locales(args) -> int:
     """What languages exist and how complete each one is.
 
@@ -631,7 +702,7 @@ def cmd_status(args) -> int:
     # Left-column labels are translated, so the column width is measured
     # from the widest one at runtime instead of being a literal 22.
     LABELS = ("last_contact", "last_stored", "newest_content", "stored",
-              "refetchable", "consecutive", "fx_label", "staleness",
+              "coverage", "refetchable", "consecutive", "fx_label", "staleness",
               "superseded", "revisions", "last_error")
     label = {k: t(f"cli.status.{k}") for k in LABELS}
     col = max(_width(v) for v in label.values()) + 1
@@ -682,6 +753,10 @@ def cmd_status(args) -> int:
               + t("cli.status.stored_line", counts=counts,
                   raw=t("cli.status.raw_payloads", n=row["raw_rows"])))
 
+        if row["earliest"]:
+            print(f"  {_pad(label['coverage'], col)}: "
+                  + t("cli.status.coverage_note", date=row["earliest"],
+                      note=t(f"coverage.note_{row['coverage_state']}")))
         risk = t({"NO": "cli.status.risk_no",
                   "PARTIAL": "cli.status.risk_partial",
                   "YES": "cli.status.risk_yes",
@@ -808,6 +883,10 @@ def main(argv=None) -> int:
     wsub.add_parser("list", help=t("cli.help.watchlist_list"))
     wsub.add_parser("refresh", help=t("cli.help.watchlist_refresh"))
     wlp.set_defaults(func=cmd_watchlist)
+
+    pref = subparsers.add_parser("prefs", help=t("cli.help.prefs"))
+    pref.add_argument("--clear", metavar="KEY", help=t("cli.help.prefs_clear"))
+    pref.set_defaults(func=cmd_prefs)
 
     loc = subparsers.add_parser("locales", help=t("cli.help.locales"))
     loc.add_argument("--all", action="store_true", help=t("cli.help.locales_all"))

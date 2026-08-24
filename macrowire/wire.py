@@ -535,6 +535,23 @@ def source_status(conn: sqlite3.Connection, source: Source) -> dict:
     # string. Measured from the ACTUAL rows, never assumed.
     path_failures = sum(kind_counts.get(k, 0) for k in db.PATH_KINDS)
 
+    earliest_held = scalar(
+        """SELECT MIN(date(published_at)) FROM items WHERE source_id = ?""",
+        (source_id,)) if source_id else None
+    if earliest_held is None and source_id:
+        earliest_held = scalar(
+            "SELECT MIN(period) FROM observations WHERE source_id = ?", (source_id,))
+    _cfg = source.config or {}
+    _backfillable = bool(_cfg.get("backfill_start") or _cfg.get("backfill_url")
+                         or _cfg.get("backfill_page_size")
+                         or _cfg.get("backfill_per_date"))
+    if source.archive == "none":
+        coverage_state = "never"
+    elif source.archive == "queryable":
+        coverage_state = "recoverable" if _backfillable else "unwired"
+    else:
+        coverage_state = "lost"
+
     last_error_row = conn.execute(
         """SELECT id, timestamp, error FROM fetch_log
            WHERE source = ? AND status = 'error'
@@ -657,6 +674,11 @@ def source_status(conn: sqlite3.Connection, source: Source) -> dict:
         "archive": source.archive,
         "replaceable": replaceable,
         "at_risk": at_risk,
+        # WHERE THE RECORD BEGINS, and whether that is fixable. `re-fetchable`
+        # said YES/NO without ever saying FROM WHEN, so a source with two
+        # days of history and one with forty years read identically.
+        "earliest": earliest_held,
+        "coverage_state": coverage_state,
         "staleness_days": source.staleness_days,
         # A disabled source is never stale. Nothing is polling it, so "has
         # published nothing new" would be a fact about this tool, not about

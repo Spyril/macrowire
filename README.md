@@ -1,5 +1,11 @@
 # MacroWire
 
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
+`SPDX-License-Identifier: AGPL-3.0-or-later` — see [Licence](#licence).
+**The licence covers the CODE. It does not cover the data the tool
+collects**, which belongs to each publisher under their own terms.
+
 A personal news wire for macro and market announcements. It polls primary
 sources — central banks, regulators, exchange company announcements — and
 keeps every item in a local SQLite database.
@@ -385,9 +391,10 @@ is not polled, and the two exchanges with explicit prohibitions are not
 polled either.
 
 That is a deliberate position, not an accident of what was easy. It also
-means the code could be made public without a licensing problem, though
-the *collected data* remains subject to whatever each publisher says about
-it, and this repository is still a single-user personal tool.
+means the code could be made public without a licensing problem — and it
+now is, under AGPL-3.0-or-later. The *collected data* is a separate
+question with a different answer; see [Licence](#licence) below, which
+states the split explicitly.
 
 ### Editing the watchlist: CLI or UI, one code path
 
@@ -1564,6 +1571,38 @@ an interpretation, and storing one as the record loses the original.
 Nothing here is machine-translated. A wrong word in a financial interface
 reads as sloppiness, and two good locales beat six approximate ones.
 
+### The standard is immediate comprehension, not dictionary accuracy
+
+**A locale file is judged on whether a native reader understands it at a
+glance — not on whether each word is a correct dictionary match.** Those
+are different tests, and a translation can pass the second while failing
+the first.
+
+Four ways it happens, all found in this project's own zh-CN:
+
+- **Technical register the English did not have.** `polled` became 轮询,
+  the correct term for polling and engineering jargon a trader would never
+  use. It is 已检查 now. The English is plain, so the Chinese must be.
+- **A word that argues with its own explanation.** `stale` became 陈旧,
+  which carries "obsolete, decayed" — while the explanation beneath it
+  says the source is *usually just quiet*. 长期无更新 states the fact
+  without the verdict.
+- **English structure carried across.** 此来源从未被抓取过 is an English
+  passive wearing Chinese characters; 这个来源还没有抓取过 is how the
+  sentence is actually said.
+- **Segmentation.** Chinese has no spaces, so two characters meeting at a
+  clause boundary can read as a different word entirely:
+  同一**行为**「或」 parses as 行为 (*behaviour*) before it parses as
+  行 + 为. 行内取或，行间取且 cannot be misread.
+
+**And the converse: some terms must stay technical.** 中间价, 成交,
+净额, 非商业净持仓, 港股通 are what the instruments are actually called.
+Simplifying them would be wrong, not friendlier — a trader knows them and
+a plain-language substitute would be less precise, not more readable.
+
+The test for every string is the same: *would someone who reads this
+language natively, and trades, understand it without stopping?*
+
 ## Testing
 
 ```bash
@@ -2007,3 +2046,62 @@ gone.
 The split is one list, `db.PATH_KINDS`, so "which kinds mean unreachable"
 has exactly one definition. Four separate false alarms came from that
 kind of fact being written down in more than one place.
+
+## Licence
+
+**Code: `AGPL-3.0-or-later`.** Full text in [LICENSE](LICENSE).
+
+### In plain language
+
+- **Free to use, read, modify and self-host.** Run it on your own machine
+  for whatever you like.
+- **If you modify it and run it as a network service that other people
+  use**, the AGPL asks you to offer those users the source of your
+  modified version. That is the clause that distinguishes the AGPL from
+  the ordinary GPL, and it is the reason for choosing it here: this is a
+  thing you run as a server, so "distribution" would otherwise never be
+  triggered and improvements could disappear into a hosted fork.
+- **Running an unmodified copy privately triggers nothing.** Neither does
+  modifying it for yourself and not letting anyone else use it. The
+  obligation attaches to *modified* code serving *other people over a
+  network*.
+- **Derived works inherit the licence.** That is the trade.
+
+*This is a plain-language summary for orientation and it is not legal
+advice. Where it and [LICENSE](LICENSE) disagree, the licence text is what
+holds — and if the answer matters to you commercially, ask someone
+qualified rather than reading a README.*
+
+### The licence covers the code. It does not cover the data.
+
+This is the distinction most likely to be got wrong, so it is stated
+flatly:
+
+| | what it is | who governs it |
+|---|---|---|
+| **The code** | everything in this repository — parsers, schema, interface, tests | AGPL-3.0-or-later, this project |
+| **The collected data** | what lands in `data/macrowire.db` and `export/` — RBA releases, NBS statistics, SEC filings, CFETS fixes, CNINFO announcements, SSE Connect turnover | **each publisher, under their own terms.** Not this project's to license. |
+
+Cloning this repository gives you the code and **no data at all** — the
+database is gitignored and every install builds its own history by
+polling. So the question rarely arises by accident. It arises when someone
+exports rows and passes them on.
+
+Nothing in the AGPL grants you any right to redistribute what the tool
+fetched. Some of it is straightforward: **SEC EDGAR is US federal work and
+public domain.** Some of it is not, and each publisher's terms are
+recorded in [The licensing position, stated plainly](#the-licensing-position-stated-plainly)
+and [Chinese exchanges: what the terms actually say](#chinese-exchanges-what-the-terms-actually-say),
+including the three sources that are deliberately **not polled** because
+their terms prohibit it — PBoC, ASX and HKEX.
+
+Two practical consequences:
+
+- **Publishing a fork is a code question.** Comply with the AGPL and you
+  are done.
+- **Publishing collected rows is a data question, and a different one.**
+  The AGPL says nothing about it. Check the publisher.
+
+The `export` command exists to move irreplaceable rows off one disk, not
+to prepare them for redistribution — and it writes a file to a path,
+which is where its job ends.
