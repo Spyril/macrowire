@@ -32,6 +32,18 @@ from ..errors import MalformedEntryError
 from .base import ParsedFeed, parse_document, rfc822_to_utc, text
 
 
+def _links_identify_entries(entries) -> bool:
+    """Whether <link> tells this feed's entries apart.
+
+    Asked of the WHOLE feed, once, rather than per entry. A per-entry rule
+    would give an entry the bare link on a fetch where its link happened to
+    be unique and a composite on the next one, and the id would move under
+    a row that had not changed.
+    """
+    links = [text(e, "link") for e in entries if not text(e, "guid")]
+    return len(links) == len(set(links))
+
+
 def parse(source, body: str) -> ParsedFeed:
     _root, entries = parse_document(source.name, body)
     result = ParsedFeed()
@@ -40,6 +52,26 @@ def parse(source, body: str) -> ParsedFeed:
     # Only set where a source declares it. Absent, a naive timestamp raises.
     assume_tz = source.config.get("timezone")
 
+    # SOME FEEDS HAVE NEITHER A guid NOR A PER-ENTRY link. TreasuryDirect's
+    # auction feeds carry no <guid> at all and only two distinct <link>
+    # values across 22 entries - every announcement points at the same
+    # press page - so `guid or link` gave all of them ONE external_id.
+    #
+    # Storage survives that, because content_hash mixes in title and
+    # published_at, so 22 entries still store as 22 rows. What does not
+    # survive is the truth: source_status counts revision chains with
+    # GROUP BY external_id HAVING n > 1, and would have reported one chain
+    # with 21 superseded versions. Nothing was superseded. The fix belongs
+    # here, where the wrong id is minted, and not in the reader.
+    #
+    # ONLY WHERE THE LINK IS NOT ENOUGH. Every feed polled today either
+    # carries a guid or has unique links - nbs_releases has no guid across
+    # 500 entries and 501 distinct links - so all of them keep the exact
+    # ids they already have in the database. Changing the derivation for
+    # every no-guid feed would have changed 502 stored NBS ids and
+    # re-inserted every one of them as a new row on the next fetch.
+    composite = not _links_identify_entries(entries)
+
     for position, entry in enumerate(entries):
         title = text(entry, "title")
         link = text(entry, "link")
@@ -47,7 +79,17 @@ def parse(source, body: str) -> ParsedFeed:
         # <guid> is the preferred identity, but it is optional in RSS 2.0
         # and HKMA emits it empty on every entry. The link is the only
         # field present across all six feeds.
-        external_id = text(entry, "guid") or link
+        guid = text(entry, "guid")
+        external_id = guid or link
+        if not guid and composite and link:
+            # The fields that actually identify the entry: where it points,
+            # what it is called, and when it was published. Title alone
+            # repeats - "Treasury announces 13-Week Bill" comes round every
+            # week - and pubDate alone collides when two auctions are
+            # announced in the same second, which this feed does. Together
+            # they are unique, and they are all drawn from the entry, so a
+            # re-fetch of an unchanged entry mints the identical id.
+            external_id = "\n".join((link, title or "", text(entry, "pubDate") or ""))
 
         if not title:
             raise MalformedEntryError(

@@ -406,6 +406,150 @@ sources:
       announcement_type: Speech
       staleness_days: null
 
+  # --- US Treasury: the ISSUER --------------------------------------------
+  # The other four US sources are the central bank (Fed), the securities
+  # regulator (SEC) and the futures regulator (CFTC). None of them carries
+  # issuance, buybacks, refunding or auction results. Treasury does, and the
+  # two feeds below are where it publishes them.
+  #
+  # THE ACCEPT HEADER IS LOAD-BEARING. Both endpoints answer 406 Not
+  # Acceptable to `Accept: */*` - httpx's default - and to application/xml
+  # and text/xml. They serve only on `application/rss+xml`, which is the
+  # first type in the project's own default Accept header, so they work
+  # unchanged. Anything that rewrites that header breaks both feeds, and
+  # the failure is a 406 rather than a parse error.
+  #
+  # NO fx VOCABULARY on either. Every entry is issuance by construction -
+  # a term list could only ever exclude something that belongs.
+  #
+  # TREASURY PRESS RELEASES ARE NOT COVERED HERE, and cannot be with the
+  # current parsers:
+  #   - home.treasury.gov serves NO press-release RSS. The news page offers
+  #     a GovDelivery email subscription and nothing machine-readable;
+  #     /rss/press.xml, /news/press-releases/feed, /news/feed and /jsonapi
+  #     are all 404.
+  #   - www.treasury.gov/rss/press.xml IS A SOFT 404. It answers 200 with
+  #     Content-Type text/html and returns the homepage - 78KB of it. A
+  #     check that looks at the status code registers this as a working
+  #     feed. It is not one, and adding it would have polled the homepage
+  #     forever while reporting healthy.
+  #   - The one real feed, home.treasury.gov/rss.xml, is site-wide: ten
+  #     entries spanning 2025-10-30 to 2026-07-22, all SSBCI FAQs, state
+  #     program summaries and a careers slideshow. Zero press releases.
+  # So the 19 Aug 2026 long-end buyback announcement is NOT captured by
+  # these two feeds. It exists only at /news/press-releases/sb0607/, in a
+  # ten-item HTML list whose ?page= parameter is not honoured. Reaching it
+  # needs an HTML parser, which is a separate decision.
+
+  # THE ISSUANCE CALENDAR: what is being sold, in what size, and when.
+  # ~22 entries over ~11 days.
+  - name: treasury_auction_announcements
+    enabled: true
+    kind: rss_news
+    parser: rss_news
+    url: https://www.treasurydirect.gov/TA_WS/securities/announced/rss
+    config:
+      institution: UST
+      jurisdiction: US
+      fx: true
+      importance: 2
+      # Scattered within the business day: measured 15:01, 15:33 and 17:03
+      # on a single day. No fixed mark.
+      timing:
+        class: scattered
+      # ~20-entry rolling window. Anything older than about two weeks is
+      # NOT re-fetchable from this endpoint - there is no paging and no
+      # archive behind it, so a gap in polling is a permanent gap.
+      archive: rolling
+      # No <guid>, and every entry links to the same press page, so
+      # identity comes from link + title + pubDate. See rss_news.
+      # Titles recur weekly ("Treasury announces 13-Week Bill"), which is
+      # what collapse_repeats is for.
+      collapse_repeats: true
+      # NO announcement_type default here, and none is needed: the feed
+      # classifies its own entries with <category domain="Note">Note</...>,
+      # and classify() takes the feed's word over anything configured. The
+      # types that arrive are the instrument - Bill, Note, Bond, TIPS, FRN -
+      # which is a better split than one flat label would have been. A
+      # fallback in this block would never once be used.
+      staleness_days: 4
+
+  # THE DEMAND READ: high yield and bid-to-cover, once each auction prices.
+  # ~21 entries over ~15 days.
+  - name: treasury_auction_results
+    enabled: true
+    kind: rss_news
+    parser: rss_news
+    url: https://www.treasurydirect.gov/TA_WS/securities/auctioned/rss
+    config:
+      institution: UST
+      jurisdiction: US
+      fx: true
+      importance: 2
+      timing:
+        class: scattered
+      # Same rolling window and the same consequence as the announcements
+      # feed: two weeks back, and no further.
+      archive: rolling
+      collapse_repeats: true
+      # Same <category domain="..."> instrument types as the announcements
+      # feed; no configured default would ever apply. See above.
+      staleness_days: 4
+
+  # THE BUYBACK PLAN: how much Treasury may repurchase, per maturity
+  # bucket, per operation. Quarterly, published as XML alongside the
+  # refunding documents.
+  #
+  # THE STABLE ALIAS, NOT THE QUARTER-STAMPED URL. The refunding page links
+  # Tentative-Buyback-ScheduleQ32026.xml; this alias serves the same file.
+  # CHECKED, NOT ASSUMED: both URLs were fetched and hashed, and the bodies
+  # are byte-identical (sha256 8bed04c54df19606…, 14234 bytes each). The
+  # alias therefore needs no editing every quarter, which the stamped URL
+  # would.
+  #
+  # WHAT THIS SOURCE DOES NOT DO. It did not carry the 19 August 2026
+  # announcement of increased nominal long-end buyback sizes, and would not
+  # have caught it. The file WAS re-uploaded that day at 15:54:55 GMT,
+  # hours after the 08:30 release - which looks exactly like the artefact
+  # you would want - and its contents did not move. Every bucket maximum is
+  # unchanged across four consecutive calendars:
+  #
+  #     bucket              Nov 2025   Feb 2026   May 2026   Aug 2026
+  #     Nominal 20Y to 30Y    $2.0B      $2.0B      $2.0B      $2.0B
+  #     Nominal 10Y to 20Y    $2.0B      $2.0B      $2.0B      $2.0B
+  #
+  # including operations scheduled after 9 September. It is here for the
+  # change that DOES reach the file: one observation per bucket per
+  # operation date, so a ceiling that moves updates in place and writes a
+  # revision, and revisions are already visible. Discretionary changes
+  # announced only by press release are a documented blind spot - see the
+  # README - and nothing configured here can close it.
+  - name: treasury_buyback_schedule
+    enabled: true
+    kind: buyback_schedule
+    parser: buyback_schedule
+    url: https://home.treasury.gov/system/files/221/Tentative-Buyback-Schedule.xml
+    config:
+      institution: UST
+      jurisdiction: US
+      fx: true
+      importance: 2
+      # Quarterly, and MEASURED rather than guessed: the calendars run
+      # Nov 2025 -> Feb 2026 -> May 2026 -> Aug 2026, about 91 days apart,
+      # and the refunding page states the next release is 4 November 2026.
+      # 100 days leaves room for a late release without crying wolf.
+      staleness_days: 100
+      # QUERYABLE, not none. The alias is replaced in place each quarter,
+      # but every past calendar stays retrievable at its quarter-stamped
+      # URL - Tentative-Buyback-ScheduleQ22026.xml, Q12026, Q42025 were all
+      # fetched successfully while surveying this source. Marking it `none`
+      # would claim these rows exist nowhere but this machine, which is
+      # false, and would pull them into the irreplaceable export alongside
+      # the RBA feeds that genuinely are.
+      archive: queryable
+      timing:
+        class: scattered
+
   # --- European Central Bank -------------------------------------------
   # From the ECB RSS directory. This is a combined feed: press releases,
   # speeches, interviews and Governing Council decisions all arrive here.

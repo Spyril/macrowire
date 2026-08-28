@@ -6,11 +6,12 @@ one line in this table.
 """
 
 from ..errors import ConfigError
-from . import (cb_news, cb_statistics, cfets_ccpr, cftc_cot, cninfo, ecb_fx,
-               rss_news, sec_edgar, sse_southbound)
+from . import (buyback_schedule, cb_news, cb_statistics, cfets_ccpr, cftc_cot,
+               cninfo, ecb_fx, rss_news, sec_edgar, sse_southbound)
 from .base import ParsedFeed
 
 PARSERS = {
+    "buyback_schedule": buyback_schedule.parse,
     "cb_news": cb_news.parse,
     "cb_statistics": cb_statistics.parse,
     "rss_news": rss_news.parse,

@@ -1,0 +1,257 @@
+<BuyBackCalendar>
+  <BuybackCalendarName>August 2026 Refunding Tentative Buyback Calendar V1</BuybackCalendarName>
+  <StartDate>2026-08-18</StartDate>
+  <EndDate>2026-11-05</EndDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>Nominal Coupons 20Y to 30Y</PurchaseBucketName>
+    <SecurityType>NOMINAL COUPONS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>3000000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2046-08-19</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2056-08-18</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-08-17</AnnouncementDate>
+    <OperationDate>2026-08-18</OperationDate>
+    <SettlementDate>2026-08-19</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>Nominal Coupons 3Y to 5Y</PurchaseBucketName>
+    <SecurityType>NOMINAL COUPONS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>4000000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2029-08-21</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2031-08-20</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-08-19</AnnouncementDate>
+    <OperationDate>2026-08-20</OperationDate>
+    <SettlementDate>2026-08-21</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>Nominal Coupons 5Y to 7Y</PurchaseBucketName>
+    <SecurityType>NOMINAL COUPONS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>4000000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2031-08-26</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2033-08-25</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-08-24</AnnouncementDate>
+    <OperationDate>2026-08-25</OperationDate>
+    <SettlementDate>2026-08-26</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>Nominal Coupons 1Mo to 2Y</PurchaseBucketName>
+    <SecurityType>NOMINAL COUPONS</SecurityType>
+    <OperationType>Cash Management</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>12500000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2026-10-04</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2028-09-03</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-09-02</AnnouncementDate>
+    <OperationDate>2026-09-03</OperationDate>
+    <SettlementDate>2026-09-04</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>Nominal Coupons 1Mo to 2Y</PurchaseBucketName>
+    <SecurityType>NOMINAL COUPONS</SecurityType>
+    <OperationType>Cash Management</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>12500000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2026-10-10</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2028-09-09</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-09-08</AnnouncementDate>
+    <OperationDate>2026-09-09</OperationDate>
+    <SettlementDate>2026-09-10</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>Nominal Coupons 10Y to 20Y</PurchaseBucketName>
+    <SecurityType>NOMINAL COUPONS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>2000000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2036-09-11</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2046-09-10</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-09-09</AnnouncementDate>
+    <OperationDate>2026-09-10</OperationDate>
+    <SettlementDate>2026-09-11</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>TIPS 10Y to 30Y</PurchaseBucketName>
+    <SecurityType>TIPS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>500000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2036-09-16</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2056-09-15</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-09-14</AnnouncementDate>
+    <OperationDate>2026-09-15</OperationDate>
+    <SettlementDate>2026-09-16</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>Nominal Coupons 7Y to 10Y</PurchaseBucketName>
+    <SecurityType>NOMINAL COUPONS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>4000000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2033-09-18</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2036-09-17</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-09-16</AnnouncementDate>
+    <OperationDate>2026-09-17</OperationDate>
+    <SettlementDate>2026-09-18</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>Nominal Coupons 20Y to 30Y</PurchaseBucketName>
+    <SecurityType>NOMINAL COUPONS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>2000000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2046-09-25</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2056-09-24</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-09-23</AnnouncementDate>
+    <OperationDate>2026-09-24</OperationDate>
+    <SettlementDate>2026-09-25</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>TIPS 1Y to 10Y</PurchaseBucketName>
+    <SecurityType>TIPS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>750000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2027-09-30</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2036-09-29</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-09-28</AnnouncementDate>
+    <OperationDate>2026-09-29</OperationDate>
+    <SettlementDate>2026-09-30</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>Nominal Coupons 10Y to 20Y</PurchaseBucketName>
+    <SecurityType>NOMINAL COUPONS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>2000000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2036-10-02</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2046-10-01</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-09-30</AnnouncementDate>
+    <OperationDate>2026-10-01</OperationDate>
+    <SettlementDate>2026-10-02</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>Nominal Coupons 2Y to 3Y</PurchaseBucketName>
+    <SecurityType>NOMINAL COUPONS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>4000000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2028-10-07</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2029-10-06</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-10-05</AnnouncementDate>
+    <OperationDate>2026-10-06</OperationDate>
+    <SettlementDate>2026-10-07</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>Nominal Coupons 20Y to 30Y</PurchaseBucketName>
+    <SecurityType>NOMINAL COUPONS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>2000000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2046-10-09</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2056-10-08</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-10-07</AnnouncementDate>
+    <OperationDate>2026-10-08</OperationDate>
+    <SettlementDate>2026-10-09</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>Nominal Coupons 10Y to 20Y</PurchaseBucketName>
+    <SecurityType>NOMINAL COUPONS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>2000000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2036-10-16</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2046-10-15</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-10-14</AnnouncementDate>
+    <OperationDate>2026-10-15</OperationDate>
+    <SettlementDate>2026-10-16</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>TIPS 1Y to 10Y</PurchaseBucketName>
+    <SecurityType>TIPS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>750000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2027-10-22</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2036-10-21</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-10-20</AnnouncementDate>
+    <OperationDate>2026-10-21</OperationDate>
+    <SettlementDate>2026-10-22</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>Nominal Coupons 20Y to 30Y</PurchaseBucketName>
+    <SecurityType>NOMINAL COUPONS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>2000000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2046-10-28</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2056-10-27</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-10-26</AnnouncementDate>
+    <OperationDate>2026-10-27</OperationDate>
+    <SettlementDate>2026-10-28</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>Nominal Coupons 10Y to 20Y</PurchaseBucketName>
+    <SecurityType>NOMINAL COUPONS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>2000000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2036-11-05</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2046-11-04</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-11-03</AnnouncementDate>
+    <OperationDate>2026-11-04</OperationDate>
+    <SettlementDate>2026-11-05</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+  <BuybackCalendarDate>
+    <PurchaseBucketName>Nominal Coupons 1Mo to 2Y</PurchaseBucketName>
+    <SecurityType>NOMINAL COUPONS</SecurityType>
+    <OperationType>Liquidity Support</OperationType>
+    <MinimumPurchaseAmountDollars>0</MinimumPurchaseAmountDollars>
+    <MaximumPurchaseAmountDollars>4000000000</MaximumPurchaseAmountDollars>
+    <MaturityDateRangeStart>2026-12-06</MaturityDateRangeStart>
+    <MaturityDateRangeEnd>2028-11-05</MaturityDateRangeEnd>
+    <AnnouncementDate>2026-11-04</AnnouncementDate>
+    <OperationDate>2026-11-05</OperationDate>
+    <SettlementDate>2026-11-06</SettlementDate>
+    <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+    <OperationEndTimeEasternUS>14:00</OperationEndTimeEasternUS>
+  </BuybackCalendarDate>
+</BuyBackCalendar>
