@@ -118,6 +118,30 @@ fetch loop, the config loader, or the CLI.
 
 Per-source keys under `config:` override anything in `defaults:`.
 
+### Verify a candidate feed by its content, never by its status code
+
+**`www.treasury.gov/rss/press.xml` answers `200` with
+`Content-Type: text/html` and returns 78KB of homepage.** It is a soft
+404 — a catch-all route that swallows an unknown path and serves the
+front page rather than erroring. Nothing about the response line says so.
+
+A check that looks at the status code alone would have registered that as
+a working feed, and the source would have polled the Treasury homepage
+indefinitely while `status` reported it healthy: contacted, 200, content
+returned, nothing obviously wrong. The failure would surface as an empty
+tape section, which is the hardest kind of wrong to notice.
+
+So when adding a source, confirm all three:
+
+1. **status** is 200,
+2. **`Content-Type`** is a feed or data type, not `text/html`,
+3. **the payload actually parses** and yields entries.
+
+The third is the only one that cannot be faked by a misrouted request.
+`home.treasury.gov/rss.xml` passes all three — and is still the wrong
+feed, because it is site-wide and carries no press releases. Parsing
+successfully is necessary, not sufficient; read what came back.
+
 ## The interface
 
 ```bash
@@ -734,6 +758,55 @@ The duplicate is easy to collapse on read — the two rows share a `url`.
 If you would rather not carry it at all, drop `fed_press_all` from
 `sources.yaml`; `press_monetary` plus `speeches` covers the decision flow
 with no overlap between them.
+
+### Blind spot: Treasury discretionary changes
+
+**Treasury announces buyback and issuance changes by press release, and
+those announcements reach no machine-readable feed.** Three layers, and
+only two of them are covered:
+
+| what | covered by |
+|---|---|
+| auction supply and results | `treasury_auction_announcements`, `treasury_auction_results` |
+| the issuance and buyback **plan** | the quarterly refunding XMLs |
+| the announcement that a plan has **changed** | **nothing** |
+
+The worked example is 19 August 2026, when Treasury announced increased
+sizes for nominal long-end liquidity-support buybacks beginning 9
+September. It did not appear in the tape, and no feed carries it.
+
+**What was checked and found absent** — recorded so the next reader does
+not repeat the search:
+
+- **No per-operation buyback feed on TreasuryDirect.** `/rss/` lists
+  exactly five feeds: the two auction ones above, `NP_WS/debt/feeds/recent`,
+  `rss/mspd.xml` and `rss/sbpro.xml`. Every `TA_WS` buyback path tried
+  returns 404.
+- **A `buyback-schema.xsd` exists** at `treasurydirect.gov/xsd/`, with
+  `buyback` and `securityDetails` elements — but nothing serves against it
+  publicly. Operation announcements and results are published as PDFs
+  under `/instit/annceresult/press/preanre/`.
+- **NY Fed SOMA is not this.** `markets.newyorkfed.org/api` is live and
+  unauthenticated, but SOMA is the *Fed's own portfolio*, not Treasury
+  debt management. Its API documentation contains no reference to
+  buybacks at all. Good source, wrong institution.
+
+**The near-miss worth knowing about.** The quarterly buyback schedule at
+`home.treasury.gov/system/files/221/Tentative-Buyback-Schedule.xml` is a
+real, well-formed, stable-URL XML file — and it was re-uploaded on 19
+August 2026 at 15:54 GMT, hours after the 08:30 announcement. That looks
+exactly like the artefact you would want. It is not. Comparing every
+bucket maximum across four consecutive refunding calendars:
+
+| bucket | Nov 2025 | Feb 2026 | May 2026 | Aug 2026 |
+|---|---|---|---|---|
+| Nominal 20Y–30Y | $2.0B | $2.0B | $2.0B | $2.0B |
+| Nominal 10Y–20Y | $2.0B | $2.0B | $2.0B | $2.0B |
+
+Every maximum is unchanged, including for operations scheduled after 9
+September. Polling that file with full revision history would have
+surfaced **nothing** on 19 August. The modification date lines up; the
+contents do not move.
 
 ## Chinese exchanges: what the terms actually say
 
