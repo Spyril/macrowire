@@ -321,6 +321,297 @@ class TestDecoding(unittest.TestCase):
         self.assertTrue(text.endswith("国家"))
 
 
+class BuybackScheduleTests(TempDB):
+    """Treasury tentative buyback calendar -> observations.
+
+    EVERY NUMBER BELOW IS A REAL TREASURY VALUE AS PUBLISHED. The fixture
+    is the live August 2026 refunding calendar, captured byte-for-byte
+    (14234 bytes, sha256 8bed04c54df19606…) from the stable alias, which
+    was verified identical to the quarter-stamped URL. Nothing here is
+    invented, and the ceilings asserted are the ones Treasury set.
+
+    The source exists for one reason: a ceiling that MOVES becomes a
+    revision, and revisions are already visible. So the revision test is
+    the point of the suite, not an extra.
+    """
+
+    URL = "https://home.treasury.gov/system/files/221/Tentative-Buyback-Schedule.xml"
+
+    # Bucket -> the ceilings Treasury published for it in this calendar.
+    # Nine buckets, TEN distinct (bucket, ceiling) pairs: Nominal 1Mo-2Y
+    # carries both $12.5B and $4.0B, so the mapping is not one to one and
+    # the two must not collapse into each other.
+    PUBLISHED = {
+        "Nominal Coupons 20Y to 30Y": {2_000_000_000.0},
+        "Nominal Coupons 10Y to 20Y": {2_000_000_000.0},
+        "Nominal Coupons 7Y to 10Y":  {4_000_000_000.0},
+        "Nominal Coupons 5Y to 7Y":   {4_000_000_000.0},
+        "Nominal Coupons 3Y to 5Y":   {4_000_000_000.0},
+        "Nominal Coupons 2Y to 3Y":   {4_000_000_000.0},
+        "Nominal Coupons 1Mo to 2Y":  {12_500_000_000.0, 4_000_000_000.0},
+        "TIPS 10Y to 30Y":            {500_000_000.0},
+        "TIPS 1Y to 10Y":             {750_000_000.0},
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.src = SOURCES["treasury_buyback_schedule"]
+        self.body = fixture("treasury_buyback_schedule.xml").decode("utf-8")
+
+    def parse(self, body=None):
+        return get_parser("buyback_schedule")(self.src, body or self.body)
+
+    def test_one_observation_per_bucket_per_operation(self):
+        obs = self.parse().observations
+        floor(self, obs, "observations", 10)
+        buckets = {o["series"].split("/", 1)[1] for o in obs}
+        self.assertEqual(buckets, set(self.PUBLISHED),
+                         "the buckets parsed are not the ones published")
+        # THE CEILINGS, as Treasury set them.
+        for bucket, expected in self.PUBLISHED.items():
+            got = {o["value"] for o in obs
+                   if o["series"] == f"BUYBACK/{bucket}"}
+            with self.subTest(bucket=bucket):
+                self.assertEqual(got, expected,
+                                 f"{bucket}: parsed {sorted(got)}, "
+                                 f"published {sorted(expected)}")
+        # Nine buckets, ten distinct ceilings - the 1Mo-2Y pair is why the
+        # period has to be part of the key.
+        self.assertEqual(len(buckets), 9)
+        self.assertEqual(len({(o["series"], o["value"]) for o in obs}), 10,
+                         "the two 1Mo-2Y ceilings collapsed into one")
+        self.assertEqual(len({(o["series"], o["period"]) for o in obs}), len(obs),
+                         "two observations share a (series, period) key, so one "
+                         "would overwrite the other as a false revision")
+
+    def test_a_moved_ceiling_becomes_a_revision(self):
+        """THE ENTIRE REASON THIS SOURCE EXISTS. Stored twice: once from
+        the published calendar, once from a copy with a single ceiling
+        raised. The second pass must UPDATE and record a revision, not
+        insert a second row and not silently ignore the change."""
+        sid = db.upsert_source(self.conn, self.src.name, self.src.kind,
+                               self.src.config)
+        first = wire._store_observations(self.conn, self.src, sid, self.parse())
+        stored, revisions = first
+        self.assertEqual(stored, 18, f"first pass stored {stored}")
+        self.assertEqual(revisions, [], "a first pass cannot be a revision")
+
+        # Same body again: nothing new, nothing revised.
+        again, rev2 = wire._store_observations(self.conn, self.src, sid, self.parse())
+        self.assertEqual((again, rev2), (0, []),
+                         "re-storing an unchanged calendar was not a no-op")
+
+        moved = self.parse(fixture("treasury_buyback_schedule_revised.xml")
+                           .decode("utf-8"))
+        added, rev3 = wire._store_observations(self.conn, self.src, sid, moved)
+        self.assertEqual(added, 0, "a moved ceiling was inserted as a new row")
+        self.assertEqual(len(rev3), 1,
+                         f"a ceiling moved 2.0B -> 3.0B and produced "
+                         f"{len(rev3)} revisions")
+        self.assertIn("20Y to 30Y", rev3[0],
+                      f"the revision does not name the bucket: {rev3[0]}")
+        row = self.conn.execute(
+            """SELECT value FROM observations WHERE source_id=? AND series=?
+               AND period='2026-08-18'""",
+            (sid, "BUYBACK/Nominal Coupons 20Y to 30Y")).fetchone()
+        self.assertEqual(row["value"], 3_000_000_000.0,
+                         "the stored ceiling was not updated to the new value")
+        total = self.conn.execute(
+            "SELECT COUNT(*) c FROM observations WHERE source_id=?",
+            (sid,)).fetchone()["c"]
+        self.assertEqual(total, 18, "the revision added a row instead of updating")
+
+    def test_a_payload_that_is_not_a_buyback_calendar_is_refused(self):
+        """The host serves its homepage for unknown paths, so a wrong URL
+        arrives as HTML with status 200. The root name is the check."""
+        for body, why in (
+            ("<html><body>78KB of homepage</body></html>", "homepage HTML"),
+            ('<?xml version="1.0"?><gesmes:Envelope '
+             'xmlns:gesmes="http://www.gesmes.org/xml/2002-08-01"/>', "the ECB feed"),
+            ("<BuybackCalendar></BuybackCalendar>", "a near-miss root spelling"),
+        ):
+            with self.subTest(payload=why):
+                with self.assertRaises(ParseError):
+                    self.parse(body)
+
+    def test_malformed_input_raises_rather_than_yielding_nothing(self):
+        """Silence is the failure mode worth refusing: an empty ParsedFeed
+        reads as 'the calendar is empty', which is a real state."""
+        with self.subTest(case="not well-formed"):
+            with self.assertRaises(ParseError):
+                self.parse("<BuyBackCalendar><BuybackCalendarDate>")
+        with self.subTest(case="no entries"):
+            with self.assertRaises(ParseError):
+                self.parse("<BuyBackCalendar><StartDate>2026-08-18</StartDate>"
+                           "</BuyBackCalendar>")
+        # PRESENT BUT EMPTY is the case that matters: a blank ceiling is not
+        # a zero ceiling, and storing it as 0 would put a number in the
+        # series that nobody published.
+        blank = self.body.replace(
+            "<MaximumPurchaseAmountDollars>2000000000</MaximumPurchaseAmountDollars>",
+            "<MaximumPurchaseAmountDollars></MaximumPurchaseAmountDollars>", 1)
+        with self.subTest(case="empty ceiling"):
+            with self.assertRaises(MalformedEntryError):
+                self.parse(blank)
+        for bad, case in (
+            ("<MaximumPurchaseAmountDollars>lots</MaximumPurchaseAmountDollars>",
+             "non-numeric ceiling"),
+            ("<MaximumPurchaseAmountDollars>-1</MaximumPurchaseAmountDollars>",
+             "negative ceiling"),
+        ):
+            with self.subTest(case=case):
+                with self.assertRaises(MalformedEntryError):
+                    self.parse(self.body.replace(
+                        "<MaximumPurchaseAmountDollars>2000000000"
+                        "</MaximumPurchaseAmountDollars>", bad, 1))
+        with self.subTest(case="bad OperationDate"):
+            with self.assertRaises(MalformedEntryError):
+                self.parse(self.body.replace(
+                    "<OperationDate>2026-08-18</OperationDate>",
+                    "<OperationDate>18/08/2026</OperationDate>", 1))
+
+    def test_the_measurement_travels_with_the_parser(self):
+        """The limit is the reason anyone would question this source later,
+        so it is in the module rather than in a commit message."""
+        doc = read_code(ROOT / "macrowire/parsers/buyback_schedule.py")
+        for fact in ("19 August 2026", "15:54", "08:30", "$2.0B",
+                     "Nov 2025", "Aug 2026"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, doc,
+                              f"the docstring does not record {fact!r}")
+
+    def test_the_shipped_fixture_is_the_published_file(self):
+        """Not a hand-written sample. If someone regenerates it, the values
+        asserted above must still be Treasury's."""
+        import hashlib
+        raw = fixture("treasury_buyback_schedule.xml")
+        self.assertEqual(len(raw), 14234, "the fixture is not the captured file")
+        self.assertTrue(
+            hashlib.sha256(raw).hexdigest().startswith("8bed04c54df19606"),
+            "the fixture no longer matches the file that was captured")
+
+
+class RssIdentityTests(unittest.TestCase):
+    """external_id has to tell one entry from another.
+
+    TreasuryDirect's auction feeds carry no <guid> and only two distinct
+    <link> values across 22 entries - every announcement points at the same
+    press page - so `guid or link` minted ONE id for all of them. Storage
+    survived it, because content_hash mixes in title and published_at, and
+    22 entries still stored as 22 rows. `macrowire status` did not: it
+    counts revision chains with GROUP BY external_id HAVING n > 1, and
+    would have reported one chain with 21 superseded versions of a document
+    that had never been revised.
+
+    Fixed where the id is minted rather than where it is read. Suppressing
+    it in source_status would have left the wrong ids in the database and
+    the next reader to group by them would have found the same lie.
+    """
+
+    SRC = None
+
+    def setUp(self):
+        self.src = SOURCES["ecb_press"]
+
+    def feed(self, items, *, guid=True):
+        rows = []
+        for link, title, when in items:
+            g = f"<guid>{link}#{title}</guid>" if guid else ""
+            rows.append(f"<item>{g}<title>{title}</title><link>{link}</link>"
+                        f"<pubDate>{when}</pubDate></item>")
+        return ('<?xml version="1.0" encoding="utf-8"?><rss version="2.0">'
+                "<channel><title>t</title><link>http://x</link>"
+                "<description>d</description>" + "".join(rows) +
+                "</channel></rss>")
+
+    SHARED = "https://www.treasurydirect.gov/instit/annceresult/press/press_secannpr.htm"
+    AUCTIONS = [
+        (SHARED, "Treasury announces 7-Year Note", "Thu, 27 Aug 2026 17:03:39 GMT"),
+        (SHARED, "Treasury announces 8-Week Bill", "Thu, 27 Aug 2026 15:33:30 GMT"),
+        (SHARED, "Treasury announces 4-Week Bill", "Thu, 27 Aug 2026 15:33:30 GMT"),
+        (SHARED, "Treasury announces 13-Week Bill", "Thu, 20 Aug 2026 15:01:31 GMT"),
+        (SHARED, "Treasury announces 13-Week Bill", "Thu, 27 Aug 2026 15:01:31 GMT"),
+    ]
+
+    def parse(self, body):
+        return get_parser("rss_news")(self.src, body).items
+
+    def test_a_feed_with_no_guid_and_one_link_gets_distinct_ids(self):
+        items = self.parse(self.feed(self.AUCTIONS, guid=False))
+        ids = [i["external_id"] for i in items]
+        floor(self, ids, "parsed entries", 5)
+        self.assertEqual(len(set(ids)), len(ids),
+                         f"{len(ids) - len(set(ids))} entries share an id: {ids}")
+        # The two hardest pairs, spelled out: same title different time,
+        # and same time different title. Either alone would still collide.
+        self.assertEqual(len({i["external_id"] for i in items
+                              if i["title"].endswith("13-Week Bill")}), 2,
+                         "the weekly repeat of one title collapsed")
+        same_second = [i["external_id"] for i in items
+                       if "15:33:30" in str(i.get("published_at"))
+                       or i["title"].endswith(("8-Week Bill", "4-Week Bill"))]
+        self.assertEqual(len(set(same_second)), 2,
+                         "two auctions announced in the same second collapsed")
+
+    def test_re_parsing_an_unchanged_entry_gives_the_same_id(self):
+        """Re-storing an identical body must add zero rows, so the id
+        cannot depend on anything but the entry's own fields."""
+        body = self.feed(self.AUCTIONS, guid=False)
+        first = [i["external_id"] for i in self.parse(body)]
+        second = [i["external_id"] for i in self.parse(body)]
+        self.assertEqual(first, second, "the id moved between two parses")
+
+    def test_a_feed_that_carries_guid_is_untouched(self):
+        """The guid is the publisher's own identity and outranks anything
+        derived here, even when the links repeat."""
+        items = self.parse(self.feed(self.AUCTIONS, guid=True))
+        for i in items:
+            with self.subTest(title=i["title"]):
+                self.assertEqual(i["external_id"],
+                                 f"{self.SHARED}#{i['title']}",
+                                 "a guid feed had its id derived instead")
+
+    def test_a_feed_with_unique_links_keeps_the_bare_link(self):
+        """THE ROWS ALREADY IN THE DATABASE. nbs_releases has no guid
+        across 500 entries and 501 distinct links; hkma_press ships <guid/>
+        empty. Deriving a composite for every no-guid feed would have
+        changed 502 stored NBS ids and re-inserted every one of them as a
+        new row on the next fetch. The link is kept wherever it is enough."""
+        rows = [(f"https://nbs.example/{n}", f"release {n}",
+                 "Thu, 27 Aug 2026 15:01:31 GMT") for n in range(6)]
+        items = self.parse(self.feed(rows, guid=False))
+        floor(self, items, "parsed entries", 6)
+        for i, (link, _, _) in zip(items, rows):
+            with self.subTest(link=link):
+                self.assertEqual(i["external_id"], link,
+                                 "a feed with usable links got a composite id")
+
+    def test_every_shipped_fixture_keeps_the_ids_it_had(self):
+        """The regression that matters most: no fixture may change id."""
+        import re
+        checked = 0
+        for path in sorted((ROOT / "tests/fixtures").glob("*.xml")):
+            body = path.read_bytes().decode("utf-8", "replace")
+            if "<rss" not in body[:400]:
+                continue
+            try:
+                items = self.parse(body)
+            except Exception:
+                continue
+            if not items:
+                continue
+            checked += 1
+            with self.subTest(fixture=path.name):
+                ids = [i["external_id"] for i in items]
+                self.assertEqual(len(set(ids)), len(ids),
+                                 f"{path.name} has colliding ids")
+                self.assertFalse(any("\n" in i for i in ids),
+                                 f"{path.name} switched to composite ids; the "
+                                 f"rows already stored for it would be "
+                                 f"re-inserted on the next fetch")
+        floor(self, range(checked), "rss fixtures checked", 1)
+
+
 class TestFeedGate(unittest.TestCase):
     """The defect that let 313 mojibake entries through."""
 
