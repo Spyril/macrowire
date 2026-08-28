@@ -90,6 +90,10 @@ function drawHours() {
 }
 
 function drawRibbon(data) {
+  // Kept, because the strip is derived from the same payload rather than
+  // from a second route: sessions carry their segments as fractions of the
+  // day and marks carry their positions on that same scale.
+  state.ribbon = data;
   // The zone NAME comes from config via the server, not the catalogue: it
   // is a fact about this installation, and a translator has no business
   // turning "New York" into "Sydney". The catalogue holds the sentence
@@ -194,6 +198,120 @@ function tickClock() {
   const line = $("nowline");
   line.hidden = false;
   line.style.left = atFraction(frac);
+  drawStrip(frac);
+}
+
+/* ---------------- the strip ---------------- */
+
+// "in 45m", "in 2h 10m". Its own formatter and not `ago()`, which reads
+// backwards from a timestamp - these are forward from a fraction of the
+// day, and a sentence that says "45m ago" about something that has not
+// happened would be worse than no sentence.
+function until(fraction) {
+  const mins = Math.max(0, Math.round(fraction * 1440));
+  if (mins < 60) return t("strip.in_minutes", { n: mins });
+  // "7h 0m" is a clumsy way to say seven hours, and the zh reading
+  // "7小时0分钟后" is worse. The exact-hour case gets its own string
+  // rather than a zero glued to the end of the general one.
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return m ? t("strip.in_hours", { h, m }) : t("strip.in_hours_flat", { h });
+}
+
+// EVERYTHING HERE COMES FROM state.ribbon AND THE CLOCK. No route, no
+// query, no server-side view: the payload that draws the band already
+// carries every session's segments as fractions of the day and every
+// mark's position on the same scale, and tickClock already has the
+// current fraction because the now-marker needs it. Two things that were
+// already computed, read a second way.
+function stripVenues(frac) {
+  const open = [], soon = [], shut = [];
+  for (const s of (state.ribbon.sessions || [])) {
+    const segs = s.segments || [];
+    const live = segs.find((g) => frac >= g.start && frac < g.end);
+    if (live) { open.push({ s, time: live.closes_local }); continue; }
+    // A session split by local midnight has two segments; the earliest one
+    // that has not started yet is the next opening either way.
+    const next = segs.filter((g) => g.start > frac).sort((a, b) => a.start - b.start)[0];
+    if (next) soon.push({ s, time: next.opens_local, in: next.start - frac });
+    else shut.push({ s, time: segs.length ? segs[segs.length - 1].closes_local : null });
+  }
+  return { open, soon, shut };
+}
+
+function drawStrip(frac) {
+  if (!state.ribbon) return;
+  // The venue hue, in the strip, on the same four conditions style.css
+  // sets out for the band and for the same reason: the set is bounded at
+  // five, every dot sits beside its own code, hue repeats a name that is
+  // already written rather than replacing one, and NO UNREAD MARKER
+  // APPEARS HERE - nothing in this row competes with amber.
+  const hues = { sydney: "--syd", tokyo: "--tyo", hongkong: "--hkg",
+                 london: "--lon", newyork: "--nyc" };
+  const dot = (s, dim) =>
+    `<i class="sdot" style="background:var(${hues[s.key]})${dim ? ";opacity:.32" : ""}"></i>`;
+  const parts = [];
+
+  const { open, soon, shut } = stripVenues(frac);
+  for (const v of open) {
+    parts.push(`<span class="sv">${dot(v.s)}<b>${esc(v.s.label)}</b> `
+      + `${esc(t("strip.open", { time: v.time }))}</span>`);
+  }
+  for (const v of soon) {
+    parts.push(`<span class="sv">${dot(v.s)}<b>${esc(v.s.label)}</b> `
+      + `${esc(v.time)} ${esc(until(v.in))}</span>`);
+  }
+  if (shut.length) {
+    parts.push('<i class="sdiv"></i>');
+    for (const v of shut) {
+      parts.push(`<span class="sv off">${dot(v.s, true)}<b>${esc(v.s.label)}</b> `
+        + `${esc(v.time ? t("strip.closed", { time: v.time })
+                       : t("strip.closed_plain"))}</span>`);
+    }
+  }
+
+  const next = (state.ribbon.marks || [])
+    .filter((m) => m.position !== null && m.position > frac)
+    .sort((a, b) => a.position - b.position)[0];
+  if (next) {
+    parts.push('<i class="sdiv"></i>');
+    parts.push(`<span class="sv"><b>${esc(t("strip.next_mark"))}</b> `
+      + `${esc(next.local_time)} ${esc(next.source.replace(/_/g, " ").split(" ")[0])} `
+      + `${esc(until(next.position - frac))}</span>`);
+  }
+
+  const shown = !$("ribbon").hidden;
+  parts.push(`<button class="fbtn sband" id="band-toggle"
+      aria-expanded="${shown}" aria-controls="ribbon"><span>${esc(
+      shown ? t("strip.hide_band") : t("strip.show_band"))}</span> <kbd>r</kbd></button>`);
+  $("mast-strip").innerHTML = parts.join("");
+  $("band-toggle").onclick = toggleBand;
+}
+
+// localStorage, NOT preferences.py. A preference is something the server
+// renders differently - locale, timezone, window - and every one of those
+// is consumed server-side, which is why they are in the database. This is
+// a view toggle on a single-user local page that the server never sees and
+// never needs to: a migration and a settings row would buy nothing.
+const BAND_KEY = "macrowire.band";
+
+function bandShouldShow() {
+  try { return localStorage.getItem(BAND_KEY) === "open"; } catch (e) { return false; }
+}
+
+function toggleBand() {
+  const band = $("ribbon");
+  band.hidden = !band.hidden;
+  try {
+    localStorage.setItem(BAND_KEY, band.hidden ? "closed" : "open");
+  } catch (e) { /* private window: the choice just does not outlive the tab */ }
+  drawStrip(currentFraction());
+}
+
+function currentFraction() {
+  const now = new Date();
+  const syd = new Date(now.getTime()
+    + (state.offsetHours * 3600 + now.getTimezoneOffset() * 60) * 1000);
+  return (syd.getHours() * 3600 + syd.getMinutes() * 60 + syd.getSeconds()) / 86400;
 }
 
 /* ---------------- tape ---------------- */
@@ -228,14 +346,30 @@ function tokenHtml({ axis, value }) {
 
 function drawTokens() {
   const active = activeFilters();
+  // The row this lives in is UNCONDITIONAL now. It used to hide itself when
+  // nothing was filtered, to keep the masthead from taking tape; it shares
+  // a row with the jurisdiction chips, which are always there, so there is
+  // nothing left to hide. `.tokens:empty::before` carries
+  // filter.none_active for the empty case.
   $("tokens").innerHTML = active.map(tokenHtml).join("");
-  // The whole ROW goes, not just its contents: an empty flex row still
-  // costs its padding, and the masthead must not take tape when nothing
-  // is filtered.
-  $("mast-tokens").hidden = active.length === 0;
   $("tokens").querySelectorAll("button").forEach((b) => {
     b.onclick = () => { state.f[b.dataset.axis].delete(b.dataset.value); afterFilterChange(); };
   });
+}
+
+// THE MOST-USED AXIS, ALWAYS ON SCREEN. Jurisdiction cost `f`, find it in
+// the panel, click, Esc - every time. Seven chips is one line.
+//
+// Renders from the same facets the panel reads and from the same Set in
+// state.f. There is no bar-specific state: `chip()` asks state.f whether
+// each one is pressed, exactly as the panel's copy does, and wireChips
+// gives both the identical handler.
+function drawJurBar() {
+  const f = state.facets;
+  if (!f) return;
+  $("jur-chips").innerHTML = (f.jurisdiction || [])
+    .map((x) => chip("jurisdiction", x.value, x.value, x)).join("");
+  wireChips($("jur-chips"));
 }
 
 function matches(r) {
@@ -419,6 +553,13 @@ function countBadges(counts) {
   return bucket + unread;
 }
 
+// Above this many ticker chips, the axis gets a type-to-narrow box. A
+// JUDGEMENT CALL, not a measurement: nobody has been watched scanning a
+// row of these. It is roughly where a wrapped field stops being something
+// you take in at a glance, and it is a constant so the next person can
+// argue with one number instead of hunting a literal.
+const NARROW_TICKER_AXIS_AT = 24;
+
 function chip(axis, value, label, counts) {
   const on = state.f[axis].has(value);
   const c = counts || {};
@@ -444,45 +585,45 @@ function drawPanel(unread) {
       + `<span class="fsub">${esc(t("filter.fx_caveat"))}</span>`
     : `<span class="fempty">${esc(t("filter.empty_window"))}</span>`, (f.fx || []).length]);
 
+  // KEPT, even though the same chips are in the masthead bar. An axis that
+  // vanished from the panel would read as an axis that had been taken away,
+  // and the panel is where a reader looks to see what can be filtered at
+  // all. The note says where else it lives; the chips are the same Set.
   rows.push(["jurisdiction", t("filter.axis.jurisdiction"), f.jurisdiction.length
     ? f.jurisdiction.map((x) => chip("jurisdiction", x.value, x.value, x)).join("")
+      + `<span class="fsub">${esc(t("filter.also_above"))}</span>`
     : `<span class="fempty">${esc(t("filter.empty_window"))}</span>`, f.jurisdiction.length]);
 
-  // Watchlist: filter chips for tickers with items, plus the held-but-quiet
-  // ones so they can be removed, plus an add form. Editing lives here rather
-  // than in a terminal.
+  // POPULATED-ONLY, like every other axis. A chip appears when pressing it
+  // would return rows, so its ABSENCE carries information: no UK chip means
+  // the Bank of England published nothing this month.
+  //
+  // This axis used to break that rule. It rendered every held ticker,
+  // including ones that had published nothing, each with a delete button,
+  // plus an add form - an editing need solved inside a filtering control,
+  // and the reason the axis grew with holdings rather than with activity.
+  // Fifty names meant fifty chips in a panel sized for filtering. Editing
+  // is in the settings dialog now, which has no height ceiling to tune.
+  //
+  // The count is stated because a missing ticker must not read as a missing
+  // HOLDING. "12 of 47" says the other 35 are still held and simply quiet.
   const held = state.watchlist || [];
-  const withItems = new Set(f.ticker.map((x) => x.value));
-  const wlChips = held.map((e) => {
-    const hasItems = withItems.has(e.ticker);
-    const entry = f.ticker.find((x) => x.value === e.ticker);
-    const inner = hasItems
-      ? chip("ticker", e.ticker, e.ticker, entry)
-      : `<button class="chip" disabled title="${esc(t("watchlist.held_quiet"))}"
-                 style="opacity:.62;cursor:default">${esc(e.ticker)}</button>`;
-    return `<span class="wl-chip">${inner}<button class="wl-del"
-              data-ticker="${esc(e.ticker)}" data-market="${esc(e.market)}"
-              aria-label="${esc(t("watchlist.remove", { ticker: e.ticker }))}"
-              title="${esc(t("watchlist.remove_title", { ticker: e.ticker, market: e.market }))}"
-              >\u2212</button></span>`;
-  }).join("");
-  const wlForm = `
-    <form class="wl-add" id="wl-add">
-      <input id="wl-ticker" name="ticker" maxlength="12"
-             placeholder="${esc(t("watchlist.ticker_placeholder"))}"
-             aria-label="${esc(t("watchlist.ticker_label"))}" autocomplete="off" spellcheck="false">
-      <select id="wl-market" aria-label="${esc(t("watchlist.market_label"))}">
-        <option value="US">US</option><option value="CN">CN</option>
-        <option value="AU">AU</option>
-        <option value="HK">HK</option><option value="JP">JP</option>
-        <option value="UK">UK</option><option value="EU">EU</option>
-      </select>
-      <button class="fbtn" type="submit">${esc(t("watchlist.add"))}</button>
-      <span class="wl-msg" id="wl-msg" role="status" aria-live="polite"></span>
-    </form>`;
+  const shown = f.ticker;
+  const tickerChips = shown.map((x) => chip("ticker", x.value, x.value, x)).join("");
+  const narrow = shown.length > NARROW_TICKER_AXIS_AT
+    ? `<input class="fnarrow" id="wl-narrow" type="search" autocomplete="off"
+              spellcheck="false"
+              placeholder="${esc(t("filter.narrow_placeholder"))}"
+              aria-label="${esc(t("filter.narrow_label"))}">`
+    : "";
   rows.push(["ticker", t("filter.axis.ticker"),
-    (wlChips || `<span class="fempty">${esc(t("filter.empty_watchlist"))}</span>`) + wlForm,
-    held.length]);
+    held.length
+      ? `<span class="fsub">${esc(t("filter.ticker_of_held",
+            { shown: shown.length, held: held.length }))}</span>` + narrow
+        + (tickerChips
+           || `<span class="fempty">${esc(t("filter.empty_ticker"))}</span>`)
+      : `<span class="fempty">${esc(t("filter.empty_watchlist"))}</span>`,
+    shown.length]);
 
   rows.push(["source", t("filter.axis.source"), f.source.map((x) => chip("source", x.value,
       x.value.replace(/_/g, " "), x)).join(""), f.source.length]);
@@ -525,20 +666,53 @@ function drawPanel(unread) {
       `</div><div class="fgroup">${body}</div></section>`;
   }).join("");
 
-  wireWatchlistControls();
+  wireNarrow();
 
-  $("fgrid").querySelectorAll(".chip[data-axis]").forEach((b) => {
+  wireChips($("fgrid"));
+}
+
+// ONE DEFINITION, BOTH RENDERS. This was inside drawPanel and scoped to
+// the panel's own chips. The masthead bar draws jurisdiction a second
+// time, and a second copy of this handler is how the two would eventually
+// come to mean slightly different things.
+function wireChips(root) {
+  root.querySelectorAll(".chip[data-axis]").forEach((b) => {
     b.onclick = () => {
       const set = state.f[b.dataset.axis];
       set.has(b.dataset.value) ? set.delete(b.dataset.value) : set.add(b.dataset.value);
-      b.setAttribute("aria-pressed", set.has(b.dataset.value));
       afterFilterChange({ keepPanel: true });
     };
   });
 }
 
+// DISPLAY ONLY. This hides chips; it never touches state.f.ticker, so
+// what the tape shows is exactly what the pressed chips say whether the
+// box is empty, typed into, or cleared. A narrowing control that quietly
+// filtered would be a second, invisible filter sitting on top of the
+// visible one.
+function wireNarrow() {
+  const input = $("wl-narrow");
+  if (!input) return;
+  input.oninput = () => {
+    const q = input.value.trim().toUpperCase();
+    $("fgrid").querySelectorAll('.chip[data-axis="ticker"]').forEach((b) => {
+      // A PRESSED chip is never hidden. It is narrowing the tape, and a
+      // filter you cannot see acting on rows you can is the drawer's own
+      // problem in miniature - the thing this panel was rebuilt to stop.
+      //
+      // Asks the SET, not the rendered attribute. aria-pressed is derived
+      // from state.f; reading it back would make the DOM the record and
+      // the Set a cache of it, which is the second store this design does
+      // not have.
+      const pressed = state.f.ticker.has(b.dataset.value);
+      b.hidden = Boolean(q) && !pressed
+                 && !b.dataset.value.toUpperCase().includes(q);
+    });
+  };
+}
+
 function wireWatchlistControls() {
-  $("fgrid").querySelectorAll(".wl-del").forEach((b) => {
+  $("settings-watchlist").querySelectorAll(".wl-del").forEach((b) => {
     b.onclick = async () => {
       const { ticker, market } = b.dataset;
       b.disabled = true;
@@ -591,23 +765,35 @@ function setWlMessage(text, isError) {
 async function reloadAfterWatchlistChange(message) {
   state.facets = await get("/api/facets");
   drawTokens();
+  drawJurBar();
   drawTape();
+  // The panel too, even though the editing is in the dialog now: removing a
+  // holding must take its chip away, and adding one that has already
+  // published must bring a chip in.
   drawPanel(state.unread || {});
+  drawWatchlistSettings();
   setWlMessage(t("watchlist.after_change", { message }), false);
   const input = $("wl-ticker");
-  // Same reason: the panel is open over a tape the reader is deep inside.
+  // Same reason: the dialog is open over a tape the reader is deep inside.
   if (input) input.focus({ preventScroll: true });
 }
 
 function afterFilterChange({ keepPanel = false } = {}) {
   drawTokens();
+  drawJurBar();
   drawTape();
   if (!keepPanel) drawPanel(state.unread || {});
-  else drawPanelPressedState();
+  else syncChipPressed();
 }
 
-function drawPanelPressedState() {
-  $("fgrid").querySelectorAll(".chip[data-axis]").forEach((b) => {
+// DOCUMENT, NOT #fgrid. The jurisdiction chips are rendered twice - in the
+// masthead bar and in the panel - and this is the whole mechanism that
+// keeps them agreeing: both renders read the same Set in state.f, and
+// there is no sync code between them because there is nothing to sync.
+// Scope this back to #fgrid and the two copies drift the moment one is
+// clicked while the other is on screen.
+function syncChipPressed() {
+  document.querySelectorAll(".chip[data-axis]").forEach((b) => {
     b.setAttribute("aria-pressed", state.f[b.dataset.axis].has(b.dataset.value));
   });
 }
@@ -658,6 +844,8 @@ function wireKeyboard() {
   $("fopen").onclick = () => (panelOpen() ? closePanel() : openPanel());
   // <dialog> handles Esc, focus trapping and the backdrop itself.
   $("settings-open").onclick = openSettings;
+  // Already drawn by drawRail; this only puts it on screen.
+  $("health-open").onclick = () => $("health-dialog").showModal();
   $("fclose").onclick = closePanel;
   $("fclear").onclick = clearFilters;
 
@@ -667,6 +855,15 @@ function wireKeyboard() {
     if (e.key === "Escape" && panelOpen()) { e.preventDefault(); closePanel(); return; }
     if (e.key === "f" && !e.metaKey && !e.ctrlKey) { e.preventDefault(); panelOpen() ? closePanel() : openPanel(); return; }
     if (e.key === "c" && !e.metaKey && !e.ctrlKey) { e.preventDefault(); clearFilters(); return; }
+    // Not while ANY modal is up. showModal() traps focus but the keydown
+    // still bubbles to document, so a reader on a button in a dialog would
+    // otherwise toggle a band behind the backdrop. Written against
+    // `dialog[open]` rather than naming the settings dialog, because
+    // health is a second one now and a third would have been missed.
+    if (e.key === "r" && !e.metaKey && !e.ctrlKey
+        && !document.querySelector("dialog[open]")) {
+      e.preventDefault(); toggleBand(); return;
+    }
     // Focus stays inside the panel while it is open.
     if (e.key === "Tab" && panelOpen()) {
       const focusable = $("fpanel").querySelectorAll(
@@ -696,18 +893,55 @@ async function refreshUnread() {
 
 /* ---------------- rail ---------------- */
 
+// TWO FACTS, AND THEY MUST NOT BE CONFLATED. "fix 2026-08-21" and "as of
+// 2026-08-18" rendered identically, six days apart, with staleness nowhere
+// on the page - a reader had to do date arithmetic to know whether a
+// number was current.
+//
+//   AGE is how old the value is. ALWAYS shown, in --ink-2. Not a verdict.
+//   LATE is older than that series' OWN cadence, and is a verdict, so it
+//   is only ever asserted where the source declared one. CoT is weekly:
+//   six days is on time. RBA is daily: four days is not.
+//
+// A series with no cadence_days shows its age and is never called late. A
+// guessed cadence would put --fault on a number nobody said was late,
+// which is the same failure as a staleness threshold that cries wolf.
+function daysSince(period) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(period || ""));
+  if (!m) return null;
+  // DATE minus DATE. The payload's periods are dates, so comparing one to
+  // a clock reading would make the answer depend on the hour of the day.
+  const then = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  const now = new Date();
+  const local = new Date(now.getTime()
+    + (state.offsetHours * 3600 + now.getTimezoneOffset() * 60) * 1000);
+  const today = Date.UTC(local.getFullYear(), local.getMonth(), local.getDate());
+  return Math.max(0, Math.round((today - then) / 86400000));
+}
+
+function asOf(text, period, cadence) {
+  const days = daysSince(period);
+  if (days === null) return esc(text);
+  const late = cadence !== null && cadence !== undefined && days > cadence;
+  const age = days === 0 ? t("rail.age_today") : t("time.days", { n: days });
+  return esc(text) + ` <span class="age${late ? " late" : ""}">${esc(age)}`
+    + (late ? ` · ${esc(t("rail.late"))}` : "") + `</span>`;
+}
+
 function drawRail(d) {
   const sign = (v) => (v > 0 ? "+" : "");
+  const cad = d.cadence || {};
   $("fx").innerHTML = d.fx.map((f) => `
       <div class="k">${esc(f.series)}</div>
       <div class="v">${f.value}</div>
       <div class="d">${f.change === null ? "\u2014"
         : sign(f.change) + f.change.toFixed(4) + " (" + sign(f.change_pct) + f.change_pct.toFixed(2) + "%)"}</div>`
   ).join("");
-  $("fx-asof").textContent = d.fx.length
-    ? t("rail.cny_asof", { period: d.fx[0].period, time: FACT.cfetsFix,
-                           prior: d.fx[0].prior_period })
-    : t("rail.no_data");
+  $("fx-asof").innerHTML = d.fx.length
+    ? asOf(t("rail.cny_asof", { period: d.fx[0].period, time: FACT.cfetsFix,
+                                prior: d.fx[0].prior_period }),
+           d.fx[0].period, cad.fx)
+    : esc(t("rail.no_data"));
 
   // Southbound. Net leads because the direction is the signal; the level
   // is context. Sign is spelled out in words as well as shown, because a
@@ -724,11 +958,12 @@ function drawRail(d) {
       <div class="d">${r.change === null || r.change === undefined ? "\u2014"
         : sign(r.change) + r.change.toFixed(2)}</div>`;
     }).join("");
-    $("sb-asof").textContent = t("rail.sb_asof", {
-      period: sb.period, unit: sb.rows[0].unit, prior: sb.prior_period || "\u2014" });
+    $("sb-asof").innerHTML = asOf(t("rail.sb_asof", {
+      period: sb.period, unit: sb.rows[0].unit,
+      prior: sb.prior_period || "\u2014" }), sb.period, cad.southbound);
   } else {
     $("sb").innerHTML = "";
-    $("sb-asof").textContent = t("rail.no_data");
+    $("sb-asof").innerHTML = esc(t("rail.no_data"));
   }
 
   const thou = (v) => (v === undefined || v === null) ? "\u2014"
@@ -739,11 +974,12 @@ function drawRail(d) {
       <div class="d">${p.change_net === undefined ? "\u2014"
         : thou(p.change_net) + " " + t("rail.week")}</div>`
   ).join("");
-  $("cot-asof").textContent = (d.cot && d.cot.length)
-    ? t("rail.cot_asof", { period: d.cot[0].period,
-                           day: t("rail.weekday.tue"),
-                           release: `${t("rail.weekday.fri")} ${FACT.cotRelease}` })
-    : t("rail.no_data");
+  $("cot-asof").innerHTML = (d.cot && d.cot.length)
+    ? asOf(t("rail.cot_asof", { period: d.cot[0].period,
+                                day: t("rail.weekday.tue"),
+                                release: `${t("rail.weekday.fri")} ${FACT.cotRelease}` }),
+           d.cot[0].period, cad.cot)
+    : esc(t("rail.no_data"));
 
   $("ecb").innerHTML = (d.ecb || []).map((f) => `
       <div class="k">${esc(f.series)}</div>
@@ -751,17 +987,19 @@ function drawRail(d) {
       <div class="d">${f.change === null || f.change === undefined ? "\u2014"
         : sign(f.change) + f.change.toFixed(4) + " (" + sign(f.change_pct) + f.change_pct.toFixed(2) + "%)"}</div>`
   ).join("");
-  $("ecb-asof").textContent = (d.ecb && d.ecb.length)
-    ? t("rail.ecb_asof", { period: d.ecb[0].period, time: FACT.ecbPublish,
-                           base: FACT.ecbBase })
-    : t("rail.no_data");
+  $("ecb-asof").innerHTML = (d.ecb && d.ecb.length)
+    ? asOf(t("rail.ecb_asof", { period: d.ecb[0].period, time: FACT.ecbPublish,
+                                base: FACT.ecbBase }),
+           d.ecb[0].period, cad.ecb)
+    : esc(t("rail.no_data"));
 
   $("rba").innerHTML = d.rba.map((r) => `
       <div class="k">${esc(r.series)}</div><div class="v">${r.value}</div>`
   ).join("");
-  $("rba-asof").textContent = d.rba.length
-    ? t("rail.rba_asof", { time: FACT.rbaFix, period: d.rba[0].period })
-    : t("rail.no_data");
+  $("rba-asof").innerHTML = d.rba.length
+    ? asOf(t("rail.rba_asof", { time: FACT.rbaFix, period: d.rba[0].period }),
+           d.rba[0].period, cad.rba)
+    : esc(t("rail.no_data"));
 
   // From the server, not a second list here. This was hardcoded
   // ["AU","CN","HK","JP","US","EU","UK"] while the filter chips were
@@ -778,6 +1016,10 @@ function drawRail(d) {
   const sinceText = (iso) => iso === null || iso === undefined
     ? t("time.unknown")
     : ago((Date.now() - new Date(iso).getTime()) / 1000);
+  // ONE PREDICATE, read by the rows and by the masthead indicator. It was
+  // the same expression written twice, which is how an indicator comes to
+  // read "all current" over a list of rows marked warn.
+  const affected = (h) => h.state_severity === "bad" || h.state_severity === "warn";
   const row = (h) => {
     // Contact, not store. A gated source polling and finding nothing new is
     // alive; calling that "no success logged" was a false alarm on healthy
@@ -787,7 +1029,7 @@ function drawRail(d) {
     const parts = [contact === null ? t("time.never") : contact];
     // failure_kinds arrive already formatted; a null error_kind reads as
     // "unclassified" rather than leaking the string "None".
-    const bad = h.state_severity === "bad" || h.state_severity === "warn";
+    const bad = affected(h);
     if (h.consecutive_failures) parts.push(`${h.failure_kinds.join(", ")}`);
     // The state label alone reads as a verdict on the source. For an
     // unreachable one it is not, so the qualification travels with it.
@@ -804,6 +1046,17 @@ function drawRail(d) {
   $("health").innerHTML = note + order.filter((j) => grouped[j]).map(
     (j) => `<span class="jgroup">${esc(j)}</span>` + grouped[j].map(row).join("")
   ).join("");
+
+  // ENABLED SOURCES ONLY, on both sides of the fraction. A disabled source
+  // gets a row in the dialog - switched off is worth seeing - but it is
+  // neither current nor failing, and counting it as current would describe
+  // it as being kept up when nothing is even contacting it.
+  const polled = d.health.filter((h) => h.enabled !== false);
+  const n = polled.filter(affected).length;
+  $("health-summary").textContent = n
+    ? t("health.affected", { n, total: polled.length })
+    : t("health.all_current", { n: polled.length });
+  $("health-open").classList.toggle("bad", n > 0);
 
   const risk = d.health.filter((h) => h.replaceable === "NO");
   const rows = risk.reduce((a, h) => a + h.at_risk, 0);
@@ -930,7 +1183,86 @@ function drawSettings(data) {
   }).join("");
   $("tz-all").innerHTML = tz.all.map((z) => `<option value="${esc(z)}">`).join("");
 
+  drawWatchlistSettings();
   wireSettings();
+}
+
+// THE ONLY PLACE A HOLDING IS ADDED OR REMOVED. It was in the filter
+// panel, where a list that grows without bound had to live inside a box
+// with a height ceiling. A dialog has no ceiling to tune, and editing is
+// not filtering.
+//
+// Every held ticker, whether or not it published: the filter panel is
+// deliberately silent about the quiet ones, so this is where a reader
+// confirms a holding is still on the list.
+// WHICH MARKETS HAVE AN ANNOUNCEMENT SOURCE, asked of the enabled sources
+// rather than written down here. `announces_for` is the market a source
+// carries company announcements for, and it is null for everything that
+// publishes on its own schedule - so AU reads as uncovered even though two
+// AU sources are enabled, because a central bank does not publish company
+// announcements.
+//
+// Derived on every draw. If a market ever gains a source, these strings
+// stop applying to it without anyone editing them; if one is switched off
+// in sources.yaml, they start.
+function announcementMarkets() {
+  return new Set((state.sources || [])
+    .filter((s) => s.enabled && s.announces_for)
+    .map((s) => s.announces_for));
+}
+
+const MARKETS = ["US", "CN", "AU", "HK", "JP", "UK", "EU"];
+
+function drawWatchlistSettings() {
+  const held = state.watchlist || [];
+  const covered = announcementMarkets();
+  const withItems = new Set(((state.facets && state.facets.ticker) || [])
+    .map((x) => x.value));
+  const rows = held.map((e) => {
+    const live = withItems.has(e.ticker);
+    // THREE STATES, not two. "nothing in this window" implies something
+    // could have published; for a market with no source, nothing can, and
+    // saying so is the same distinction the tape draws between nothing
+    // yet and nothing ever. Evidence beats derivation: a ticker that has
+    // somehow published reads as published whatever the source list says.
+    const uncovered = !live && !covered.has(e.market);
+    const label = live ? t("settings.watchlist_published")
+                : uncovered ? t("settings.watchlist_no_source")
+                : t("settings.watchlist_quiet");
+    // Not --fault and not amber: a market nobody collects is a fact about
+    // the record, not a fault, so the row keeps the quiet --chrome it
+    // already had.
+    const detail = uncovered
+      ? ` title="${esc(t("settings.watchlist_no_source_detail"))}"` : "";
+    return `<div class="swl-row">
+      <span class="swl-t">${esc(e.ticker)}</span>
+      <span class="swl-m">${esc(e.market)}</span>
+      <span class="swl-s${live ? " live" : ""}"${detail}>${esc(label)}</span>
+      <button class="wl-del" data-ticker="${esc(e.ticker)}"
+              data-market="${esc(e.market)}"
+              aria-label="${esc(t("watchlist.remove", { ticker: e.ticker }))}"
+              title="${esc(t("watchlist.remove_title",
+                             { ticker: e.ticker, market: e.market }))}"
+              >−</button></div>`;
+  }).join("");
+  // Unchanged from the panel: same ids, same endpoint, same validation,
+  // same .wl-msg status line. Only where it renders has moved.
+  $("settings-watchlist").innerHTML = (rows
+    || `<span class="fempty">${esc(t("filter.empty_watchlist"))}</span>`) + `
+    <form class="wl-add" id="wl-add">
+      <input id="wl-ticker" name="ticker" maxlength="12"
+             placeholder="${esc(t("watchlist.ticker_placeholder"))}"
+             aria-label="${esc(t("watchlist.ticker_label"))}"
+             autocomplete="off" spellcheck="false">
+      <select id="wl-market" aria-label="${esc(t("watchlist.market_label"))}">
+        ${MARKETS.map((m) => `<option value="${m}">${m}${
+          covered.has(m) ? "" : " — " + esc(t("settings.market_no_source"))
+        }</option>`).join("")}
+      </select>
+      <button class="fbtn" type="submit">${esc(t("watchlist.add"))}</button>
+      <span class="wl-msg" id="wl-msg" role="status" aria-live="polite"></span>
+    </form>`;
+  wireWatchlistControls();
 }
 
 function wireSettings() {
@@ -978,7 +1310,7 @@ async function reloadEverything() {
   applyStaticStrings();
   drawRibbon(await get("/api/ribbon"));
   state.tape = (await get("/api/tape")).items;
-  drawTape(); drawTokens();
+  drawTape(); drawTokens(); drawJurBar();
   await refreshUnread();
   drawRail(await get("/api/rail"));
 }
@@ -1031,9 +1363,14 @@ async function boot() {
       n.textContent = t("app.first_run", { n: swept.marked });
     }
   }
-  wireKeyboard(); drawTokens();
-  drawHours(); tickClock(); setInterval(tickClock, 1000);
+  wireKeyboard(); drawTokens(); drawJurBar();
+  drawHours();
+  // Before the first tick, so the band's stored state is settled before
+  // anything measures or paints it.
+  $("ribbon").hidden = !bandShouldShow();
+  tickClock(); setInterval(tickClock, 1000);
   drawRibbon(await get("/api/ribbon"));
+  drawStrip(currentFraction());
   const tape = await get("/api/tape");
   state.tape = tape.items;
   state.coverage = tape.coverage;

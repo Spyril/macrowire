@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import unicodedata
 import time
@@ -16,6 +17,7 @@ from . import (backfill, backup as backup_mod, db, export as export_mod, i18n,
                migrations, watchlist as wl, wire)
 from .config import (load_backup_settings, load_export_settings, load_locale,
                      load_sources, load_web_settings)
+from . import errors as errors_mod
 from .errors import BackfillInterrupted, ConfigError, MacroWireError
 
 def _cli_locale() -> str:
@@ -59,6 +61,30 @@ def _width(text: str) -> int:
 
 def _pad(text: str, width: int) -> str:
     return text + " " * max(width - _width(text), 0)
+
+
+def _stored_error(row) -> str:
+    """A logged failure, rendered in the CURRENT locale.
+
+    The row carries a key and its fields (migration 006) so this can be
+    rendered now rather than at the moment the fetch failed. A row from
+    before that migration - or from an exception that was not ours - has
+    only the English text it was written with, and gets printed as it
+    stands. It is a record of what was recorded, not something to
+    retro-translate.
+    """
+    key = row.get("error_key") if hasattr(row, "get") else None
+    if not key:
+        return row["error"]
+    try:
+        fields = json.loads(row["error_fields"] or "{}")
+    except (TypeError, ValueError):
+        fields = {}
+    prefix = (row["error"] or "").split(":", 1)[0]
+    rendered = errors_mod.render(key, fields, t.locale)
+    # The type name in front is diagnostic and stays; it is what tells a
+    # ParseError from a FetchError at a glance.
+    return f"{prefix}: {rendered}" if prefix else rendered
 
 
 def _status_col() -> int:
@@ -652,7 +678,18 @@ def cmd_locales(args) -> int:
     active = load_locale()
     print(t("cli.locales.header", path=i18n.LOCALES_DIR))
     reports = [i18n.coverage(loc) for loc in i18n.available()]
-    width = max(len(r["locale"]) for r in reports)
+    # BOTH COLUMNS MEASURED, neither written down. The name column was a
+    # literal 14, and 繁體中文（香港） is 16 display columns - eight glyphs,
+    # every one of them full-width, the parentheses included - so it
+    # overflowed its field and shunted the rest of the row right. _width
+    # was doing its job; the field it was padding into was too small to
+    # hold the answer. Same defect as the fetch status column, which was a
+    # literal 8 until `no change` outgrew it: a column carrying translated
+    # text has no width you can write down.
+    # _width, not len: a name is measured in terminal cells, and every CJK
+    # locale name added after this one is wider than its character count.
+    width = max(_width(r["locale"]) for r in reports)
+    name_width = max(_width(r["name"]) for r in reports) + 1
     for report in reports:
         flags = ""
         if report["locale"] == i18n.DEFAULT_LOCALE:
@@ -661,7 +698,7 @@ def cmd_locales(args) -> int:
             flags += t("cli.locales.active")
         print("  " + t("cli.locales.row",
                        locale=_pad(report["locale"], width),
-                       name=_pad(report["name"], 14),
+                       name=_pad(report["name"], name_width),
                        present=report["present"], total=report["total"],
                        percent=f"{report['percent']:.0f}", flags=flags))
 
@@ -813,7 +850,7 @@ def cmd_status(args) -> int:
         if row["last_error"]:
             when = row["last_error"]["timestamp"]
             note = (t("cli.status.error_resolved") if row["last_error"].get("resolved")
-                    else row["last_error"]["error"])
+                    else _stored_error(row["last_error"]))
             print(f"  {_pad(label['last_error'], col)}: {when}  {note}")
         print()
 

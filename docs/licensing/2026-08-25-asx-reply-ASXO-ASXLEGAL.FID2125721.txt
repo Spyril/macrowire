@@ -1,0 +1,38 @@
+ASX reply: consent declined
+===========================
+
+Date received:  25 August 2026
+From:           ASX, Office of General Counsel
+Reference:      ASXO-ASXLEGAL.FID2125721
+Regarding:      Request of 21 August 2026 for written consent under
+                clause 5(b) of the ASX Terms of Use
+
+THE VERBATIM TEXT OF THIS REPLY HAS NOT BEEN PASTED IN YET.
+-------------------------------------------------------------------------
+Paste the reply as received, below the line at the end of this file, and
+delete these five lines. Until then this file is a record of what the
+reply said, written from a summary - which is NOT the same thing as the
+reply, and is not what this directory exists to hold.
+-------------------------------------------------------------------------
+
+What the reply said
+-------------------
+
+Consent declined. ASX does not allow retail end users to scrape the ASX
+website. The request was directed to ASX's published list of data vendors
+and ISVs as the route for sourcing the data.
+
+Scope of this document
+----------------------
+
+This is one written answer to one retail request. It is not a statement of
+ASX policy beyond what the reply itself says, and the README does not
+present it as one.
+
+The conclusion it supports was already reached from clause 5(b) alone:
+ASX was out before this letter. What the letter changes is that the
+position is confirmed rather than inferred.
+
+-------------------------------------------------------------------------
+VERBATIM TEXT AS RECEIVED
+-------------------------------------------------------------------------

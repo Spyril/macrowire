@@ -110,6 +110,13 @@ class Source:
     timeout_seconds: int
     stagger_seconds: int
     staleness_days: int | None
+    # How often this series is PUBLISHED, in days. Distinct from
+    # staleness_days, which is about polling: this is the publisher's own
+    # cadence, and it is what makes six-day-old CoT on time and four-day-old
+    # RBA late. Absent means the age is shown and lateness is NEVER
+    # asserted - a series that has not declared a cadence is not one this
+    # code gets to guess at.
+    cadence_days: int | None = None
     raw_retention_days: int | None = None
     archive: str = "unknown"
     jurisdiction: str = ""
@@ -349,6 +356,15 @@ def load_sources(path: Path | None = None) -> list[Source]:
                     f"{path}: '{name}' staleness_days must be >= 1, or null for off"
                 )
 
+        cadence = setting("cadence_days", None)
+        if cadence is not None:
+            cadence = int(cadence)
+            if cadence < 1:
+                raise ConfigError(
+                    f"{path}: '{name}' cadence_days must be >= 1, or null to "
+                    f"show age without ever calling it late"
+                )
+
         sources.append(
             Source(
                 name=name,
@@ -360,6 +376,7 @@ def load_sources(path: Path | None = None) -> list[Source]:
                 timeout_seconds=int(setting("timeout_seconds", DEFAULT_TIMEOUT)),
                 stagger_seconds=int(setting("stagger_seconds", 0)),
                 staleness_days=staleness,
+                cadence_days=cadence,
                 raw_retention_days=retention,
                 archive=archive,
                 jurisdiction=jurisdiction,

@@ -1,0 +1,38 @@
+Request to ASX for written consent under clause 5(b)
+====================================================
+
+Date sent:  21 August 2026
+To:         ASX
+From:       repository owner
+Subject:    Request for written consent for automated access to company
+            announcements
+
+THE VERBATIM TEXT OF THIS REQUEST HAS NOT BEEN PASTED IN YET.
+-------------------------------------------------------------------------
+Paste the message as sent, below the line at the end of this file, and
+delete these four lines. Until then this file is a record of what the
+request covered, not a copy of it - see the note at the bottom.
+-------------------------------------------------------------------------
+
+What the request covered
+------------------------
+
+Written consent under clause 5(b) of the ASX Terms of Use for automated
+access to company announcements, on these limits:
+
+  - personal, non-commercial use
+  - a watchlist of approximately 20 securities
+  - polled a few times a day
+  - stored locally
+  - never redistributed
+
+Why it was sent
+---------------
+
+Clause 5(b) prohibits automated access "without prior written consent",
+which means the prohibition has a documented way through it. Asking is
+the only way to find out whether that way is open in practice.
+
+-------------------------------------------------------------------------
+VERBATIM TEXT AS SENT
+-------------------------------------------------------------------------

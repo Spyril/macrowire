@@ -1,4 +1,9 @@
 <!doctype html>
+<!-- lang is a PLACEHOLDER here and the real value is set in boot() from the
+     bootstrap payload's locale, because this file is served statically and
+     has nothing to template it with. It drives font selection - see the
+     :lang() rules in style.css - so it is set before applyStaticStrings
+     draws anything, not left until the tape arrives. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -21,17 +26,41 @@
   <div class="mast-line">
     <span class="wordmark">MacroWire</span>
     <span class="clock" id="clock">--:--:--<span class="zone"> ---</span></span>
+    <!-- VISIBLE WITHOUT BEING LOOKED FOR. Quiet in --chrome while every
+         source is current; --fault the moment one is not. Never --accent:
+         amber means unread and nothing else, and a health warning
+         competing with the unread gutter would cost both of them. -->
+    <button class="hbtn" id="health-open" aria-haspopup="dialog">
+      <i class="hdot" id="health-dot"></i><span id="health-summary"></span>
+    </button>
     <button class="fbtn" id="fopen" aria-expanded="false" aria-controls="fpanel">
       <span data-i18n="filter.button"></span> <kbd>f</kbd>
     </button>
     <span class="unread-total" id="unread-total"></span>
     <button class="fbtn" id="settings-open" data-i18n="settings.open"></button>
   </div>
-  <!-- Second line, present ONLY while something is filtered. Costs zero
-       vertical space when browsing, ~24px when filtering - and when you
-       are filtering you are not deep-reading, so the cost lands where it
-       hurts least. -->
-  <div class="mast-tokens" id="mast-tokens" hidden>
+  <!-- TWO QUESTIONS, TWO COSTS. The band below answers "how does the whole
+       day lay out in my time", which is asked once at the start of a
+       session and was charging 275px - plus ~45px of `no mark` legend - on
+       every glance. This line answers the one asked on every glance: what
+       is open now and what lands next. The band is still there behind `r`
+       for the question it is actually good at. -->
+  <div class="mast-strip" id="mast-strip" data-i18n-label="strip.aria"></div>
+  <!-- THE MOST-USED AXIS, ALWAYS ON SCREEN. Jurisdiction cost `f`, find it
+       in the panel, click, Esc - every time, for the filter reached for
+       most. Seven chips is one line.
+       These are the SAME chips as the panel's jurisdiction axis, not a
+       copy of its state: both renders read one Set in state.f and share
+       one click handler, so there is nothing to keep in sync.
+       This row is UNCONDITIONAL. It used to be the tokens row, which hid
+       itself when nothing was filtered; the chips are always here, so the
+       tokens moved in beside them rather than keeping a second row that
+       sometimes appears. `.tokens:empty::before` carries the empty
+       case. -->
+  <div class="mast-jur" id="mast-jur">
+    <span class="jlab" data-i18n="filter.short.jurisdiction"></span>
+    <div class="jchips" id="jur-chips"></div>
+    <i class="jdiv"></i>
     <div class="tokens" id="tokens" aria-live="polite"></div>
     <button class="fclear" id="fclear"><span data-i18n="filter.clear"></span> <kbd>c</kbd></button>
   </div>
@@ -44,6 +73,29 @@
      trapping, Esc-to-close, a backdrop and an inert background with no
      JavaScript - the same reasoning that made the filter axes <details>.
      And the drawer's height bug is unreachable here by construction. -->
+<!-- The same shape as the settings dialog, for the same reasons it gives:
+     showModal() brings focus trapping, Esc-to-close, a backdrop and an
+     inert background with no JavaScript. The markup inside is the rail's
+     health section moved WHOLE - the jurisdiction grouping, the
+     network-wide note, and the stacked name-over-status that exists
+     because a long status once squeezed a source name to zero width. -->
+<dialog class="settings" id="health-dialog">
+  <form method="dialog" class="settings-head">
+    <h2 data-i18n="rail.health_heading"></h2>
+    <button class="fbtn" value="close" data-i18n="settings.close"></button>
+  </form>
+  <div class="settings-body">
+    <section>
+      <div class="health" id="health"></div>
+    </section>
+    <section>
+      <h3 data-i18n="rail.risk_heading"></h3>
+      <div class="risk" id="risk"></div>
+      <div class="risk" id="export-state"></div>
+    </section>
+  </div>
+</dialog>
+
 <dialog class="settings" id="settings">
   <form method="dialog" class="settings-head">
     <h2 data-i18n="settings.title"></h2>
@@ -55,6 +107,14 @@
       <p class="snote" data-i18n="settings.viewer_note"></p>
       <div class="sgrid" id="settings-viewer"></div>
     </section>
+    <!-- Editing, not filtering. The filter panel shows only tickers that
+         published in the window; this is where the list itself is kept,
+         and the one place a holding can be added or removed. -->
+    <section>
+      <h3 data-i18n="settings.watchlist_heading"></h3>
+      <p class="snote" data-i18n="settings.watchlist_note"></p>
+      <div class="swl" id="settings-watchlist"></div>
+    </section>
     <section>
       <h3 data-i18n="settings.install_heading"></h3>
       <p class="snote" id="settings-install-note"></p>
@@ -64,7 +124,12 @@
   <datalist id="tz-all"></datalist>
 </dialog>
 
-<section class="ribbon" data-i18n-label="app.aria_ribbon">
+<!-- HIDDEN IN THE MARKUP, not hidden by script after paint. The stored
+     choice is read in boot() and the band is revealed if it says so, which
+     means the closed case never draws and the open case draws once. The
+     other order - visible by default, hidden on load - flashes 320px of
+     chrome on every page load for a reader who keeps it shut. -->
+<section class="ribbon" id="ribbon" data-i18n-label="app.aria_ribbon" hidden>
   <div class="ribbon-head">
     <span id="ribbon-day">—</span>
     <span id="ribbon-note" data-i18n="ribbon.note"></span>
@@ -121,13 +186,12 @@
     <h2 data-i18n="rail.rba_heading"></h2>
     <div class="fx" id="rba"></div>
     <div class="asof" id="rba-asof"></div>
-
-    <h2 data-i18n="rail.health_heading"></h2>
-    <div class="health" id="health"></div>
-
-    <h2 data-i18n="rail.risk_heading"></h2>
-    <div class="risk" id="risk"></div>
-    <div class="risk" id="export-state"></div>
+    <!-- Market series only. Health was the sixth of seven sections here,
+         which meant a source that had gone quiet was something you had to
+         SCROLL to discover - and a stale feed is exactly what makes an
+         empty tape lie to you. It is in the masthead now. Risk and the
+         export state went with it: they answer the same question about
+         what is trustworthy, and they were below health. -->
   </aside>
 </div>
 

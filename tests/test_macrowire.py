@@ -222,6 +222,15 @@ def read_code(path, syntax=None):
                           syntax or path.suffix)
 
 
+def t_en(key, **fields):
+    """One English string, for tests that must match what the page rendered.
+
+    Spelling the label out as a literal in a test means the catalogue and
+    the test can disagree and only the test is wrong."""
+    from macrowire import i18n
+    return i18n.Translator("en")(key, **fields)
+
+
 def seeded(case, conn, **expected):
     """Assert a fixture produced what it claims, AT CREATION.
 
@@ -555,6 +564,127 @@ class TestMigrations(unittest.TestCase):
         self.assertIn("error_kind", cols)
         conn.close()
 
+    def test_a_row_logged_before_006_still_renders(self):
+        """Rows written before the error became a key hold English prose and
+        no key. They are a record of what was recorded: rendered as they
+        stand, never retro-translated."""
+        from macrowire.__main__ import _stored_error
+        conn = db.connect(self.path)
+        db.initialise(conn)
+        conn.execute(
+            """INSERT INTO fetch_log (source, timestamp, status, error)
+               VALUES ('legacy', '2026-01-01T00:00:00+00:00', 'error',
+                       'ParseError: boe_news: empty response body')""")
+        conn.commit()
+        row = dict(conn.execute(
+            "SELECT error, error_key, error_fields FROM fetch_log").fetchone())
+        self.assertEqual(_stored_error(row),
+                         "ParseError: boe_news: empty response body")
+        conn.close()
+
+
+class TestErrorMessagesAreKeys(TempDB):
+    """An error message is a key and its fields, never formatted prose.
+
+    fetch_log.error is READ BACK and printed by `status`, so formatting at
+    the raise site would have stored whichever locale was current when the
+    fetch failed. A row collected under zh-CN would then render Chinese
+    forever, including after switching back to en. Migration 006 stores the
+    key and the fields instead and renders where it is read.
+    """
+
+    def test_a_key_renders_in_the_readers_locale_and_stores_in_english(self):
+        from macrowire.errors import ParseError
+        exc = ParseError("errors.parsers.base.empty_body", source="boe_news")
+        self.assertEqual(exc.key, "errors.parsers.base.empty_body")
+        self.assertEqual(exc.fields, {"source": "boe_news"})
+        # No catalogue entry yet - step 1 lands the mechanism with zero
+        # messages moved - so both fall back rather than raising. What
+        # matters here is that english() does not consult the config locale.
+        self.assertIn("boe_news", exc.english())
+
+    def test_a_plain_message_still_works_verbatim(self):
+        """186 raise sites move one at a time. An unmigrated one must behave
+        exactly as it did, or the migration cannot be incremental."""
+        from macrowire.errors import MacroWireError
+        exc = MacroWireError("backup already exists: /tmp/x")
+        self.assertIsNone(exc.key)
+        self.assertEqual(str(exc), "backup already exists: /tmp/x")
+        self.assertEqual(exc.english(), "backup already exists: /tmp/x")
+
+    def test_the_kind_still_reaches_fetch_log(self):
+        from macrowire.errors import FetchError
+        self.assertEqual(FetchError("errors.x.y", kind="timeout").kind, "timeout")
+        self.assertEqual(FetchError("errors.x.y").kind, "network")
+
+    def test_a_broken_config_error_renders_without_recursing(self):
+        """config.py raises ConfigError while LOADING config, so resolving
+        the reader's locale can be the very thing that is broken. An error
+        about a malformed sources.yaml must not recurse through it."""
+        import unittest.mock as mock
+        from macrowire.errors import ConfigError
+        exc = ConfigError("errors.config.not_a_mapping", path="sources.yaml")
+        with mock.patch("macrowire.config.load_locale",
+                        side_effect=ConfigError("sources.yaml is unreadable")):
+            rendered = str(exc)
+        self.assertIn("sources.yaml", rendered)
+
+    def test_an_unrenderable_key_still_produces_something_readable(self):
+        """Reporting an exception must not raise one."""
+        import unittest.mock as mock
+        from macrowire.errors import ParseError
+        exc = ParseError("errors.nowhere.at_all", source="x")
+        with mock.patch("macrowire.i18n.Translator", side_effect=RuntimeError):
+            self.assertIn("errors.nowhere.at_all", str(exc))
+            self.assertIn("errors.nowhere.at_all", exc.english())
+
+    def test_a_logged_failure_round_trips_through_key_and_fields(self):
+        import json as _json
+        from macrowire.errors import ParseError
+        exc = ParseError("errors.parsers.base.empty_body", source="boe_news")
+        db.log_fetch(self.conn, "boe_news", status=db.STATUS_ERROR,
+                     error=f"ParseError: {exc.english()}", error_kind=exc.kind,
+                     error_key=exc.key,
+                     error_fields=_json.dumps(exc.fields, sort_keys=True))
+        row = dict(self.conn.execute(
+            "SELECT error, error_key, error_fields FROM fetch_log").fetchone())
+        self.assertEqual(row["error_key"], "errors.parsers.base.empty_body")
+        self.assertEqual(_json.loads(row["error_fields"]), {"source": "boe_news"})
+        self.assertIn("boe_news", row["error"])
+
+    def test_reading_a_logged_failure_back_does_not_lose_the_fields(self):
+        """The CLI had its own copy of the rendering and it dropped them:
+        `status` printed `ParseError: errors.parsers.base.empty_body` with
+        no hint of WHICH source. One `errors.render` now serves the raise
+        site and the read-back, so they cannot drift apart again."""
+        from macrowire.__main__ import _stored_error
+        row = {"error": "ParseError: boe_news: empty response body",
+               "error_key": "errors.parsers.base.empty_body",
+               "error_fields": '{"source": "boe_news"}'}
+        self.assertIn("boe_news", _stored_error(row))
+
+    def test_unreadable_stored_fields_do_not_stop_status_printing(self):
+        from macrowire.__main__ import _stored_error
+        row = {"error": "ParseError: something", "error_key": "errors.x.y",
+               "error_fields": "{not json"}
+        self.assertIn("errors.x.y", _stored_error(row))
+
+    def test_every_key_a_raise_site_names_exists_in_the_catalogue(self):
+        """`_looks_like_a_key` is SYNTACTIC, so a typo'd key is silently
+        treated as a key and renders as itself. This is the guard that
+        closes that gap."""
+        import re
+        from macrowire import i18n
+        en = i18n.renderable(i18n.load("en"))
+        found = set()
+        for path in sorted((ROOT / "macrowire").rglob("*.py")):
+            code = strip_comments(read_code(path), "py")
+            found |= set(re.findall(r'["\'](errors\.[a-z0-9_.]+)["\']', code))
+        missing = sorted(k for k in found if k not in en)
+        self.assertEqual(missing, [],
+                         f"raise sites name keys that are in no catalogue: "
+                         f"{missing}")
+
 
 class TestBackupRoundTrip(unittest.TestCase):
     """Untested backups are not backups."""
@@ -870,6 +1000,57 @@ class TestServePort(unittest.TestCase):
             p.write_text(yaml.safe_dump(doc, allow_unicode=True))
             with self.assertRaises(ConfigError):
                 load_web_settings(p)
+
+    def test_a_non_positive_cadence_is_rejected(self):
+        """0 would make every value late from the moment it was published,
+        and a negative one is not a cadence at all. Rejected at LOAD, where
+        the mistake is, rather than rendered as a permanent fault."""
+        import yaml
+        from macrowire.config import load_sources
+        from macrowire.errors import ConfigError
+        doc = yaml.safe_load(Path("sources.yaml").read_text())
+        target = next(s for s in doc["sources"] if s["name"] == "cftc_cot")
+        for bad in (0, -1):
+            with self.subTest(cadence=bad):
+                target.setdefault("config", {})["cadence_days"] = bad
+                with tempfile.TemporaryDirectory() as d:
+                    p = Path(d) / "s.yaml"
+                    p.write_text(yaml.safe_dump(doc, allow_unicode=True))
+                    with self.assertRaises(ConfigError):
+                        load_sources(p)
+
+    def test_an_absent_cadence_loads_as_none(self):
+        """Absent is a real state, not a zero. It has to survive the loader
+        as None so the rail can tell 'no cadence declared' from 'a cadence
+        of nothing'."""
+        import yaml
+        from macrowire.config import load_sources
+        doc = yaml.safe_load(Path("sources.yaml").read_text())
+        target = next(s for s in doc["sources"] if s["name"] == "cftc_cot")
+        target.get("config", {}).pop("cadence_days", None)
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "s.yaml"
+            p.write_text(yaml.safe_dump(doc, allow_unicode=True))
+            loaded = {s.name: s for s in load_sources(p)}
+        self.assertIsNone(loaded["cftc_cot"].cadence_days)
+        # And the ones that DO declare one still carry it, or this test
+        # would pass on a loader that dropped the field entirely.
+        self.assertEqual(loaded["rba_exchange_rates"].cadence_days, 3)
+
+    def test_the_shipped_config_declares_a_cadence_for_every_rail_series(self):
+        """Not a rule for sources generally - most have no business
+        declaring one. But the five the rail draws are exactly the ones
+        where an unexplained old number is the problem this solves."""
+        from macrowire.config import load_sources
+        loaded = {s.name: s for s in load_sources()}
+        for name in ("cfets_ccpr", "cftc_cot", "ecb_fx",
+                     "rba_exchange_rates", "sse_southbound"):
+            with self.subTest(source=name):
+                self.assertIsNotNone(
+                    loaded[name].cadence_days,
+                    f"{name} is on the rail with no declared cadence, so its "
+                    f"age can never be called late")
+                self.assertGreaterEqual(loaded[name].cadence_days, 1)
 
     def test_is_free_reflects_reality(self):
         import socket
@@ -2101,12 +2282,21 @@ class TestFilterUI(unittest.TestCase):
         self.assertNotEqual(t("tape.no_match_title"), t("tape.empty_title"))
         self.assertNotEqual(t("tape.no_match_body"), t("tape.empty_body"))
 
-    def test_clear_all_exists_and_the_whole_row_hides_when_inactive(self):
-        """The ROW goes, not just the button: an empty flex row still costs
-        its padding, and the masthead must not take tape when nothing is
-        filtered."""
+    def test_clear_all_exists_and_the_tokens_row_is_no_longer_conditional(self):
+        """This asserted `$("mast-tokens").hidden = active.length === 0` -
+        the row went away when nothing was filtered, so an empty flex row
+        did not spend its padding on a reader who was only browsing.
+
+        That line is gone with the row. The tokens share the jurisdiction
+        bar now, which is unconditional because the chips in it always are,
+        and one row that sometimes carries tokens beats two rows that each
+        sometimes do. The empty case is `.tokens:empty::before`, which
+        renders filter.none_active rather than nothing."""
         self.assertIn("function clearFilters", self.js)
-        self.assertIn('$("mast-tokens").hidden = active.length === 0', self.js)
+        self.assertNotIn("mast-tokens", self.js,
+                         "the tokens row is conditional again")
+        self.assertIn(".tokens:empty::before", self.css)
+        self.assertIn("--empty-filters", self.js)
 
     # Selectors permitted to spend a signal colour, each with the reason.
     # An allowlist of SELECTORS, not a character range: the previous version
@@ -2114,15 +2304,38 @@ class TestFilterUI(unittest.TestCase):
     # past the end of it, so `.chip .n { color: var(--accent) }` - a window
     # count painted in the unread colour - was invisible to the test that
     # existed to forbid exactly that.
+    # KEYED BY SELECTOR AND TOKEN. It was keyed by selector alone, which
+    # meant an entry admitted for --fault also admitted --accent on the
+    # same selector: `.hbtn.bad` was allowed here because a health warning
+    # is what --fault is for, and the list would have said nothing if it
+    # had been painted amber. Two of these entries are specifically about
+    # --fault and the rest specifically about --accent, so the token is
+    # part of the permission. Every reason is the one it always carried.
     SIGNAL_ALLOWED = {
-        "focus-visible":  "accessibility: the focus ring must be visible",
-        ".wl-msg.err":    "a failure, not a category",
-        ".item.unread":   "unread IS what --accent means",
-        ".unread-total":  "the masthead unread count is unread",
-        ".chip .n-unread": "an unread count, which is what --accent means",
-        ".health .warn":  "--fault on a failing source is what --fault is for",
-        ".unsolved":      "--fault on an unsolved risk, likewise",
-        ".hnote":         "--fault on a network-wide fault, likewise",
+        ("focus-visible", "--accent"):
+            "accessibility: the focus ring must be visible",
+        (".wl-msg.err", "--fault"):
+            "a failure, not a category",
+        (".item.unread", "--accent"):
+            "unread IS what --accent means",
+        (".unread-total", "--accent"):
+            "the masthead unread count is unread",
+        (".chip .n-unread", "--accent"):
+            "an unread count, which is what --accent means",
+        (".health .warn", "--fault"):
+            "--fault on a failing source is what --fault is for",
+        (".unsolved", "--fault"):
+            "--fault on an unsolved risk, likewise",
+        (".hnote", "--fault"):
+            "--fault on a network-wide fault, likewise",
+        (".hbtn.bad", "--fault"):
+            "the masthead health indicator, which is the same "
+            "fault as the rows it opens - and NOT --accent, "
+            "because amber is unread and only unread",
+        (".age.late", "--fault"):
+            "a series past its own declared cadence: a fault, "
+            "not a category - and only ever shown where the "
+            "source said what its cadence was",
     }
 
     def signal_users(self, token):
@@ -2159,9 +2372,11 @@ class TestFilterUI(unittest.TestCase):
             for selector in self.signal_users(token):
                 with self.subTest(token=token, selector=selector):
                     self.assertTrue(
-                        any(k in selector for k in self.SIGNAL_ALLOWED),
+                        any(k in selector for k, tok in self.SIGNAL_ALLOWED
+                            if tok == token),
                         f"{selector!r} spends {token} to carry meaning; if that "
-                        f"is deliberate, add it to SIGNAL_ALLOWED with a reason")
+                        f"is deliberate, add ({selector!r}, {token!r}) to "
+                        f"SIGNAL_ALLOWED with a reason")
 
     def test_no_filter_chip_carries_a_signal_colour(self):
         """The specific regression: a filter chip tinted by category."""
@@ -3550,14 +3765,183 @@ class FilterPanelTests(TempDB):
 
     def test_no_axis_can_hide_a_filter_that_is_narrowing_the_tape(self):
         """The point the disclosure version had to solve with `open` on an
-        active axis. Nothing hides anything now, so there is nothing to
-        solve - but the panel must not grow a second way to hide."""
+        active axis. No axis collapses now - but the panel must not grow a
+        second way to hide, and it has grown one on purpose: the ticker
+        axis's type-to-narrow box sets [hidden] on chips that do not match.
+
+        So the rule is not "nothing hides" any more, it is "nothing hides a
+        chip that is FILTERING". `.chip[hidden]` is allowed and the code is
+        held to never setting it on a pressed chip; any OTHER way of hiding
+        inside the panel is still a defect."""
         panel = self.css[self.css.index(".fpanel {"):]
         panel = panel[:panel.index("\n.tape")] if "\n.tape" in panel else panel
+        panel = panel[:panel.index(".nomatch")] if ".nomatch" in panel else panel
+        allowed = ".chip[hidden] { display: none; }"
+        self.assertIn(allowed, panel,
+                      "the narrow box relies on this rule; if it has gone, "
+                      "narrowing silently stopped working")
+        rest = panel.replace(allowed, "")
         for hiding in ("display: none", "visibility: hidden", "content-visibility"):
             with self.subTest(rule=hiding):
-                self.assertNotIn(hiding, panel[:panel.index(".nomatch")]
-                                 if ".nomatch" in panel else panel)
+                self.assertNotIn(hiding, rest)
+
+    def test_active_state_is_recorded_in_exactly_one_place(self):
+        """Two renders of the jurisdiction chips, one Set. The failure this
+        guards is the obvious one: a second store - a `pressed` array, a
+        `data-on` attribute read back as truth, a copy of state.f - added so
+        the bar can 'remember' what the panel did. There is nothing to
+        remember; both renders ask state.f."""
+        import re
+        code = self.js
+        # The only mutations of active-ness. Anything else assigning to a
+        # set-like alongside these is a second store.
+        writes = re.findall(r"state\.f\[[^\]]+\]\.(add|delete|clear)\(", code)
+        floor(self, writes, "writes to the filter state", 3)
+        self.assertEqual(
+            re.findall(r"state\.f\s*=", code), [],
+            "state.f is being reassigned; the Sets are the identity")
+        for smell in ("pressedChips", "activeJur", "jurActive", "barState",
+                      "state.pressed", "state.active"):
+            with self.subTest(name=smell):
+                self.assertNotIn(smell, code,
+                                 f"{smell} looks like a second store of "
+                                 f"active-ness")
+        # Reading aria-pressed back as truth is the subtle version: it makes
+        # the DOM the record and the Set a cache of it.
+        self.assertEqual(
+            re.findall(r"getAttribute\(\s*[\"']aria-pressed", code), [],
+            "aria-pressed is being read back; it is derived from state.f, "
+            "not a place active-ness lives")
+
+    def test_the_pressed_sync_is_not_scoped_to_the_panel(self):
+        """`$("fgrid").querySelectorAll` was what it used to be.
+
+        BE PRECISE ABOUT WHAT THIS GUARDS. Re-scoping it to the panel does
+        not break the bar today, because afterFilterChange re-renders the
+        bar from the Set anyway and `chip()` sets aria-pressed at render
+        time - measured: the browser test passes under that mutation. What
+        the document-wide sweep buys is that a THIRD render of any chip is
+        correct without anyone adding sync code for it, which is the
+        property the whole restructure is for. So it is asserted here, in
+        the source, rather than left to a browser test that cannot see the
+        difference."""
+        body = self.js[self.js.index("function syncChipPressed"):]
+        body = body[:body.index("\n}", 10)]
+        self.assertIn("document.querySelectorAll", body,
+                      "syncChipPressed no longer sweeps the whole document, "
+                      "so the masthead copy will drift from the panel's")
+        self.assertNotIn('$("fgrid")', body,
+                         "syncChipPressed is scoped back to the panel")
+        self.assertNotIn("drawPanelPressedState", self.js,
+                         "the panel-scoped version is still around")
+        # One handler, both renders.
+        self.assertIn("function wireChips(root)", self.js)
+        self.assertIn('wireChips($("fgrid"))', self.js)
+        self.assertIn('wireChips($("jur-chips"))', self.js)
+
+    def test_every_strip_key_exists_in_both_catalogues(self):
+        """The strip is new chrome, so it is a fresh chance to ship a string
+        in one language. Scanned out of app.js and index.html rather than
+        listed here, or the list and the code drift apart."""
+        import re
+        from macrowire import i18n
+        found = set(re.findall(r'["\'](strip\.[a-z0-9_]+)["\']', self.js))
+        found |= set(re.findall(r'data-i18n[a-z-]*="(strip\.[a-z0-9_]+)"', self.html))
+        floor(self, found, "strip.* keys in the code", 8)
+        for locale in floor(self, i18n.available(), "locale files", 2):
+            cat = i18n.renderable(i18n.load(locale))
+            missing = sorted(k for k in found if k not in cat)
+            with self.subTest(locale=locale):
+                self.assertEqual(missing, [],
+                                 f"{locale} is missing {missing}")
+
+    def test_the_strip_never_translates_a_venue_code_or_a_time(self):
+        """SYD and 18:00 are facts about a venue and a clock. The catalogue
+        holds the words AROUND them - `{time}` and `{n}` are placeholders,
+        filled from the payload, never written into a locale file."""
+        from macrowire import i18n
+        for locale in floor(self, i18n.available(), "locale files", 2):
+            cat = i18n.renderable(i18n.load(locale))
+            for key, value in cat.items():
+                if not key.startswith("strip."):
+                    continue
+                with self.subTest(locale=locale, key=key):
+                    for code in ("SYD", "TYO", "HKG", "LON", "NYC"):
+                        self.assertNotIn(code, value,
+                                         f"{key} has a venue code baked in")
+                    self.assertNotRegex(
+                        value, r"\d{1,2}:\d{2}",
+                        f"{key} has a clock time baked in; it belongs in the "
+                        f"placeholder")
+
+    def test_the_band_toggle_is_not_a_stored_preference(self):
+        """It is localStorage on purpose. Every row in preferences.py is
+        consumed SERVER-side - locale by the Translator, timezone and the
+        orderings by the ribbon's projection, window by the queries - which
+        is why they need a database. The band is a view toggle the server
+        never sees, so a migration and a settings row would buy nothing."""
+        prefs = strip_comments(read_code(ROOT / "macrowire/preferences.py"), "py")
+        self.assertNotIn("band", prefs,
+                         "the band toggle reached preferences.py; it is a "
+                         "local view state, not an installation setting")
+        self.assertIn("localStorage", self.js)
+        self.assertIn("macrowire.band", self.js)
+
+    def test_no_cjk_family_is_applied_to_all_text_unconditionally(self):
+        """--sans ended with "Noto Sans CJK SC". SC is SIMPLIFIED Chinese,
+        and Han codepoints shared with Japanese are drawn differently - 直,
+        骨, 今 among many - so Japanese set in it is legible and visibly
+        wrong to a native reader, and Traditional Chinese likewise.
+
+        The rule: a CJK family may only be named inside a rule scoped by
+        :lang(). Anywhere else it is an assertion about text nobody has
+        established the language of."""
+        import re
+        css = self.css
+        families = re.findall(r'"Noto Sans (?:Mono )?CJK [A-Z]{2}"', css)
+        floor(self, families, "CJK family declarations", 4)
+        # Every declaration, with the selector block it sits in.
+        for m in re.finditer(r'"Noto Sans (?:Mono )?CJK [A-Z]{2}"', css):
+            start = css.rfind("}", 0, m.start()) + 1
+            selector = css[start:css.index("{", start)].strip()
+            with self.subTest(family=m.group(0), selector=selector):
+                self.assertIn(":lang(", selector,
+                              f"{m.group(0)} is applied by {selector!r}, which "
+                              f"is not scoped to a language")
+        # And the shared stacks must not name one directly.
+        for var in ("--sans:", "--mono:"):
+            decl = css[css.index(var):css.index(";", css.index(var))]
+            with self.subTest(token=var):
+                self.assertNotIn("CJK", decl,
+                                 f"{var} names a CJK family, so every reader "
+                                 f"gets it whatever they are reading: {decl}")
+
+    def test_the_language_scoped_rules_do_not_collide(self):
+        """:lang() matches by HYPHEN PREFIX, so :lang(zh) would catch zh-TW
+        as well and put Simplified back on Traditional text - the bug this
+        replaces, reintroduced by a shorter selector."""
+        import re
+        for m in re.finditer(r":lang\(([^)]+)\)", self.css):
+            tag = m.group(1).strip()
+            with self.subTest(tag=tag):
+                self.assertNotEqual(
+                    tag, "zh",
+                    "`:lang(zh)` matches zh-CN and zh-TW alike; name the "
+                    "region or the script")
+                self.assertRegex(
+                    tag, r"^[a-z]{2}(-[A-Za-z]{2,4})?$",
+                    f"{tag!r} is not a language tag :lang() can match")
+
+    def test_narrowing_never_hides_a_pressed_chip(self):
+        """A chip that is narrowing the tape must stay on screen whatever is
+        typed in the find box. Otherwise the box becomes a way to make an
+        active filter invisible while it still acts on the rows."""
+        body = self.js[self.js.index("function wireNarrow"):]
+        body = body[:body.index("\nfunction ", 10)]
+        self.assertIn("state.f.ticker.has", body,
+                      "wireNarrow does not consult the filter state, so it "
+                      "can hide a filter that is still narrowing the tape")
+        self.assertIn("!pressed", body)
 
     def test_every_axis_shows_how_many_chips_it_holds(self):
         self.assertIn('class="fcount"', self.js)
@@ -4815,17 +5199,26 @@ class DialogStaticTests(unittest.TestCase):
                           "show() opens a non-modal dialog")
 
     def test_open_and_close_target_the_same_element(self):
-        body = self.js[self.js.index("async function openSettings"):]
-        body = body[:body.index("\n}")]
+        """Every dialog closes itself through the platform.
+
+        This used to read the first `<dialog` in the file and assert it was
+        `settings`. There are two now - health is the other - and the claim
+        was never about which one comes first: it is that whatever
+        showModal() opens has a `<form method="dialog">` INSIDE it, so the
+        close path is the platform's own and there is no second id to get
+        wrong. Derived from the showModal calls rather than named, so a
+        third dialog is covered the moment it is written."""
         import re
-        opened = re.search(r'\$\("([\w-]+)"\)\.showModal\(\)', body).group(1)
-        self.assertEqual(opened, "settings")
-        # Done is a <form method="dialog"> submit button INSIDE that same
-        # dialog, which is the platform's own close path - no second id to
-        # get wrong.
-        dialog = self.html[self.html.index("<dialog"):self.html.index("</dialog>")]
-        self.assertIn(f'id="{opened}"', dialog[:80])
-        self.assertIn('method="dialog"', dialog)
+        opened = set(re.findall(r'\$\("([\w-]+)"\)\.showModal\(\)', self.js))
+        floor(self, opened, "dialogs opened with showModal", 2)
+        for name in sorted(opened):
+            with self.subTest(dialog=name):
+                at = self.html.index(f'id="{name}"')
+                start = self.html.rindex("<dialog", 0, at)
+                block = self.html[start:self.html.index("</dialog>", start)]
+                self.assertIn('method="dialog"', block,
+                              f"#{name} has no self-closing form; something "
+                              f"else has to know how to shut it")
 
     def test_the_backdrop_rule_exists_and_is_not_transparent(self):
         import re
@@ -4963,10 +5356,15 @@ def _release_driver():
         return
     base, sid, proc = _DRIVER["base"], _DRIVER["sid"], _DRIVER["proc"]
     _DRIVER.update(sid=None)          # idempotent before anything can throw
+    closed = True
     try:
         httpx.delete(f"{base}/session/{sid}", timeout=30)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Do not claim below that Firefox was closed if it was not. The
+        # whole point of this function is that it stopped lying by omission.
+        closed = False
+        print(f"\ncould not close the browser session: {exc!r}",
+              file=sys.stderr)
     if proc is None or proc.poll() is not None:
         return
     for attempt in (lambda: os.killpg(os.getpgid(proc.pid), signal.SIGTERM),
@@ -4983,7 +5381,84 @@ def _release_driver():
         pass
     print(f"\ngeckodriver pid {proc.pid} survived: this build refuses signals "
           f"from its own parent, so it stays until the session ends. "
-          f"Firefox was closed.", file=sys.stderr)
+          f"{'Firefox was closed.' if closed else 'FIREFOX IS ALSO STILL RUNNING.'}",
+          file=sys.stderr)
+
+
+class SwallowedFailureTests(TempDB):
+    """A bare `pass` on an operation that CANNOT succeed is a different bug
+    from one on an operation that usually does.
+
+    tearDownClass's `except Exception: pass` around a killpg hid a
+    PERMANENT condition - snap refuses that signal, always - and 39
+    processes accumulated without a word. An audit of every silent handler
+    in the tool found one more of the same shape and three that are fine:
+
+      * `web/ribbon.py` view_zone: a stored timezone that does not resolve
+        will not resolve on the next request either, and it renders a zone
+        the reader did not choose. Now reported. THIS TEST.
+      * `web/port.py` x3: `continue` past a process this user cannot
+        inspect - permanent, but the outer function still returns the inode
+        without a pid, and the CLI says `uninspectable`. The permanent case
+        reaches the surface. Correct, and the model for the others.
+      * `config.py` x2: candidates in a search (/etc/localtime, then $TZ)
+        with an explicit documented fallback to UTC. Expected per
+        candidate, and the outcome is stated.
+      * `parsers/sse_southbound.py`: two date formats tried in turn, then
+        MalformedEntryError naming the value. Nothing hidden.
+    """
+
+    def store_bad_zone(self):
+        """Straight into the store, past preferences._validate - which is
+        the only way this state exists, and exactly why it must not be
+        silent when it does."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO preferences "
+            "(user_id, key, value, updated_at) "
+            "VALUES (1, 'timezone', 'Mars/Olympus_Mons', '2026-08-24T00:00:00Z')")
+        self.conn.commit()
+        from macrowire.web import ribbon
+        ribbon._UNRESOLVED_ZONES.clear()
+        return unittest.mock.patch.dict(
+            os.environ, {"MACROWIRE_DB": str(Path(self._dir.name) / "test.db")})
+
+    def test_an_unresolvable_stored_timezone_is_reported_not_swallowed(self):
+        import io, contextlib
+        from macrowire.web import ribbon
+        err = io.StringIO()
+        with self.store_bad_zone(), contextlib.redirect_stderr(err):
+            zone = ribbon.view_zone()
+        said = err.getvalue()
+        self.assertIn("Mars/Olympus_Mons", said,
+                      "a permanently unresolvable stored zone fell back in "
+                      "silence; the reader sees a timezone they did not pick")
+        self.assertIn("prefs --clear timezone", said,
+                      "the report must say how to undo it")
+        self.assertIsNotNone(zone, "reporting must not stop the page rendering")
+
+    def test_it_reports_once_not_once_per_request(self):
+        import io, contextlib
+        from macrowire.web import ribbon
+        lines = []
+        with self.store_bad_zone():
+            for _ in range(3):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    ribbon.view_zone()
+                lines.append(err.getvalue())
+        self.assertTrue(lines[0], "nothing reported on the first call")
+        self.assertEqual(lines[1:], ["", ""],
+                         "a render path that prints on every request is noise, "
+                         "and noise is the next thing to be ignored")
+
+    def test_the_driver_release_does_not_claim_what_it_did_not_do(self):
+        code = strip_comments(read_code(ROOT / "tests/test_macrowire.py"), "py")
+        at = code.index("\ndef _release_driver")
+        body = code[at:code.find("\ndef ", at + 24)]
+        self.assertIn("closed = False", body,
+                      "a failed session DELETE must not be followed by "
+                      "'Firefox was closed'")
+        self.assertIn("STILL RUNNING", body)
 
 
 class HarnessCleanupTests(unittest.TestCase):
@@ -5102,6 +5577,10 @@ class BrowserTestCase(unittest.TestCase):
     later run with `KeyError: 'sessionId'`, which reads as a broken suite.
     """
 
+    # Pixel assertions need a fixed viewport. Wide enough that tape titles
+    # do not wrap and the 310px rail still leaves a usable tape.
+    WINDOW = (1440, 900)
+
     @classmethod
     def setUpClass(cls):
         import os, socket, tempfile, threading, time
@@ -5139,6 +5618,17 @@ class BrowserTestCase(unittest.TestCase):
         try:
             shared = _driver_session()
             cls.base, cls.sid = shared["base"], shared["sid"]
+            # A KNOWN WINDOW, EVERY TIME. One driver for the whole process
+            # means one WINDOW for the whole process, and its size now
+            # survives from class to class and from run to run - including
+            # whatever a throwaway measurement script last set it to. Item
+            # titles wrap at different widths, so the tape's geometry moved
+            # under tests that assert on pixel positions and they began
+            # failing on the previous run's leftovers. The old per-class
+            # driver got a fresh window and hid this.
+            httpx.post(f"{cls.base}/session/{cls.sid}/window/rect", timeout=30,
+                       json={"width": cls.WINDOW[0], "height": cls.WINDOW[1],
+                             "x": 0, "y": 0})
             httpx.post(f"{cls.base}/session/{cls.sid}/url", timeout=120,
                        json={"url": f"http://127.0.0.1:{cls.app_port}/"})
             time.sleep(3)
@@ -5188,14 +5678,28 @@ class BrowserTestCase(unittest.TestCase):
         for source, rows in series.items():
             src = SOURCES[source]
             sid = db.upsert_source(conn, src.name, src.kind, src.config)
-            for period in ("2026-08-20", "2026-08-21"):
+            # RELATIVE TO NOW, not two dates written down.
+            #
+            # These were '2026-08-20' and '2026-08-21', and observed_at is
+            # the column staleness is measured on - so the fixture aged as
+            # real time passed. rba_exchange_rates declares staleness_days:
+            # 4, and on the fourth day after those dates it went STALE and
+            # test_the_health_indicator_is_chrome_when_every_source_is_
+            # current started reporting "1 of 16 sources need attention".
+            # Nothing had changed but the calendar.
+            #
+            # A fixture compared against `now` has to be built from `now`.
+            # Yesterday and today, so the pair is still two consecutive days
+            # with the later one carrying the changed value.
+            for back, bump in ((1, 0.0), (0, 0.5)):
+                period = (now - timedelta(days=back)).date().isoformat()
                 for name, value in rows:
                     conn.execute(
                         """INSERT INTO observations (source_id, series, period, value,
                              unit, base_currency, target_currency, rate_type,
                              frequency, decimals, external_id, observed_at, fetched_at)
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (sid, name, period, value + (0.5 if period.endswith("1") else 0),
+                        (sid, name, period, value + bump,
                          "100 million HKD" if "SOUTHBOUND" in name else "contracts",
                          None, None, "seeded", "daily", 2,
                          f"{period}#{name}", period, now.isoformat()))
@@ -5419,6 +5923,295 @@ class CommentStrippingTests(unittest.TestCase):
                 self.assertIn("strip_comments", block,
                               f"{scanner} reads source without stripping "
                               f"comments; a comment can change its answer")
+
+class AnnouncementCoverageTests(TempDB):
+    """A held AU ticker used to report "nothing in this window", which
+    implies something could have published. Nothing can: no source carries
+    ASX announcements, and ASX refused consent in writing.
+
+    The distinction is the one the tape already draws between nothing yet
+    and nothing ever, and it has to be DERIVED - if a market ever gains a
+    source the string must stop applying on its own.
+    """
+
+    def meta(self, sources=None):
+        from macrowire.config import load_sources
+        from macrowire.web import queries
+        return queries.sources_meta(self.conn, sources or load_sources())
+
+    def covered(self, sources=None):
+        return {m["announces_for"] for m in self.meta(sources)
+                if m["enabled"] and m["announces_for"]}
+
+    def test_announces_for_is_not_the_same_as_jurisdiction(self):
+        """The whole reason the field exists. Matching on jurisdiction is
+        the obvious implementation and it is wrong."""
+        meta = self.meta()
+        floor(self, meta, "sources", 10)
+        by_jurisdiction = {m["jurisdiction"] for m in meta if m["enabled"]}
+        self.assertIn("AU", by_jurisdiction,
+                      "no AU source is enabled, so this proves nothing")
+        self.assertNotEqual(
+            self.covered(), by_jurisdiction,
+            "announces_for is tracking jurisdiction, which would report a "
+            "market covered because a central bank publishes there")
+
+    def test_au_is_uncovered_while_only_the_rba_sources_are_enabled(self):
+        au = [m for m in self.meta() if m["jurisdiction"] == "AU" and m["enabled"]]
+        floor(self, au, "enabled AU sources", 2)
+        self.assertEqual(
+            [m["announces_for"] for m in au], [None] * len(au),
+            f"an AU source claims to carry company announcements: "
+            f"{[(m['name'], m['announces_for']) for m in au]}")
+        self.assertNotIn("AU", self.covered(),
+                         "AU reads as covered; the RBA does not publish "
+                         "company announcements")
+
+    def test_the_markets_that_are_covered_are_the_watchlist_driven_ones(self):
+        from macrowire.web.queries import WATCHLIST_KINDS
+        from macrowire.config import load_sources
+        floor(self, WATCHLIST_KINDS, "watchlist-driven kinds", 2)
+        expected = {s.jurisdiction for s in load_sources()
+                    if s.enabled and s.kind in WATCHLIST_KINDS}
+        self.assertEqual(self.covered(), expected)
+        self.assertEqual(self.covered(), {"CN", "US"},
+                         "the shipped config covers exactly SEC EDGAR and "
+                         "CNINFO; if that changed, so should this")
+
+    def test_adding_a_source_for_a_market_flips_it_to_covered(self):
+        """DERIVED, not a market literal. If ASX ever becomes available
+        through a route that permits it, adding the source is the whole
+        change - no string and no branch has to be edited."""
+        import dataclasses
+        from macrowire.config import load_sources
+        from macrowire.web.queries import WATCHLIST_KINDS
+
+        sources = load_sources()
+        self.assertNotIn("AU", self.covered(sources))
+        template = next(s for s in sources if s.kind in WATCHLIST_KINDS)
+        asx = dataclasses.replace(template, name="asx_announcements",
+                                  jurisdiction="AU")
+        self.assertIn("AU", self.covered(sources + [asx]),
+                      "adding a watchlist-driven AU source did not make AU "
+                      "covered, so the state is not derived from the sources")
+        # And switching it off takes it away again.
+        off = dataclasses.replace(asx, enabled=False)
+        self.assertNotIn("AU", self.covered(sources + [off]))
+
+    def test_kind_itself_is_not_exposed(self):
+        """The client asks a question about coverage; it does not get to
+        reverse-engineer parser names."""
+        for row in floor(self, self.meta(), "sources", 10):
+            with self.subTest(source=row["name"]):
+                self.assertNotIn("kind", row, f"{row['name']} leaks its kind")
+
+    def test_the_kinds_are_the_parsers_that_read_a_watchlist(self):
+        """Guard on the constant. A watchlist-driven parser missing from
+        WATCHLIST_KINDS leaves its market reported as uncovered forever
+        while it is busy collecting - and nothing else would notice."""
+        import re
+        from macrowire.web.queries import WATCHLIST_KINDS
+        found = set()
+        for path in (ROOT / "macrowire/parsers").glob("*.py"):
+            code = strip_comments(read_code(path), "py")
+            if re.search(r'state\.get\(\s*["\']watchlist["\']', code):
+                found.add(path.stem)
+        floor(self, found, "parsers that read the watchlist", 2)
+        self.assertEqual(
+            found, set(WATCHLIST_KINDS),
+            f"parsers reading the watchlist: {sorted(found)}; "
+            f"WATCHLIST_KINDS: {sorted(WATCHLIST_KINDS)}")
+
+    def test_the_new_strings_exist_in_every_catalogue(self):
+        from macrowire import i18n
+        keys = ("settings.watchlist_no_source",
+                "settings.watchlist_no_source_detail",
+                "settings.market_no_source")
+        for locale in floor(self, i18n.available(), "locale files", 3):
+            cat = i18n.renderable(i18n.load(locale))
+            for key in keys:
+                with self.subTest(locale=locale, key=key):
+                    self.assertIn(key, cat, f"{locale} is missing {key}")
+                    self.assertTrue(cat[key].strip(), f"{locale}:{key} is blank")
+
+    def test_the_string_names_no_market(self):
+        """It has to stay true for any market with no announcement source,
+        and ASX is not the subject - the absence of a source is."""
+        from macrowire import i18n
+        for locale in floor(self, i18n.available(), "locale files", 3):
+            cat = i18n.renderable(i18n.load(locale))
+            for key in ("settings.watchlist_no_source",
+                        "settings.watchlist_no_source_detail",
+                        "settings.market_no_source"):
+                with self.subTest(locale=locale, key=key):
+                    for named in ("ASX", "AU", "澳", "Australia"):
+                        self.assertNotIn(named, cat[key],
+                                         f"{locale}:{key} names a market")
+
+
+class HongKongLocaleTests(unittest.TestCase):
+    """zh-HK is not a character conversion of zh-CN.
+
+    Running zh-CN through a converter gets the glyphs right and leaves
+    mainland vocabulary standing in traditional characters, which reads
+    wrong to a Hong Kong reader: 視窗 for a window nobody in Hong Kong
+    calls that, 網路 for 網絡, 導出 for 匯出, 文件 for 檔案. The characters
+    are the easy half.
+
+    These tests can only check the mechanical half - completeness, script,
+    and that no source fact was translated. The vocabulary is a reading
+    job, and the catalogue carries `_reviewed` to say whether a person has
+    done it.
+    """
+
+    # SIMPLIFIED FORMS THAT ACTUALLY OCCUR IN zh-CN, not a list from
+    # memory: every one of these is in the Simplified catalogue today, so
+    # the blocklist is live rather than aspirational, and a test below
+    # proves it against zh-CN so it cannot quietly go stale.
+    SIMPLIFIED = (
+        "与业东丢两个临为么买于仅从仓们价优会体余储克关内写净准几划则刚删别"
+        "刷务动匹区单卖占历参反发变后听启响围国场坏块处备复天夹实对导将尝属"
+        "币布带并库应开张强当录径志态总户执扰护损换据数断无旧时显暂机权条来"
+        "构标栈栏校档检欧汇没沪测添滚状独现界监盖盘码确种积称筛简箱类约线终"
+        "经结络绝统继续维编网联节范获装观规计订认讯记许设访证词译试询该详语"
+        "误说请读败货资跟踪轮载较辑输达迁过运还这进连迟选邮配采里鉴钟链错键"
+        "长闭问间闻阅阈隆随隐静页项顺频题额馈验默")
+
+    def catalogue(self, code="zh-HK"):
+        from macrowire import i18n
+        return i18n.flatten(i18n.load(code))
+
+    def test_it_is_complete_against_the_default(self):
+        from macrowire import i18n
+        en = i18n.renderable(i18n.load("en"))
+        hk = i18n.renderable(i18n.load("zh-HK"))
+        floor(self, en, "keys in en", 300)
+        missing = sorted(set(en) - set(hk))
+        self.assertEqual(missing, [], f"zh-HK is missing {len(missing)}: {missing[:8]}")
+        orphaned = sorted(set(hk) - set(en))
+        self.assertEqual(orphaned, [],
+                         f"zh-HK has keys en does not: {orphaned[:8]}")
+        blank = sorted(k for k, v in hk.items() if not v.strip() and en[k].strip())
+        self.assertEqual(blank, [], f"zh-HK renders blank for {blank}")
+
+    def test_it_carries_no_simplified_characters(self):
+        hits = {}
+        for key, value in self.catalogue().items():
+            bad = sorted({c for c in value if c in self.SIMPLIFIED})
+            if bad:
+                hits[key] = ("".join(bad), value[:48])
+        self.assertEqual(hits, {},
+                         f"simplified characters survived in {len(hits)} "
+                         f"strings: {list(hits.items())[:4]}")
+
+    def test_the_blocklist_is_live(self):
+        """Guard on the guard. If these characters stopped appearing in
+        zh-CN the list would pass zh-HK by describing nothing, so it is
+        checked against the catalogue it was derived from."""
+        cn = "".join(self.catalogue("zh-CN").values())
+        absent = sorted(c for c in self.SIMPLIFIED if c not in cn)
+        floor(self, self.SIMPLIFIED, "blocklisted characters", 150)
+        self.assertEqual(absent, [],
+                         f"these are on the blocklist but no longer in zh-CN, "
+                         f"so it has drifted: {''.join(absent)}")
+
+    def test_no_source_fact_was_translated(self):
+        """The FACT constants state when a PUBLISHER publishes. They are
+        true for every reader in every timezone, so a catalogue that
+        contains one has turned a fact into a translation."""
+        import re
+        js = strip_comments(read_code(ROOT / "macrowire/web/static/app.js"), "js")
+        block = js[js.index("const FACT = {"):]
+        facts = re.findall(r':\s*"([^"]+)"', block[:block.index("};")])
+        floor(self, facts, "FACT constants", 4)
+        from macrowire import i18n
+        # renderable(), not flatten(): the translator note beside the as-of
+        # keys QUOTES these strings to say do not write them, and it is
+        # documentation rather than something that reaches a screen.
+        hk = i18n.renderable(i18n.load("zh-HK"))
+        for fact in facts:
+            for key, value in hk.items():
+                with self.subTest(fact=fact, key=key):
+                    self.assertNotIn(fact, value,
+                                     f"{key} contains the source fact {fact!r}")
+
+    def test_the_locales_command_lists_it(self):
+        import argparse, io, contextlib
+        from macrowire import __main__ as cli
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.cmd_locales(argparse.Namespace(all=False))
+        text = out.getvalue()
+        self.assertIn("zh-HK", text, f"`locales` does not list zh-HK:\n{text}")
+        self.assertIn("繁體中文", text, "zh-HK has no name in the listing")
+        self.assertIn("100%", text, "zh-HK is not reported complete")
+
+    def test_display_width_counts_cells_not_characters(self):
+        """A CJK glyph takes two terminal cells and an ASCII one takes one.
+        Every padded column in the CLI is measured with this, so it is
+        pinned rather than assumed."""
+        from macrowire.__main__ import _width
+        for ch in "繁體中文港简体":
+            with self.subTest(char=ch):
+                self.assertEqual(_width(ch), 2, f"{ch!r} is a wide character")
+        # The full-width parentheses in 繁體中文（香港） are the ones that
+        # actually caused the misalignment: they LOOK like punctuation and
+        # are two cells each.
+        for ch in "（），、：":
+            with self.subTest(char=ch):
+                self.assertEqual(_width(ch), 2,
+                                 f"{ch!r} is full-width punctuation")
+        for ch in "abcXYZ0189 -/:":
+            with self.subTest(char=ch):
+                self.assertEqual(_width(ch), 1, f"{ch!r} is one cell")
+        self.assertEqual(_width("繁體中文（香港）"), 16)
+        self.assertEqual(_width("English"), 7)
+
+    def test_the_locales_listing_measures_its_columns(self):
+        """The name column was a literal 14 and 繁體中文（香港） is 16, so it
+        overflowed and shunted the rest of the row right. _width was never
+        the problem - the field it padded into was. A literal here fails
+        again the moment a longer locale name is added."""
+        import re
+        code = strip_comments(read_code(ROOT / "macrowire/__main__.py"), "py")
+        body = code[code.index("def cmd_locales"):]
+        body = body[:body.index("\ndef ", 10)]
+        literals = re.findall(r"_pad\([^,]+,\s*(\d+)\s*\)", body)
+        self.assertEqual(literals, [],
+                         f"a locales column is padded to a literal: {literals}")
+        self.assertIn('_width(r["name"])', body,
+                      "the name column is not measured from the names")
+        self.assertNotIn('len(r["locale"])', body,
+                         "the locale column is measured with len(), which "
+                         "counts characters rather than terminal cells")
+
+    def test_every_row_of_the_listing_lines_up(self):
+        """Measured on the rendered output, not on the code that makes it."""
+        import argparse, io, contextlib, re
+        from macrowire import __main__ as cli
+        from macrowire.__main__ import _width
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.cmd_locales(argparse.Namespace(all=False))
+        rows = [ln for ln in out.getvalue().splitlines() if "/402" in ln
+                or re.search(r"\d+/\d+", ln)]
+        floor(self, rows, "locale rows", 3)
+        # Where the count starts, in CELLS, must be the same on every row.
+        starts = set()
+        for row in rows:
+            at = re.search(r"\d+/\d+", row).start()
+            starts.add(_width(row[:at]))
+        self.assertEqual(len(starts), 1,
+                         f"the counts start at different columns: "
+                         f"{sorted(starts)}\n" + "\n".join(rows))
+
+    def test_it_declares_whether_a_person_has_read_it(self):
+        """A machine can check the script. Only a reader can check that
+        the vocabulary is Hong Kong's."""
+        from macrowire import i18n
+        self.assertIs(i18n.load("zh-HK").get("_reviewed"), True,
+                      "zh-HK does not say whether it has been reviewed")
+
 
 class TranslatedColumnWidthTests(unittest.TestCase):
     """A column carrying a translated word cannot have a literal width.
@@ -5693,50 +6486,123 @@ class TapeStabilityTests(BrowserTestCase):
         time.sleep(0.6)
         self.assertEqual(after["top"], before["top"])
 
-    def test_the_tokens_line_appearing_moves_nothing(self):
-        """The second masthead line materialising is itself a displacement
-        risk: it grows the sticky header by ~42px while the reader is deep
-        in the tape."""
-        import time
-        self.js("document.getElementById('fopen').click(); return 1;")
-        time.sleep(1.2)
-        before = self.snap()
-        self.js("""const c = document.querySelector('#fgrid .chip[data-axis]');
-                   if (c) c.click(); return 1;""")
-        time.sleep(1.5)
-        after = self.snap()
-        grew = self.js("""return Math.round(document.getElementById('masthead')
-                            .getBoundingClientRect().height);""")
-        self.assertFalse(self.js("return document.getElementById('mast-tokens').hidden;"),
-                         "a filter is active but the tokens row did not appear")
-        self.assertGreater(grew, 60, "the tokens row did not actually grow the masthead")
-        self.assertEqual(after["top"], before["top"],
-                         "the tape moved when the tokens row appeared")
+    def test_the_bar_is_the_same_height_filtered_or_not(self):
+        """Replaces test_the_tokens_line_appearing_moves_nothing and its
+        `disappearing` twin, which are DELETED.
 
-    def test_the_tokens_line_disappearing_moves_nothing(self):
+        What that pair measured: the tokens row was conditional, so applying
+        a filter grew the sticky masthead by ~41px and clearing it shrank it
+        back, and each direction asserted that the scroll position absorbed
+        exactly that much so the tape under the fold did not jump.
+
+        Why the premise is gone: the tokens moved into the jurisdiction bar,
+        which is unconditional because the chips in it always are. Nothing
+        appears, nothing disappears, and there is no displacement left for
+        those tests to be about.
+
+        The surviving invariant is the one they were really protecting - the
+        masthead does not change height when you filter. Asserted directly
+        rather than through scroll compensation, and it fails loudly if the
+        tokens row is ever made conditional again.
+
+        Deliberately NOT a check that the bar wraps to a second line at some
+        token count: wrap depends on chip widths and the viewport, which is
+        the fixture-sensitivity that already had two tests in this file
+        passing by coincidence."""
         import time
-        self.js("document.getElementById('fopen').click(); return 1;")
-        time.sleep(1.2)
-        self.js("""const c = document.querySelector('#fgrid .chip[data-axis]');
-                   if (c) c.click(); return 1;""")
+        measure = """return {mast: Math.round(document.getElementById('masthead')
+                                 .getBoundingClientRect().height),
+                             bar: Math.round(document.getElementById('mast-jur')
+                                 .getBoundingClientRect().height),
+                             tokens: document.querySelectorAll('#tokens .token').length};"""
+        clean = self.js(measure)
+        self.js("""const c = document.querySelector('#jur-chips .chip');
+                   c.click(); return 1;""")
         time.sleep(1.5)
-        before = self.snap()
+        filtered = self.js(measure)
         self.js("document.getElementById('fclear').click(); return 1;")
         time.sleep(1.5)
-        after = self.snap()
-        self.assertTrue(self.js("return document.getElementById('mast-tokens').hidden;"),
-                        "filters cleared but the tokens row is still there")
-        self.assertEqual(after["top"], before["top"],
-                         "the tape moved when the tokens row went away")
+        cleared = self.js(measure)
 
-    def test_the_masthead_costs_nothing_when_nothing_is_filtered(self):
-        height = self.js("""return Math.round(document.getElementById('masthead')
-                              .getBoundingClientRect().height);""")
-        hidden = self.js("return document.getElementById('mast-tokens').hidden;")
-        self.assertTrue(hidden, "the tokens row is present with no filters active")
-        self.assertLessEqual(height, 60,
-                             f"the masthead is {height}px unfiltered; it must stay "
-                             f"one line")
+        self.assertEqual(clean["tokens"], 0, f"the fixture started filtered: {clean}")
+        self.assertGreater(filtered["tokens"], 0,
+                           f"the click did not produce a token: {filtered}")
+        self.assertEqual(cleared["tokens"], 0, "clear all left a token behind")
+        self.assertEqual(
+            filtered["bar"], clean["bar"],
+            f"the bar is {clean['bar']}px unfiltered and {filtered['bar']}px "
+            f"filtered - the tokens row has gone conditional again")
+        self.assertEqual(
+            filtered["mast"], clean["mast"],
+            f"the masthead changed height on filtering: {clean} -> {filtered}")
+        self.assertEqual(cleared["mast"], clean["mast"],
+                         "the masthead did not return to its unfiltered height")
+
+    def test_the_masthead_is_three_unwrapped_rows_with_the_band_shut(self):
+        """The budget was <=60px for one row, then <=95px for two. Raising a
+        number each time records nothing; the invariant is what the rows ARE.
+
+        Three rows now, all unconditional: the title line, the session strip,
+        and the jurisdiction bar. Each must be a SINGLE line - a row that
+        wraps is the failure this budget was ever really about, and it is
+        checked directly rather than inferred from a total. The ceiling stays
+        as a backstop against a fourth row appearing, and it is set from the
+        measurement below rather than guessed."""
+        m = self.js("""const h = (id) => Math.round(
+                document.getElementById(id).getBoundingClientRect().height);
+            const line = (id) => {
+              const e = document.getElementById(id);
+              const cs = getComputedStyle(e);
+              const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+              return Math.round(e.getBoundingClientRect().height - pad);
+            };
+            return {mast: h('masthead'), strip: h('mast-strip'), bar: h('mast-jur'),
+                    stripLine: line('mast-strip'), barLine: line('mast-jur'),
+                    chips: document.querySelectorAll('#jur-chips .chip').length,
+                    tokens: document.querySelectorAll('#tokens .token').length,
+                    bandHidden: document.getElementById('ribbon').hidden};""")
+        print(f"\n  masthead {m['mast']}px = title + strip {m['strip']}px "
+              f"+ jurisdiction bar {m['bar']}px, band shut")
+        self.assertTrue(m["bandHidden"], "the band is not closed by default")
+        self.assertEqual(m["tokens"], 0, "something is filtered; this measures clean")
+        floor(self, range(m["chips"]), "jurisdiction chips in the bar", 3)
+        # One line each. A chip is ~27px, so a wrapped row is over 40.
+        for row, px in (("strip", m["stripLine"]), ("bar", m["barLine"])):
+            with self.subTest(row=row):
+                self.assertLessEqual(
+                    px, 34,
+                    f"the {row}'s content is {px}px - it has wrapped to a "
+                    f"second line")
+        self.assertLessEqual(
+            m["mast"], 140,
+            f"the masthead is {m['mast']}px unfiltered; three rows, not four")
+
+    def test_the_strip_costs_far_less_than_the_band_it_replaced(self):
+        """The whole point, as a number. Chrome above the first headline
+        with the band shut against with it open."""
+        import time
+        # FROM THE TOP. setUp leaves the page 1500px down, where the first
+        # item is above the fold and scroll anchoring absorbs the band
+        # exactly as it is supposed to - measured there, both states read
+        # -1361px and the test proves nothing.
+        self.js("window.scrollTo(0, 0); return 1;")
+        time.sleep(0.6)
+        shut = self.js("""return Math.round(
+            document.querySelector('.item').getBoundingClientRect().top);""")
+        self.js("document.getElementById('band-toggle').click(); return 1;")
+        time.sleep(0.8)
+        self.js("window.scrollTo(0, 0); return 1;")
+        time.sleep(0.4)
+        open_ = self.js("""return Math.round(
+            document.querySelector('.item').getBoundingClientRect().top);""")
+        self.js("""document.getElementById('band-toggle').click();
+                   window.scrollTo(0, 1500); return 1;""")
+        time.sleep(0.8)
+        print(f"\n  chrome above the first item: {shut}px with the band shut, "
+              f"{open_}px with it open ({open_ - shut}px of band)")
+        self.assertGreater(open_ - shut, 200,
+                           f"the band is only costing {open_ - shut}px, so the "
+                           f"split is not buying what it claims")
 
     def test_the_masthead_stays_reachable_from_deep_in_the_tape(self):
         """The reason it is sticky: a Filter button at the top of the
@@ -5753,15 +6619,474 @@ class TapeStabilityTests(BrowserTestCase):
 
     def test_the_ribbon_scrolls_away_rather_than_sticking(self):
         """Measured at 275px against a 49px masthead - 34% of the viewport,
-        answering a question asked once at the start of a session. The
-        sticky day headers do the orientation job for a backwards read at
-        30px instead."""
-        pos = self.js("""const r = document.querySelector('.ribbon');
-            return getComputedStyle(r).position;""")
-        self.assertEqual(pos, "static", "the ribbon is pinned and eating tape")
-        offscreen = self.js("""const r = document.querySelector('.ribbon');
-            return r.getBoundingClientRect().bottom < 0;""")
-        self.assertTrue(offscreen, "the ribbon is still on screen at this depth")
+        answering a question asked once at the start of a session.
+
+        It is not RENDERED by default now, which settles the original
+        question more completely than scrolling away did. Opened, it must
+        still behave the way it always had to: static, and gone by the time
+        the reader is deep in the tape."""
+        import time
+        self.assertTrue(self.js("return document.getElementById('ribbon').hidden;"),
+                        "the band is drawing before anyone asked for it")
+        self.js("document.getElementById('band-toggle').click(); return 1;")
+        time.sleep(0.8)
+        self.js("window.scrollTo(0, 1500); return 1;")
+        time.sleep(0.6)
+        state = self.js("""const r = document.getElementById('ribbon');
+            return {pos: getComputedStyle(r).position,
+                    offscreen: r.getBoundingClientRect().bottom < 0};""")
+        self.js("""document.getElementById('band-toggle').click();
+                   window.scrollTo(0, 1500); return 1;""")
+        time.sleep(0.8)
+        self.assertEqual(state["pos"], "static",
+                         "the ribbon is pinned and eating tape")
+        self.assertTrue(state["offscreen"],
+                        "the ribbon is still on screen at this depth")
+
+    HEALTH = """const b = document.getElementById('health-open');
+        const cs = getComputedStyle(b);
+        const dot = getComputedStyle(document.getElementById('health-dot'));
+        return {colour: cs.color, border: cs.borderTopColor,
+                dot: dot.backgroundColor, bad: b.classList.contains('bad'),
+                text: document.getElementById('health-summary').textContent};"""
+
+    def paint(self, css):
+        """Force a health verdict by restyling, so the indicator's two states
+        can both be measured against one fixture."""
+        import time
+        self.js(f"""let s = document.getElementById('probe-css');
+            if (!s) {{ s = document.createElement('style'); s.id = 'probe-css';
+                       document.head.appendChild(s); }}
+            s.textContent = {json.dumps(css)}; return 1;""")
+        time.sleep(0.4)
+
+    def redraw_rail(self):
+        """Put the rail back the way the payload says it is.
+
+        These tests share one browser and one page. Forcing the health
+        indicator into a state and walking away leaves the next test
+        measuring a lie - which is exactly what happened: the chrome test
+        cleared `bad` and the summary test then read a quiet indicator over
+        a payload with one source affected."""
+        import time
+        self.js("""fetch('/api/rail').then(r => r.json()).then(drawRail);
+                   return 1;""")
+        time.sleep(1.0)
+
+    def age_probe(self, cadence):
+        """Ages 0..12 days against one cadence, reading back the age the
+        code itself reports.
+
+        Reads the REPORTED age rather than trusting the offset arithmetic
+        in the test: the browser's own timezone and state.offsetHours need
+        not agree, so a period built here from `new Date()` can land a day
+        either side of the viewer's today. Asking the code what age it
+        computed, then checking lateness against THAT, tests the rule
+        without re-implementing the clock."""
+        return self.js(f"""
+            const cadence = {json.dumps(cadence)};
+            const out = [];
+            for (let n = 0; n <= 12; n++) {{
+              const d = new Date(Date.now() - n * 86400000);
+              const period = d.getFullYear() + '-'
+                + String(d.getMonth() + 1).padStart(2, '0') + '-'
+                + String(d.getDate()).padStart(2, '0');
+              const box = document.createElement('div');
+              box.innerHTML = asOf('x', period, cadence);
+              const age = box.querySelector('.age');
+              const text = age ? age.textContent : '';
+              const m = /(\\d+)/.exec(text);
+              out.push({{days: m ? +m[1] : 0, text: text.trim(),
+                         late: age ? age.classList.contains('late') : null}});
+            }}
+            return out;""")
+
+    def test_a_weekly_series_is_not_late_at_six_days(self):
+        """CoT positions are as of Tuesday and released Friday. Six days old
+        is ON TIME, and flagging it would train the reader to ignore the
+        flag that matters."""
+        probes = self.age_probe(7)
+        floor(self, probes, "age probes", 13)
+        six = [p for p in probes if p["days"] == 6]
+        floor(self, six, "probes landing on six days", 1)
+        for p in six:
+            self.assertFalse(p["late"], f"six days is on time for a weekly "
+                                        f"series: {p}")
+        # The rule itself, across the whole range.
+        for p in probes:
+            with self.subTest(days=p["days"]):
+                self.assertEqual(p["late"], p["days"] > 7,
+                                 f"cadence 7 flagged {p} wrongly")
+
+    def test_a_daily_series_is_late_at_four_days(self):
+        """cadence_days is 3 for the daily series, not 1: the largest
+        ordinary gap is Friday to Monday, so a weekend is not a fault.
+        Four days is past that and IS one."""
+        probes = self.age_probe(3)
+        four = [p for p in probes if p["days"] == 4]
+        floor(self, four, "probes landing on four days", 1)
+        for p in four:
+            self.assertTrue(p["late"], f"four days is late for a daily "
+                                       f"series: {p}")
+        for p in probes:
+            with self.subTest(days=p["days"]):
+                self.assertEqual(p["late"], p["days"] > 3,
+                                 f"cadence 3 flagged {p} wrongly")
+
+    def test_a_series_with_no_cadence_is_never_late(self):
+        """Absent means the age shows and lateness is not asserted. A
+        guessed cadence would put --fault on a number nobody said was
+        late - the same failure as a staleness threshold that cries wolf."""
+        for cadence in (None,):
+            probes = self.age_probe(cadence)
+            floor(self, probes, "age probes", 13)
+            flagged = [p for p in probes if p["late"]]
+            self.assertEqual(flagged, [],
+                             f"a series with no declared cadence was called "
+                             f"late: {flagged}")
+            # The age is still there - silence about lateness is not
+            # silence about age.
+            self.assertTrue(all(p["text"] for p in probes),
+                            f"the age went missing with the cadence: {probes}")
+        oldest = probes[-1]
+        self.assertGreater(oldest["days"], 9,
+                           f"the probe never got old enough to prove this: "
+                           f"{oldest}")
+
+    def test_the_page_declares_the_locale_it_is_written_in(self):
+        """<html lang> drives the CJK family, so it has to be the active
+        locale rather than the placeholder the static file ships."""
+        m = self.js("""return fetch('/api/bootstrap').then(r => r.json())
+            .then(b => ({lang: document.documentElement.lang, locale: b.locale}));""")
+        self.assertTrue(m["locale"], "the bootstrap payload carries no locale")
+        self.assertEqual(m["lang"], m["locale"],
+                         f"the page says lang={m['lang']!r} while the active "
+                         f"locale is {m['locale']!r}")
+
+    def test_changing_the_locale_changes_the_font_language(self):
+        """The whole point: pick Chinese and the page must SAY Chinese, or
+        the :lang() rules never fire and the CJK family never changes."""
+        import time
+        before = self.js("return document.documentElement.lang;")
+        # THROUGH THE DIALOG, which is the only place the control exists.
+        # savePreference reads settingsData, and settingsData is filled by
+        # openSettings - called cold it throws "settingsData is null" into
+        # an alert() that then blocks the whole WebDriver session.
+        self.js("document.getElementById('settings-open').click(); return 1;")
+        time.sleep(1.5)
+        self.js("document.getElementById('settings').close(); return 1;")
+        time.sleep(0.4)
+        try:
+            self.js("savePreference('locale', 'zh-CN'); return 1;")
+            time.sleep(2.5)
+            m = self.js("""const r = document.documentElement;
+                return {lang: r.lang,
+                        cjk: getComputedStyle(r).getPropertyValue('--cjk').trim(),
+                        body: getComputedStyle(document.body).fontFamily};""")
+        finally:
+            self.js("savePreference('locale', null); return 1;")
+            time.sleep(2.5)
+        after = self.js("return document.documentElement.lang;")
+        self.assertEqual(m["lang"], "zh-CN",
+                         f"the locale changed but the page still says "
+                         f"lang={m['lang']!r}")
+        self.assertIn("CJK SC", m["cjk"],
+                      f"lang is zh-CN but --cjk resolved to {m['cjk']!r}")
+        self.assertIn("Noto Sans CJK SC", m["body"],
+                      f"the body stack did not pick up the family: {m['body']}")
+        # Latin FIRST. A CJK face has Latin glyphs and they are not the
+        # ones this interface is set in - and a partial locale falls back
+        # to English inside an element still marked zh.
+        self.assertLess(m["body"].index("Noto Sans\""),
+                        m["body"].index("Noto Sans CJK SC"),
+                        f"the CJK family is ahead of the Latin stack: "
+                        f"{m['body']}")
+        self.assertEqual(after, before, "the locale was not put back")
+
+    def test_the_seeded_fixture_is_fresh_relative_to_now(self):
+        """The guard on the fix for item 8.
+
+        observed_at is what staleness is measured on. Written as a literal
+        date, the fixture ages every night until some source crosses its
+        staleness_days and a test that was about colour starts failing
+        about the calendar. Asserted here so a future literal is caught by
+        a test that says why, rather than by a puzzling failure in an
+        unrelated one."""
+        newest = self.js("""return fetch('/api/rail').then(r => r.json())
+            .then(d => Math.min(...d.health
+              .filter(h => h.days_since_content !== null)
+              .map(h => h.days_since_content)));""")
+        self.assertLessEqual(
+            newest, 2,
+            f"the newest seeded content is {newest} days old; the fixture "
+            f"is built from fixed dates and has started to age")
+        src = read_code(ROOT / "tests/test_macrowire.py")
+        seed = src[src.index("def _seed(cls, conn)"):]
+        seed = seed[:seed.index("    @classmethod", 10)]
+        import re
+        literals = re.findall(r"'20\d\d-\d\d-\d\d'", seed)
+        self.assertEqual(literals, [],
+                         f"_seed writes literal dates: {literals}")
+
+    def test_the_health_summary_agrees_with_the_payload_it_counted(self):
+        """Whatever the clock says. The indicator and the rows read ONE
+        predicate; this checks the number it produced against the payload
+        the dialog is showing, so it holds whether nothing is failing today
+        or half of it is."""
+        counted = self.js("""return fetch('/api/rail').then(r => r.json())
+            .then(d => ({
+              total: d.health.length,
+              affected: d.health.filter(h => h.state_severity === 'bad'
+                                          || h.state_severity === 'warn').length}));""")
+        shown = self.js("""return {
+            text: document.getElementById('health-summary').textContent,
+            bad: document.getElementById('health-open').classList.contains('bad'),
+            rows: document.querySelectorAll('#health .st.warn').length};""")
+        floor(self, range(counted["total"]), "sources in the payload", 5)
+        self.assertEqual(shown["bad"], counted["affected"] > 0,
+                         f"the indicator's state disagrees with the payload: "
+                         f"{shown} vs {counted}")
+        self.assertIn(str(counted["total"]), shown["text"],
+                      f"the summary does not name the source count: {shown}")
+        if counted["affected"]:
+            self.assertIn(str(counted["affected"]), shown["text"],
+                          f"the summary does not name the affected count: "
+                          f"{shown}")
+        # The rows and the indicator must not disagree about who is
+        # affected - they share one predicate precisely so they cannot.
+        self.assertEqual(shown["rows"], counted["affected"],
+                         f"the dialog marks {shown['rows']} rows but the "
+                         f"indicator counted {counted['affected']}")
+
+    def test_the_rail_shows_an_age_on_every_series_it_has_data_for(self):
+        """The integration end: the helper is right and it is actually
+        wired to all five as-of lines."""
+        seen = self.js("""const out = {};
+            for (const id of ['fx-asof', 'sb-asof', 'cot-asof',
+                              'ecb-asof', 'rba-asof']) {
+              const e = document.getElementById(id);
+              out[id] = {text: e.textContent.trim(),
+                         age: !!e.querySelector('.age')};
+            }
+            return out;""")
+        withData = {k: v for k, v in seen.items()
+                    if v["text"] and "no data" not in v["text"]}
+        floor(self, withData, "rail series carrying data", 3)
+        missing = [k for k, v in withData.items() if not v["age"]]
+        self.assertEqual(missing, [],
+                         f"these as-of lines carry a date but no age: {missing}")
+
+    def test_the_health_indicator_is_chrome_when_every_source_is_current(self):
+        """Measured against the token, not a literal colour.
+
+        DRIVES THE STATE rather than hoping for it. The first version relied
+        on the fixture having nothing failing - true when written, and false
+        the next day: the seeded observations carry fixed dates, so a source
+        crossed its staleness threshold as real time moved and the test
+        started reporting `1 of 16 sources need attention`. A test whose
+        premise expires overnight is a test that will be edited under
+        deadline by someone who does not know why it was written. The
+        summary's agreement with the payload is asserted separately, below,
+        where it does not depend on what the clock says."""
+        self.js("""document.getElementById('health-open')
+                     .classList.remove('bad'); return 1;""")
+        m = self.js(self.HEALTH)
+        self.redraw_rail()
+        tokens = self.js("""const r = getComputedStyle(document.documentElement);
+            return {chrome: r.getPropertyValue('--chrome').trim(),
+                    fault: r.getPropertyValue('--fault').trim(),
+                    accent: r.getPropertyValue('--accent').trim()};""")
+        rgb = lambda h: "rgb(" + ", ".join(
+            str(int(h.lstrip("#")[i:i + 2], 16)) for i in (0, 2, 4)) + ")"
+        self.assertFalse(m["bad"], f"the indicator is in its fault state: {m}")
+        self.assertEqual(m["colour"], rgb(tokens["chrome"]),
+                         f"the indicator is not --chrome when all is well: {m}")
+        self.assertEqual(m["dot"], rgb(tokens["chrome"]), f"the dot is not --chrome: {m}")
+        self.assertNotEqual(m["colour"], rgb(tokens["accent"]),
+                            "the indicator is amber; amber means unread")
+        self.assertNotEqual(m["dot"], rgb(tokens["accent"]),
+                            "the dot is amber; amber means unread")
+        self.assertTrue(m["text"].strip(), f"the indicator says nothing: {m}")
+
+    def test_the_health_indicator_is_fault_when_a_source_is_not(self):
+        """Drives the `bad` class the drawRail code sets, and checks the
+        three surfaces it is meant to paint: text, border and dot."""
+        tokens = self.js("""const r = getComputedStyle(document.documentElement);
+            return {fault: r.getPropertyValue('--fault').trim(),
+                    accent: r.getPropertyValue('--accent').trim()};""")
+        rgb = lambda h: "rgb(" + ", ".join(
+            str(int(h.lstrip("#")[i:i + 2], 16)) for i in (0, 2, 4)) + ")"
+        self.js("""document.getElementById('health-open')
+                     .classList.add('bad'); return 1;""")
+        m = self.js(self.HEALTH)
+        self.redraw_rail()
+        for surface in ("colour", "border", "dot"):
+            with self.subTest(surface=surface):
+                self.assertEqual(m[surface], rgb(tokens["fault"]),
+                                 f"the indicator's {surface} is {m[surface]}, "
+                                 f"not --fault")
+                self.assertNotEqual(m[surface], rgb(tokens["accent"]),
+                                    f"the indicator's {surface} is amber")
+
+    def test_the_dialog_shows_every_source_the_rail_used_to(self):
+        """The rail section is gone; nothing may have gone with it. The
+        payload's source list is the reference, not a number written here."""
+        import time
+        expected = self.js("""return fetch('/api/rail').then(r => r.json())
+            .then(d => d.health.map(h => h.name));""")
+        self.js("document.getElementById('health-open').click(); return 1;")
+        time.sleep(1.2)
+        shown = self.js("""const d = document.getElementById('health-dialog');
+            return {open: d.open,
+                    names: [...d.querySelectorAll('#health .nm')]
+                             .map(e => e.textContent.trim()),
+                    groups: d.querySelectorAll('#health .jgroup').length,
+                    risk: d.querySelector('#risk').textContent.trim().length > 0,
+                    exportState: d.querySelector('#export-state')
+                                   .textContent.trim().length > 0};""")
+        self.js("document.getElementById('health-dialog').close(); return 1;")
+        time.sleep(0.4)
+        self.assertTrue(shown["open"], "the dialog did not open")
+        floor(self, expected, "sources in the rail payload", 5)
+        self.assertEqual(sorted(shown["names"]),
+                         sorted(n.replace("_", " ") for n in expected),
+                         "the dialog is not showing every source the rail did")
+        self.assertGreater(shown["groups"], 1,
+                           "the jurisdiction grouping did not come across")
+        self.assertTrue(shown["risk"], "the risk block did not come across")
+        self.assertTrue(shown["exportState"],
+                        "the export state did not come across")
+        self.assertEqual(
+            self.js("""return document.querySelectorAll(
+                '.rail #health, .rail #risk, .rail #export-state').length;"""),
+            0, "the rail still carries health or risk")
+
+    def test_a_chip_in_the_masthead_presses_its_twin_in_the_panel(self):
+        """One Set, two renders. Both directions, because a one-way sync is
+        exactly what this design is built to make impossible."""
+        import time
+        self.open_filter()
+        code = self.js("""return document.querySelector(
+            '#jur-chips .chip').dataset.value;""")
+        pair = f"""const bar = document.querySelector(
+                '#jur-chips .chip[data-value="{code}"]');
+            const panel = document.querySelector(
+                '#fgrid .chip[data-axis="jurisdiction"][data-value="{code}"]');
+            return {{bar: bar.getAttribute('aria-pressed'),
+                     panel: panel.getAttribute('aria-pressed'),
+                     tokens: document.querySelectorAll('#tokens .token').length}};"""
+
+        self.js(f"""document.querySelector(
+            '#jur-chips .chip[data-value="{code}"]').click(); return 1;""")
+        time.sleep(1.5)
+        from_bar = self.js(pair)
+        self.js("document.getElementById('fclear').click(); return 1;")
+        time.sleep(1.5)
+
+        self.js(f"""document.querySelector(
+            '#fgrid .chip[data-axis="jurisdiction"][data-value="{code}"]')
+            .click(); return 1;""")
+        time.sleep(1.5)
+        from_panel = self.js(pair)
+        self.js("document.getElementById('fclear').click(); return 1;")
+        time.sleep(1.5)
+        cleared = self.js(pair)
+
+        self.assertEqual((from_bar["bar"], from_bar["panel"]), ("true", "true"),
+                         f"clicking in the masthead did not press the panel's "
+                         f"copy: {from_bar}")
+        self.assertEqual(from_bar["tokens"], 1, f"no token appeared: {from_bar}")
+        self.assertEqual((from_panel["bar"], from_panel["panel"]), ("true", "true"),
+                         f"clicking in the panel did not press the masthead's "
+                         f"copy: {from_panel}")
+        self.assertEqual((cleared["bar"], cleared["panel"]), ("false", "false"),
+                         f"clear all left one copy pressed: {cleared}")
+
+    def test_the_strip_answers_the_glance_question_with_the_band_shut(self):
+        """One line, venues and the next mark, and no band behind it."""
+        m = self.js("""const s = document.getElementById('mast-strip');
+            return {bandHidden: document.getElementById('ribbon').hidden,
+                    venues: s.querySelectorAll('.sv').length,
+                    dots: s.querySelectorAll('.sdot').length,
+                    toggle: !!document.getElementById('band-toggle'),
+                    text: s.textContent.replace(/\\s+/g, ' ').trim()};""")
+        self.assertTrue(m["bandHidden"], "the band is open by default")
+        # Five venues plus the next-mark entry; the fixture always has marks.
+        floor(self, range(m["venues"]), "strip entries", 5)
+        self.assertEqual(m["dots"], 5,
+                         f"expected one dot per venue, got {m['dots']}")
+        self.assertTrue(m["toggle"], "no way to reach the band")
+        self.assertIn(t_en("strip.show_band"), m["text"],
+                      f"the toggle does not offer the band: {m['text']}")
+
+    def test_the_band_and_its_legend_appear_and_disappear_together(self):
+        """`.untimed` is the band's own footnote - two lines naming the
+        sources that have no mark. Left behind when the band went, it would
+        be a legend for something not on screen."""
+        import time
+
+        def seen():
+            return self.js("""const band = document.getElementById('ribbon');
+                const u = document.getElementById('untimed');
+                return {band: band.getBoundingClientRect().height > 0,
+                        legend: u.getBoundingClientRect().height > 0,
+                        legendText: u.textContent.trim().length > 0};""")
+
+        shut = seen()
+        self.js("document.getElementById('band-toggle').click(); return 1;")
+        time.sleep(0.8)
+        open_ = seen()
+        self.js("document.getElementById('band-toggle').click(); return 1;")
+        time.sleep(0.8)
+        again = seen()
+        self.assertTrue(open_["legendText"],
+                        "the fixture has no untimed sources, so this proves "
+                        "nothing about them collapsing")
+        for label, m in (("shut", shut), ("open", open_), ("shut again", again)):
+            with self.subTest(state=label):
+                self.assertEqual(m["band"], m["legend"],
+                                 f"band and legend disagree while {label}: {m}")
+        self.assertTrue(open_["band"], "the band did not open")
+        self.assertFalse(again["band"], "the band did not close again")
+
+    def test_r_is_ignored_while_typing(self):
+        """The find box and the ticker field both take letters. A reader
+        searching for RIO must not lose the tape to a band."""
+        import time
+        held, publishing, undo = self.holdings(40, 30)
+        try:
+            self.open_filter()
+            before = self.js("return document.getElementById('ribbon').hidden;")
+            self.js("""document.getElementById('wl-narrow').focus(); return 1;""")
+            self.press("r")
+            time.sleep(0.6)
+            typing = self.js("""return {
+                hidden: document.getElementById('ribbon').hidden,
+                focused: document.activeElement.id};""")
+        finally:
+            undo()
+        self.assertEqual(typing["focused"], "wl-narrow",
+                         f"focus left the input: {typing}")
+        self.assertEqual(typing["hidden"], before,
+                         "`r` toggled the band while the reader was typing")
+
+    def test_r_is_ignored_while_the_settings_dialog_is_open(self):
+        """showModal() traps focus but the keydown still reaches document,
+        so a reader on a button in that dialog would otherwise toggle a band
+        behind the backdrop."""
+        import time
+        self.js("document.getElementById('settings-open').click(); return 1;")
+        time.sleep(1.5)
+        before = self.js("return document.getElementById('ribbon').hidden;")
+        self.press("r")
+        time.sleep(0.6)
+        after = self.js("""return {hidden: document.getElementById('ribbon').hidden,
+                                   open: document.getElementById('settings').open};""")
+        self.js("document.getElementById('settings').close(); return 1;")
+        time.sleep(0.5)
+        self.assertTrue(after["open"], "the dialog closed, so this proved nothing")
+        self.assertEqual(after["hidden"], before,
+                         "`r` toggled the band from inside the settings dialog")
 
     def test_the_page_never_overflows_horizontally(self):
         """A document wider than the viewport puts a horizontal scrollbar
@@ -5821,6 +7146,396 @@ class TapeStabilityTests(BrowserTestCase):
         self.assertTrue(state["footInside"],
                         "the footer is not pinned inside the panel")
 
+    def holdings(self, held_n, publishing_n, width=1600):
+        """N holdings of which M have published in the window.
+
+        Returns a callable that puts the fixture back. The publishing ones
+        are given real items, because `facets` derives the ticker axis from
+        items.ticker - seeding the watchlist alone would produce sixty quiet
+        holdings and prove only half of what these tests claim."""
+        import os, sqlite3, time
+        from datetime import datetime, timedelta, timezone
+        import httpx
+        names = [f"T{i:03d}" for i in range(held_n)]
+        publishing = names[:publishing_n]
+        path = os.environ["MACROWIRE_DB"]
+        conn = sqlite3.connect(path)
+        conn.executemany(
+            "INSERT OR IGNORE INTO watchlists (user_id, ticker, market) "
+            "VALUES (1, ?, 'US')", [(x,) for x in names])
+        source_id = conn.execute("SELECT id FROM sources LIMIT 1").fetchone()[0]
+        now = datetime.now(timezone.utc)
+        conn.executemany(
+            """INSERT OR IGNORE INTO items
+                   (id, source_id, title, url, fetched_at, published_at,
+                    fx_state, type_primary, ticker)
+               VALUES (?, ?, ?, 'http://x', ?, ?, 'unclassified',
+                       'Press Release', ?)""",
+            [(f"wl{x}", source_id, f"{x} filing", now.isoformat(),
+              (now - timedelta(hours=i + 1)).isoformat(), x)
+             for i, x in enumerate(publishing)])
+        conn.commit()
+        conn.close()
+
+        def load(w):
+            httpx.post(f"{self.base}/session/{self.sid}/window/rect", timeout=30,
+                       json={"width": w, "height": 900, "x": 0, "y": 0})
+            httpx.post(f"{self.base}/session/{self.sid}/url", timeout=60,
+                       json={"url": f"http://127.0.0.1:{self.app_port}/"})
+            time.sleep(2.5)
+
+        def undo():
+            c = sqlite3.connect(path)
+            c.executemany("DELETE FROM watchlists WHERE user_id=1 AND ticker=?",
+                          [(x,) for x in names])
+            c.executemany("DELETE FROM items WHERE id=?",
+                          [(f"wl{x}",) for x in publishing])
+            c.commit()
+            c.close()
+            load(self.WINDOW[0])
+
+        load(width)
+        return names, publishing, undo
+
+    def open_filter(self):
+        import time
+        self.js("""const p = document.getElementById('fpanel');
+                   if (p.hidden) document.getElementById('fopen').click();
+                   return 1;""")
+        time.sleep(1.5)
+
+    def test_a_holding_in_an_uncovered_market_says_so_rather_than_quiet(self):
+        """"nothing in this window" implies something could have published.
+        For a market with no announcement source, nothing can - and the
+        two must not read alike."""
+        import os, sqlite3, time
+        path = os.environ["MACROWIRE_DB"]
+        conn = sqlite3.connect(path)
+        conn.executemany(
+            "INSERT OR IGNORE INTO watchlists (user_id, ticker, market) "
+            "VALUES (1, ?, ?)", [("BHP", "AU"), ("BOGUS1", "US")])
+        conn.commit()
+        conn.close()
+        # state.watchlist arrives with the bootstrap payload, so a row
+        # inserted behind the page is invisible until it reloads.
+        import httpx
+        httpx.post(f"{self.base}/session/{self.sid}/url", timeout=60,
+                   json={"url": f"http://127.0.0.1:{self.app_port}/"})
+        time.sleep(3)
+        try:
+            self.js("document.getElementById('settings-open').click(); return 1;")
+            time.sleep(1.5)
+            seen = self.js("""const out = {};
+                for (const r of document.querySelectorAll(
+                        '#settings-watchlist .swl-row')) {
+                  out[r.querySelector('.swl-t').textContent.trim()] = {
+                    market: r.querySelector('.swl-m').textContent.trim(),
+                    state: r.querySelector('.swl-s').textContent.trim(),
+                    detail: r.querySelector('.swl-s').getAttribute('title')};
+                }
+                out._options = [...document.querySelectorAll(
+                    '#wl-market option')].map(o => o.textContent.trim());
+                return out;""")
+            self.js("document.getElementById('settings').close(); return 1;")
+        finally:
+            conn = sqlite3.connect(path)
+            conn.executemany("DELETE FROM watchlists WHERE user_id=1 AND ticker=?",
+                             [("BHP",), ("BOGUS1",)])
+            conn.commit()
+            conn.close()
+            httpx.post(f"{self.base}/session/{self.sid}/url", timeout=60,
+                       json={"url": f"http://127.0.0.1:{self.app_port}/"})
+            time.sleep(3)
+
+        au, us = seen.get("BHP"), seen.get("BOGUS1")
+        self.assertIsNotNone(au, f"the AU holding did not render: {seen}")
+        self.assertIsNotNone(us, f"the US holding did not render: {seen}")
+        self.assertEqual(au["state"], t_en("settings.watchlist_no_source"),
+                         f"the AU holding reads {au['state']!r}")
+        self.assertEqual(au["detail"],
+                         t_en("settings.watchlist_no_source_detail"),
+                         "the uncovered row carries no explanation")
+        # US HAS a source, so a held-but-silent US ticker is genuinely quiet.
+        self.assertEqual(us["state"], t_en("settings.watchlist_quiet"),
+                         f"a covered market reads as uncovered: {us}")
+        self.assertNotEqual(au["state"], us["state"],
+                            "the two states are indistinguishable")
+        # The form says the same thing in advance.
+        marked = [o for o in seen["_options"]
+                  if t_en("settings.market_no_source") in o]
+        floor(self, marked, "market options marked as having no source", 3)
+        self.assertTrue(any(o.startswith("AU") for o in marked),
+                        f"AU is not marked in the dropdown: {seen['_options']}")
+        self.assertFalse(any(o.startswith("US") for o in marked),
+                         f"US is marked as having no source: {seen['_options']}")
+
+    def test_a_quiet_holding_has_no_chip_but_is_still_listed_in_settings(self):
+        """The axis rule every OTHER axis already follows: a chip appears
+        when pressing it would return rows, so its absence says something.
+        No UK chip means the Bank of England published nothing this month.
+
+        The risk this creates is the one settings answers: a missing ticker
+        must not read as a missing HOLDING."""
+        import time
+        names, publishing, undo = self.holdings(20, 5)
+        quiet = names[-1]
+        try:
+            self.open_filter()
+            panel = self.js(f"""const chips = [...document.querySelectorAll(
+                    '#fgrid .chip[data-axis="ticker"]')].map(c => c.dataset.value);
+                return {{chips, quiet: chips.includes({json.dumps(quiet)}),
+                         edit: document.querySelectorAll(
+                           '#fgrid .wl-add, #fgrid .wl-del, #fgrid .chip[disabled]'
+                         ).length}};""")
+            self.js("document.getElementById('settings-open').click(); return 1;")
+            time.sleep(1.5)
+            listed = self.js(f"""const rows = [...document.querySelectorAll(
+                    '#settings-watchlist .swl-row')];
+                const mine = rows.map(r => r.querySelector('.swl-t').textContent);
+                return {{rows: mine.length, quiet: mine.includes({json.dumps(quiet)}),
+                         removable: document.querySelectorAll(
+                           '#settings-watchlist .wl-del').length,
+                         addForm: !!document.getElementById('wl-add')}};""")
+            self.js("document.getElementById('settings').close(); return 1;")
+        finally:
+            undo()
+        self.assertEqual(sorted(panel["chips"]), sorted(publishing),
+                         f"the panel is not showing exactly the publishers: {panel}")
+        self.assertFalse(panel["quiet"], f"{quiet} published nothing yet has a chip")
+        self.assertEqual(panel["edit"], 0,
+                         "editing controls are still in the filter panel")
+        self.assertEqual(listed["rows"], len(names),
+                         f"settings lists {listed['rows']} of {len(names)} holdings")
+        self.assertTrue(listed["quiet"],
+                        f"{quiet} is held but absent from settings - it would read "
+                        f"as a holding that had disappeared")
+        self.assertEqual(listed["removable"], len(names))
+        self.assertTrue(listed["addForm"], "the add form did not move to settings")
+
+    def test_the_axis_heading_says_how_many_holdings_are_not_shown(self):
+        names, publishing, undo = self.holdings(20, 5)
+        try:
+            self.open_filter()
+            text = self.js("""const ax = [...document.querySelectorAll('#fgrid .fax')]
+                  .find(a => a.querySelector('.chip[data-axis="ticker"]')
+                          || a.querySelector('.fnarrow')
+                          || a.textContent.includes('of'));
+                return ax ? ax.textContent.replace(/\\s+/g, ' ').trim() : null;""")
+        finally:
+            undo()
+        self.assertIsNotNone(text, "the ticker axis did not render")
+        expected = t_en("filter.ticker_of_held",
+                        shown=len(publishing), held=len(names))
+        self.assertIn(expected, text,
+                      f"the axis does not report both counts: {text!r}")
+
+    def test_narrowing_changes_what_is_shown_and_not_what_is_filtered(self):
+        """The box hides chips. If it also filtered, the tape would move
+        while the reader was only looking for something."""
+        import time
+        names, publishing, undo = self.holdings(40, 30)
+        try:
+            self.open_filter()
+            before = self.js("""return {
+                visible: [...document.querySelectorAll('#fgrid .chip[data-axis=\\"ticker\\"]')]
+                           .filter(c => c.offsetParent !== null).length,
+                tokens: document.querySelectorAll('#tokens .token').length,
+                items: document.querySelectorAll('.item').length,
+                hasBox: !!document.getElementById('wl-narrow')};""")
+            self.js("""const i = document.getElementById('wl-narrow');
+                i.value = 'T00'; i.dispatchEvent(new Event('input')); return 1;""")
+            time.sleep(0.6)
+            narrowed = self.js("""return {
+                visible: [...document.querySelectorAll('#fgrid .chip[data-axis=\\"ticker\\"]')]
+                           .filter(c => c.offsetParent !== null).length,
+                tokens: document.querySelectorAll('#tokens .token').length,
+                items: document.querySelectorAll('.item').length};""")
+            self.js("""const i = document.getElementById('wl-narrow');
+                i.value = ''; i.dispatchEvent(new Event('input')); return 1;""")
+            time.sleep(0.6)
+            cleared = self.js("""return [...document.querySelectorAll(
+                '#fgrid .chip[data-axis=\\"ticker\\"]')]
+                .filter(c => c.offsetParent !== null).length;""")
+        finally:
+            undo()
+        self.assertTrue(before["hasBox"],
+                        f"{len(publishing)} chips is over the threshold but there "
+                        f"is no narrow box")
+        self.assertLess(narrowed["visible"], before["visible"],
+                        "typing hid nothing")
+        self.assertGreater(narrowed["visible"], 0, "typing hid everything")
+        self.assertEqual(narrowed["tokens"], before["tokens"],
+                         "narrowing changed the active filters")
+        self.assertEqual(narrowed["items"], before["items"],
+                         "narrowing moved the tape, so it is filtering")
+        self.assertEqual(cleared, before["visible"],
+                         "clearing the box did not bring every chip back")
+
+    def test_removing_a_holding_in_settings_updates_the_panel(self):
+        import time
+        names, publishing, undo = self.holdings(12, 6)
+        gone = publishing[0]
+        try:
+            self.open_filter()
+            self.js("document.getElementById('settings-open').click(); return 1;")
+            time.sleep(1.5)
+            self.js(f"""const b = [...document.querySelectorAll(
+                    '#settings-watchlist .wl-del')]
+                .find(x => x.dataset.ticker === {json.dumps(gone)});
+                b.click(); return 1;""")
+            time.sleep(2.5)
+            self.js("document.getElementById('settings').close(); return 1;")
+            time.sleep(0.5)
+            after = self.js(f"""return {{
+                chips: [...document.querySelectorAll(
+                    '#fgrid .chip[data-axis="ticker"]')].map(c => c.dataset.value),
+                heading: document.getElementById('fgrid').textContent
+                           .replace(/\\s+/g, ' ')}};""")
+        finally:
+            undo()
+        self.assertNotIn(gone, after["chips"],
+                         f"{gone} was removed in settings but still has a chip")
+        self.assertIn(t_en("filter.ticker_of_held", shown=len(publishing) - 1,
+                           held=len(names) - 1), after["heading"],
+                      f"the counts did not follow the removal: {after['heading']}")
+
+    PANEL_SIZE = """const b = document.getElementById('fpanel-body');
+        const g = document.getElementById('fgrid');
+        const ax = [...document.querySelectorAll('#fgrid .fax')]
+          .find(a => a.querySelector('.chip[data-axis="ticker"]')
+                  || a.querySelector('.fnarrow'));
+        return {scrollH: b.scrollHeight, clientH: b.clientHeight,
+                axisH: ax ? Math.round(ax.getBoundingClientRect().height) : null,
+                tickerChips: document.querySelectorAll(
+                  '#fgrid .chip[data-axis="ticker"]').length,
+                axes: document.querySelectorAll('#fgrid .fax').length,
+                cols: getComputedStyle(g).gridTemplateColumns,
+                edit: document.querySelectorAll(
+                  '#fgrid .wl-add, #fgrid .wl-del').length};"""
+
+    def test_the_panel_does_not_grow_with_holdings(self):
+        """The shape the old axis could not survive: sixty holdings, twelve
+        of them publishing. Twelve chips, not sixty, and no add form.
+
+        MEASURES THE AXIS AGAINST ITSELF, not against the viewport. Sixty
+        holdings and twelve produce the SAME panel, because the axis is
+        bounded by activity now - that is the whole change, and it is the
+        thing a fixed number could not express.
+
+        It does still scroll at 1600x900, and no arrangement of this axis
+        would stop it: TYPE alone is 339px with five source sub-groups, and
+        min(50vh, 520px) minus the 48px footer caps the body near 470px
+        whatever the viewport. Sixty holdings cost 583px here; under the old
+        axis the same sixty would each have carried a chip and a delete
+        button. What is fixed is the growth, not the ceiling."""
+        many, publishing, undo = self.holdings(60, 12)
+        try:
+            self.open_filter()
+            big = self.js(self.PANEL_SIZE)
+        finally:
+            undo()
+        few, publishing_few, undo = self.holdings(12, 12)
+        try:
+            self.open_filter()
+            small = self.js(self.PANEL_SIZE)
+        finally:
+            undo()
+
+        self.assertEqual(big["axes"], 5, f"expected five axes: {big}")
+        self.assertEqual(len(big["cols"].split()), 2,
+                         f"the panel is not in two columns: {big['cols']}")
+        self.assertEqual(big["tickerChips"], len(publishing),
+                         f"the axis is not showing exactly the publishers: {big}")
+        self.assertEqual(big["edit"], 0, "editing is still in the panel")
+        # The fixture has to differ in the way the claim is about.
+        self.assertEqual(len(many) - len(few), 48,
+                         "the two fixtures do not differ in holdings")
+        self.assertEqual(big["tickerChips"], small["tickerChips"],
+                         "the two fixtures do not agree on publishers")
+        self.assertEqual(
+            big["axisH"], small["axisH"],
+            f"the axis is {big['axisH']}px with 60 holdings and "
+            f"{small['axisH']}px with 12 - it is still growing with the list "
+            f"rather than with what published")
+        self.assertEqual(
+            big["scrollH"], small["scrollH"],
+            f"the panel is {big['scrollH']}px with 60 holdings and "
+            f"{small['scrollH']}px with 12")
+
+    COLUMN_SIZE = """const b = document.getElementById('fpanel-body');
+        const g = document.getElementById('fgrid');
+        const grid = g.getBoundingClientRect();
+        const cols = {};
+        for (const a of document.querySelectorAll('#fgrid .fax')) {
+          const r = a.getBoundingClientRect();
+          // The spanning axis belongs to neither column, so it is measured
+          // separately rather than counted against one of them.
+          const key = r.width > grid.width * 0.9 ? 'span'
+                    : (r.left < grid.left + grid.width / 2 ? 'one' : 'two');
+          const name = a.querySelector('.faxis').textContent.trim();
+          (cols[key] = cols[key] || {axes: [], top: Infinity, bottom: -Infinity});
+          cols[key].axes.push(name);
+          cols[key].top = Math.min(cols[key].top, r.top);
+          cols[key].bottom = Math.max(cols[key].bottom, r.bottom);
+        }
+        const out = {scrollH: b.scrollHeight, clientH: b.clientHeight,
+                     gridW: Math.round(grid.width),
+                     template: getComputedStyle(g).gridTemplateColumns};
+        for (const k of ['one', 'two', 'span'])
+          out[k] = cols[k] ? {axes: cols[k].axes,
+                              h: Math.round(cols[k].bottom - cols[k].top)}
+                           : null;
+        const s = document.createElement('style');
+        s.textContent = '#fgrid { display: block !important; }';
+        document.head.appendChild(s);
+        out.stacked = b.scrollHeight;
+        s.remove();
+        return out;"""
+
+    def test_the_two_columns_carry_comparable_amounts(self):
+        """The property that actually broke, rather than the symptom.
+
+        SOURCE and TYPE both grow with the source list, and they were in the
+        same column: at 1600px column one held FX and JURISDICTION and then
+        240px of nothing, while column two carried SOURCE plus a 339px TYPE
+        and overflowed. Two columns were already there; the placement was
+        what made one of them do all the work. A future axis dropped into
+        the wrong column breaks it again the same way, and a height check on
+        the panel as a whole would not say which column went wrong.
+
+        Deliberately NOT a no-scroll assertion. Whether it scrolls depends
+        on the watchlist and on how many sources declare more than one type,
+        both of which are fixture facts today and reader facts tomorrow. The
+        numbers are printed instead, so the question is answerable from a
+        run."""
+        held, publishing, undo = self.holdings(8, 8)
+        try:
+            self.open_filter()
+            m = self.js(self.COLUMN_SIZE)
+        finally:
+            undo()
+
+        print(f"\n  panel at 1600x900, {m['gridW']}px grid ({m['template']})"
+              f"\n    column one {m['one']['h']:>4}px  {m['one']['axes']}"
+              f"\n    column two {m['two']['h']:>4}px  {m['two']['axes']}"
+              f"\n    spanning   {m['span']['h']:>4}px  {m['span']['axes']}"
+              f"\n    body       content {m['scrollH']}px in {m['clientH']}px"
+              f"  ({'fits' if m['scrollH'] <= m['clientH'] else 'scrolls'})"
+              f"\n    stacked    {m['stacked']}px")
+
+        for key in ("one", "two", "span"):
+            self.assertIsNotNone(m[key], f"nothing landed in column {key}: {m}")
+        floor(self, m["one"]["axes"] + m["two"]["axes"], "columned axes", 4)
+        self.assertLess(
+            m["scrollH"], m["stacked"] - 100,
+            f"two columns saved only {m['stacked'] - m['scrollH']}px "
+            f"({m['stacked']}px stacked, {m['scrollH']}px in columns)")
+        tall, short = sorted((m["one"]["h"], m["two"]["h"]), reverse=True)
+        self.assertLessEqual(
+            tall, short * 1.5,
+            f"one column is doing the work: {m['one']['h']}px "
+            f"{m['one']['axes']} against {m['two']['h']}px {m['two']['axes']}")
+
     def test_the_panel_scrollbar_is_visible_not_an_overlay(self):
         """It scrolled the whole time; the platform's overlay scrollbar
         only appears once you are already scrolling, so it read as clipped
@@ -5836,8 +7551,14 @@ class TapeStabilityTests(BrowserTestCase):
         """Replaces test_every_axis_starts_closed, which was right about the
         old design. Collapsing was a way to save vertical space; the panel
         scrolls instead, and nothing in it is a click away from being seen.
-        Every axis renders its chips, including the two that used to nest a
-        level down: the type sub-groups and the watchlist add-form."""
+        Every axis renders its chips, including the type sub-groups that
+        used to nest a level down.
+
+        The WATCHLIST axis is exempt from "renders controls", and that is
+        the point of it now: it shows only tickers that published in the
+        window, so on a fixture with an empty watchlist it correctly renders
+        a sentence and nothing else. The add form is not here any more - it
+        is in the settings dialog, which is checked separately."""
         import time
         self.js("document.getElementById('fopen').click(); return 1;")
         time.sleep(1.2)
@@ -5853,12 +7574,14 @@ class TapeStabilityTests(BrowserTestCase):
         floor(self, seen, "filter axes", 5)
         hidden = [a for a in seen if not a["shown"]]
         self.assertEqual(hidden, [], f"an axis is not showing its chips: {hidden}")
-        empty = [a["axis"] for a in seen if a["chips"] == 0]
-        self.assertEqual(empty, [], f"an axis rendered no controls at all: {empty}")
-        self.assertTrue(
-            self.js("""const w = document.querySelector('#fgrid .wl-add');
-                       return !!w && w.getBoundingClientRect().height > 0;"""),
-            "the watchlist add-form is not visible without a further click")
+        bounded = [a for a in seen if a["chips"] == 0
+                   and a["axis"] != t_en("filter.axis.ticker")]
+        self.assertEqual(bounded, [],
+                         f"an axis rendered no controls at all: {bounded}")
+        self.assertEqual(
+            self.js("""return document.querySelectorAll('#fgrid .wl-add,"""
+                    """ #fgrid .wl-del').length;"""),
+            0, "watchlist editing is still in the filter panel")
 
     def test_a_coverage_boundary_renders_once_per_source(self):
         """Reading six months back crosses five boundaries, not five hundred
@@ -5922,6 +7645,31 @@ class ContainedRegionTests(BrowserTestCase):
     So these tests take the CLASS, not the instance, and run it over both
     regions. Nothing here mentions <details>: the next version of this bug
     will not either.
+
+    WHAT RECTS AND HIT-TESTS CANNOT SEE - READ THIS BEFORE ADDING A REGION
+    TEST HERE. Everything above works by comparing `getBoundingClientRect`
+    boxes and by asking `elementsFromPoint` what is painted. Both are blind
+    to SCROLLBARS, and neither blindness is obvious:
+
+      * `getBoundingClientRect()` returns the BORDER box, and a scrollbar
+        is drawn inside it - the gutter is the difference between
+        offsetWidth and clientWidth, both inside the rect. So a scrollbar
+        is always "inside its element" by this measure. "The scrollbar is
+        outside the panel" is not a statement rects can express.
+      * `elementsFromPoint` NEVER returns a scrollbar. A scrollbar is not
+        an element. Probing across the panel's right edge returned
+        DIV.fpanel-body, DIV.fpanel, DIV.track - element boxes, every time.
+
+    A 6px trackless scrollbar whose thumb was --edge-hi, the same colour as
+    the border it sat one pixel inside (1.00:1), therefore passed every
+    assertion in this class. It was reported from a screenshot by a person.
+    The class did not have a gap in its coverage so much as no organ for
+    the question.
+
+    `test_a_scrollbar_looks_like_a_scrollbar` closes it the only way that
+    works: `decode_png` + `screenshot()`, reading the painted pixels. If
+    you add an assertion about anything a scrollbar does, it goes there,
+    not in the rect tests - they will pass and tell you nothing.
     """
 
     # (id, how to open, how to close). Both regions, so a fix to one that
@@ -6146,7 +7894,20 @@ class ContainedRegionTests(BrowserTestCase):
         down the strip, every pixel at the middle and bottom of the panel
         was (35,42,53): the panel's own background. Geometrically perfect,
         invisible, and the content below the fold read as clipped."""
-        rid, opener, closer = self.REGIONS[0]
+        seen = {}
+        for rid, opener, closer in self.REGIONS:
+            with self.subTest(region=rid):
+                seen[rid] = self.check_scroll_strip(rid, opener, closer)
+        floor(self, seen, "regions with a scroll strip", 2)
+        # The two panels are the same control. Divergence is how the
+        # settings dialog ended up with the platform default: a solid white
+        # 12px bar, the only white element on the page.
+        channels = {r: (v["thumb"], v["track"]) for r, v in seen.items()}
+        self.assertEqual(len(set(channels.values())), 1,
+                         f"the scrolling regions do not share one scroll "
+                         f"channel: {channels}")
+
+    def check_scroll_strip(self, rid, opener, closer):
         self.at_depth(1200)
         self.open_region(rid, opener)
         geo = self.js(f"""
@@ -6157,9 +7918,11 @@ class ContainedRegionTests(BrowserTestCase):
             const r = b.getBoundingClientRect();
             const bg = getComputedStyle(box).backgroundColor;
             const edge = getComputedStyle(box).borderRightColor;
+            const cs = getComputedStyle(b);
             return {{right: r.right, top: r.top, bottom: r.bottom,
                      gutter: b.offsetWidth - b.clientWidth,
-                     bg, edge, dpr: window.devicePixelRatio}};""")
+                     bg, edge, channel: cs.scrollbarColor,
+                     dpr: window.devicePixelRatio}};""")
         _, _, rows = self.screenshot()
         self.close_region(closer)
         d = geo["dpr"]
@@ -6193,8 +7956,12 @@ class ContainedRegionTests(BrowserTestCase):
                  if not (set(row) - {background})]
         self.assertEqual(
             blank, [],
-            f"heights {blank} of the scroll strip are pure background: the "
-            f"track is invisible, so only a short thumb is ever on screen")
+            f"{rid}: heights {blank} of the scroll strip are pure "
+            f"background - the track is invisible, so only a short thumb "
+            f"is ever on screen")
+        thumb, track = (geo["channel"].split(") ")[0] + ")",
+                        geo["channel"].split(") ")[-1])
+        return {"thumb": thumb, "track": track, "gutter": geo["gutter"]}
 
     def test_no_two_regions_of_the_page_overlap(self):
         """The doubled-rail half of the screenshot. The panel stops exactly

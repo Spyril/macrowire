@@ -5,8 +5,6 @@
   },
   "app": {
     "title": "MacroWire",
-    "unread_some": "{n} unread",
-    "unread_none": "all read",
     "first_run": "first run — {n} existing items marked read. Only what arrives from now on will show as unread.",
     "loading": "loading…",
     "failed": "failed: {message}",
@@ -30,6 +28,18 @@
       "no_schedule": "no usable schedule (measured IQR 2-7h)",
       "not_today": "does not land on this date"
     }
+  },
+  "strip": {
+    "aria": "Now",
+    "open": "open to {time}",
+    "closed": "closed {time}",
+    "closed_plain": "closed",
+    "next_mark": "next mark",
+    "in_minutes": "in {n}m",
+    "in_hours": "in {h}h {m}m",
+    "in_hours_flat": "in {h}h",
+    "show_band": "show full day",
+    "hide_band": "hide full day"
   },
   "filter": {
     "button": "Filter",
@@ -67,7 +77,11 @@
     "count_unknown": "not counted",
     "aria_counts": "{label}, {total} in window, {unread} unread",
     "aria_unknown": "{label}, count unavailable",
-    "legend": "Each chip shows items in window · unread"
+    "legend": "Each chip shows items in window · unread",
+    "ticker_of_held": "{shown} of {held} held published in this window",
+    "narrow_placeholder": "find",
+    "narrow_label": "Narrow the tickers shown. Does not change the filter.",
+    "also_above": "also in the bar above"
   },
   "watchlist": {
     "add": "add",
@@ -76,7 +90,6 @@
     "market_label": "Market",
     "remove": "Remove {ticker} from watchlist",
     "remove_title": "Remove {ticker} ({market}) from the watchlist",
-    "held_quiet": "held, but nothing in this window",
     "checking": "checking…",
     "need_ticker": "enter a ticker",
     "added": "added {market} {ticker}",
@@ -121,7 +134,9 @@
       "turnover": "turnover"
     },
     "sb_into": "into HK",
-    "sb_out": "out of HK"
+    "sb_out": "out of HK",
+    "age_today": "today",
+    "late": "late"
   },
   "risk": {
     "only_here": "{n} row(s) exist only here — {sources}.",
@@ -182,7 +197,9 @@
       "label": "disabled",
       "meaning": "enabled: false in sources.yaml. This source is not contacted at all. Anything already collected from it is kept and still shows on the tape.",
       "action": "Set enabled: true in sources.yaml to start polling it."
-    }
+    },
+    "all_current": "{n} sources current",
+    "affected": "{n} of {total} sources need attention"
   },
   "time": {
     "just_now": "just now",
@@ -447,7 +464,14 @@
     "unset": "unset",
     "falls_back": "unset → {value}",
     "saved": "saved",
-    "reload_note": "Language and timezone changes redraw the page."
+    "reload_note": "Language and timezone changes redraw the page.",
+    "watchlist_heading": "Watchlist",
+    "watchlist_note": "Add and remove holdings here. The filter panel shows only the ones that published in the current window, so a ticker missing there is quiet, not gone.",
+    "watchlist_published": "published in window",
+    "watchlist_quiet": "nothing in window",
+    "watchlist_no_source": "no source covers this market",
+    "watchlist_no_source_detail": "No enabled source carries company announcements for this market, so nothing from it can reach the tape. The holding is still recorded.",
+    "market_no_source": "no source"
   },
   "coverage": {
     "recoverable_title": "{source} · nothing earlier collected",

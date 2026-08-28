@@ -5,8 +5,6 @@
   },
   "app": {
     "title": "MacroWire",
-    "unread_some": "{n} 条未读",
-    "unread_none": "全部已读",
     "first_run": "首次运行 — 已将 {n} 条既有条目标记为已读。此后新到达的才会显示为未读。",
     "loading": "加载中…",
     "failed": "失败：{message}",
@@ -30,6 +28,18 @@
       "no_schedule": "发布时间不固定（实测相差 2–7 小时）",
       "not_today": "当日不落在此区间内"
     }
+  },
+  "strip": {
+    "aria": "当前状态",
+    "open": "开市，至 {time}",
+    "closed": "已收市 {time}",
+    "closed_plain": "已收市",
+    "next_mark": "下一个标记",
+    "in_minutes": "{n} 分钟后",
+    "in_hours": "{h} 小时 {m} 分钟后",
+    "in_hours_flat": "{h} 小时后",
+    "show_band": "显示全天",
+    "hide_band": "隐藏全天"
   },
   "filter": {
     "button": "筛选",
@@ -67,7 +77,11 @@
     "count_unknown": "未计数",
     "aria_counts": "{label}，窗口内 {total} 条，未读 {unread} 条",
     "aria_unknown": "{label}，计数不可用",
-    "legend": "每个筛选项显示：窗口内条数 · 未读条数"
+    "legend": "每个筛选项显示：窗口内条数 · 未读条数",
+    "ticker_of_held": "{held} 个自选标的中，{shown} 个在窗口内有发布",
+    "narrow_placeholder": "查找",
+    "narrow_label": "在已显示的标的中查找。不改变筛选条件。",
+    "also_above": "上方栏中也有"
   },
   "watchlist": {
     "add": "添加",
@@ -76,7 +90,6 @@
     "market_label": "市场",
     "remove": "将 {ticker} 从自选列表移除",
     "remove_title": "将 {ticker}（{market}）从自选列表移除",
-    "held_quiet": "已持有，但窗口内没有条目",
     "checking": "校验中…",
     "need_ticker": "请输入股票代码",
     "added": "已添加 {market} {ticker}",
@@ -121,7 +134,9 @@
       "turnover": "成交总额"
     },
     "sb_into": "流入港股",
-    "sb_out": "流出港股"
+    "sb_out": "流出港股",
+    "age_today": "今天",
+    "late": "延迟"
   },
   "risk": {
     "only_here": "有 {n} 条记录仅存在于本机 — {sources}。",
@@ -182,7 +197,9 @@
       "label": "已停用",
       "meaning": "sources.yaml 中设为 enabled: false。该来源完全不会被访问。此前已采集的内容仍会保留，并继续显示在时间线上。",
       "action": "在 sources.yaml 中设为 enabled: true 即可开始采集。"
-    }
+    },
+    "all_current": "{n} 个来源均正常",
+    "affected": "{total} 个来源中有 {n} 个需要关注"
   },
   "time": {
     "just_now": "刚刚",
@@ -447,7 +464,14 @@
     "unset": "未设置",
     "falls_back": "未设置 → {value}",
     "saved": "已保存",
-    "reload_note": "更改语言或时区后页面会刷新。"
+    "reload_note": "更改语言或时区后页面会刷新。",
+    "watchlist_heading": "自选列表",
+    "watchlist_note": "在此添加或移除持仓。筛选面板只显示在当前窗口内有发布的标的，因此那里没有某个代码，说明它只是没有发布，并非已被移除。",
+    "watchlist_published": "窗口内有发布",
+    "watchlist_quiet": "窗口内无发布",
+    "watchlist_no_source": "没有来源覆盖这个市场",
+    "watchlist_no_source_detail": "没有已启用的来源提供这个市场的公司公告，因此这个市场的内容无法进入时间线。该持仓仍会记录。",
+    "market_no_source": "无来源"
   },
   "coverage": {
     "recoverable_title": "{source} · 更早的内容尚未采集",

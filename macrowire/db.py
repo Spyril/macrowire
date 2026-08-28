@@ -199,12 +199,23 @@ def log_fetch(
     error: str | None = None,
     detail: str | None = None,
     error_kind: str | None = None,
+    error_key: str | None = None,
+    error_fields: str | None = None,
 ) -> None:
+    """One row per contact.
+
+    `error` is the ENGLISH rendering and `error_key`/`error_fields` are what
+    it was rendered from. Both, on purpose: the key is what `status` renders
+    in the reader's locale, and the English text is what stays greppable in
+    the file long after. See migration 006.
+    """
     conn.execute(
         """INSERT INTO fetch_log
-               (source, timestamp, status, new_item_count, error, detail, error_kind)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (source, utc_now(), status, new_item_count, error, detail, error_kind),
+               (source, timestamp, status, new_item_count, error, detail,
+                error_kind, error_key, error_fields)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (source, utc_now(), status, new_item_count, error, detail, error_kind,
+         error_key, error_fields),
     )
     conn.commit()
 

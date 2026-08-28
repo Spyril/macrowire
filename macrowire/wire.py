@@ -7,6 +7,7 @@ produces.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
@@ -372,10 +373,18 @@ def fetch_source(conn: sqlite3.Connection, source: Source, stagger: bool = False
         conn.commit()
 
     except MacroWireError as exc:
+        # exc.english(), not str(exc): the stored column must not depend on
+        # which locale the interface happened to be set to when this ran.
+        # The key and its fields travel alongside so `status` can render it
+        # in whatever locale is current when it is READ. Migration 006.
         db.log_fetch(conn, source.name, status=db.STATUS_ERROR,
-                     error=f"{type(exc).__name__}: {exc}", error_kind=exc.kind)
+                     error=f"{type(exc).__name__}: {exc.english()}",
+                     error_kind=exc.kind, error_key=exc.key,
+                     error_fields=json.dumps(exc.fields, ensure_ascii=False,
+                                             sort_keys=True) if exc.key else None)
         raise
     except Exception as exc:  # unexpected, but still must reach fetch_log
+        # Not ours, so there is no key - only whatever it says.
         db.log_fetch(conn, source.name, status=db.STATUS_ERROR,
                      error=f"{type(exc).__name__}: {exc}", error_kind="internal")
         raise
@@ -553,7 +562,7 @@ def source_status(conn: sqlite3.Connection, source: Source) -> dict:
         coverage_state = "lost"
 
     last_error_row = conn.execute(
-        """SELECT id, timestamp, error FROM fetch_log
+        """SELECT id, timestamp, error, error_key, error_fields FROM fetch_log
            WHERE source = ? AND status = 'error'
            ORDER BY id DESC LIMIT 1""",
         (source.name,),

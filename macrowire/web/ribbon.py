@@ -13,6 +13,8 @@ mark and be wrong for five months of the year.
 
 from __future__ import annotations
 
+import sys
+
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -38,6 +40,11 @@ def _pref(key: str, fallback):
     return value if value else fallback
 
 
+# Reported once per value per process: a render path must not print the
+# same line on every request.
+_UNRESOLVED_ZONES: set[str] = set()
+
+
 def view_zone() -> ZoneInfo:
     """The VIEWER's zone: preference first, then config. Read per call.
 
@@ -51,7 +58,18 @@ def view_zone() -> ZoneInfo:
         try:
             return ZoneInfo(declared)
         except Exception:
-            pass
+            # NOT A TRANSIENT FAILURE, so not a silent fallback. A stored
+            # zone name that does not resolve will not resolve on the next
+            # request either, and preferences._validate() is supposed to
+            # make this unreachable - so swallowing it hides a validation
+            # gap forever AND shows the reader a timezone they did not
+            # choose. Fall back, but say which and why.
+            if declared not in _UNRESOLVED_ZONES:
+                _UNRESOLVED_ZONES.add(declared)
+                print(f"stored timezone {declared!r} is not a zone this "
+                      f"system knows; showing {load_timezone()} instead. "
+                      f"Clear it with: python -m macrowire prefs "
+                      f"--clear timezone", file=sys.stderr)
     return ZoneInfo(load_timezone())
 
 

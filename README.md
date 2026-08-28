@@ -374,12 +374,45 @@ Of ASX, HKEX and SEC EDGAR, **only the SEC permits what this does.**
 | | terms |
 |---|---|
 | **SEC EDGAR** | *"We allow scripted access to sec.gov content"* — 10 req/sec, declared User-Agent. US federal works are public domain. |
-| **ASX** | prohibits *"any spider, screen scraper, robot … to use or access the Site in any way whatsoever, including monitoring, downloading or copying"* without prior written consent. Personal non-commercial use covers **manual** reading; automated access is prohibited separately and independently of purpose. |
+| **ASX** | prohibits *"any spider, screen scraper, robot … to use or access the Site in any way whatsoever, including monitoring, downloading or copying"* without prior written consent (clause 5(b)). **Consent was requested and refused in writing** — 25 August 2026, ASX Office of General Counsel, ref `ASXO-ASXLEGAL.FID2125721`. See below. |
 | **HKEX** | prohibits *"any programmatic, scripted or other mechanical means to access this Website"*, *"systematic retrieval to create collections, compilations, databases"*, and text/data mining. Its personal-use grant allows storing pages on disk *"but not on any server or other storage device connected to a network."* |
 
 ASX and HKEX are **out**. A JSON endpoint on a different hostname does not
 change the plain intent of "no spider, screen scraper, robot or similar
 process". Same call as the PBoC `robots.txt`.
+
+#### ASX: asked, and told no
+
+Clause 5(b) prohibits automated access *without prior written consent*, which
+means the prohibition has a documented way through it. So it was tried.
+
+On **21 August 2026** the repository owner wrote to ASX asking for that
+consent, for a narrow case: personal non-commercial use, a watchlist of about
+twenty securities, polled a few times a day, stored locally, never
+redistributed.
+
+On **25 August 2026** the ASX Office of General Counsel declined, under
+reference `ASXO-ASXLEGAL.FID2125721`. ASX does not allow retail end users to
+scrape the ASX website, and directed the request to its published list of data
+vendors and ISVs as the route for sourcing the data.
+
+That route is real, and it is the institutional one: licensed vendors
+redistribute ASX announcements under commercial agreements, priced for
+businesses rather than for individuals. It is not a route this project takes.
+
+Two things this does **not** say. It is not a statement of blanket ASX policy —
+it is one written answer to one retail request, and it is quoted as that rather
+than generalised. And it does not change the conclusion the terms already
+supported: ASX was out before the letter, on clause 5(b) alone. What changed is
+that the position is now **confirmed rather than inferred**, which is stronger,
+and the reasoning no longer rests on this project's reading of someone else's
+contract.
+
+The correspondence is kept in [`docs/licensing/`](docs/licensing/) — both the
+request and the reply. It is there so this position can be **verified rather
+than taken on trust**: a claim in a README that an exchange said no is worth
+exactly as much as the reader's willingness to believe it, and the letter is
+not.
 
 ### The licensing position, stated plainly
 
@@ -779,8 +812,9 @@ flatly *"若未获得…书面同意，…上的所有信息、内容等，**均
 传播"* — no copying without written consent, with no carve-out. Storing to
 a database is `复制`.
 
-Where terms conflict, the prohibition controls. Same call as PBoC, ASX and
-HKEX.
+Where terms conflict, the prohibition controls. Same call as PBoC and HKEX,
+and as [ASX](#asx-asked-and-told-no) — where the same call was afterwards
+confirmed in writing rather than left as a reading.
 
 **And its positioning data is not a COT equivalent.** 成交持仓排名 ranks
 the top 20 **member firms** by volume and by long/short open interest —
@@ -2093,7 +2127,8 @@ public domain.** Some of it is not, and each publisher's terms are
 recorded in [The licensing position, stated plainly](#the-licensing-position-stated-plainly)
 and [Chinese exchanges: what the terms actually say](#chinese-exchanges-what-the-terms-actually-say),
 including the three sources that are deliberately **not polled** because
-their terms prohibit it — PBoC, ASX and HKEX.
+their terms prohibit it — PBoC, HKEX, and
+[ASX, which refused consent in writing](#asx-asked-and-told-no).
 
 Two practical consequences:
 

@@ -191,12 +191,34 @@ CREATE TABLE IF NOT EXISTS preferences (
 );
 """
 
+# --- 006 -------------------------------------------------------------------
+# The error message as a KEY and its FIELDS, so the row is not a translation.
+#
+# fetch_log.error held formatted prose, and `status` reads it back out and
+# prints it. That made the column locale-dependent at WRITE time: a failure
+# recorded while the interface was on zh-CN would render Chinese forever
+# afterwards, including after switching back to en. Storing a rendering of
+# something instead of the thing is the mistake this project refuses to make
+# with item titles, and it was being made here.
+#
+# `error` is still written, as the ENGLISH rendering. Not redundancy: it is
+# the greppable forensic record - `sqlite3 macrowire.db "select error from
+# fetch_log"` has to stay useful months later - and it is what pre-migration
+# rows already hold, so one read path covers both. Rows written before this
+# have no key and are rendered verbatim rather than retro-translated. They
+# hold what was recorded.
+ERROR_KEY = """
+ALTER TABLE fetch_log ADD COLUMN error_key TEXT;
+ALTER TABLE fetch_log ADD COLUMN error_fields TEXT;
+"""
+
 MIGRATIONS: list[tuple[int, str, str]] = [
     (1, "baseline", BASELINE),
     (2, "fetch_log.error_kind", ERROR_KIND),
     (3, "items type_primary / type_tags", TYPE_FIELDS),
     (4, "items.fx_state", FX_STATE),
     (5, "preferences", PREFERENCES),
+    (6, "fetch_log.error_key / error_fields", ERROR_KEY),
 ]
 
 

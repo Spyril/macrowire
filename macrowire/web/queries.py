@@ -29,6 +29,18 @@ ITEM_LABELS = {
 }
 
 
+# THE PARSERS THAT ACTUALLY MATCH A WATCHLIST. Every other source
+# publishes on its own schedule and ignores what you hold; these two take
+# the watchlist as input and ask per ticker.
+#
+# ADD A KIND HERE WHEN A WATCHLIST-DRIVEN PARSER IS ADDED. Nothing else
+# will notice on its own: the interface uses this to tell "held, and quiet
+# this window" from "held, and no source covers this market at all", and a
+# new parser missing from this set would leave its market permanently
+# reported as uncovered while it was busy collecting.
+WATCHLIST_KINDS = {"sec_edgar", "cninfo"}
+
+
 def sources_meta(conn: sqlite3.Connection, sources) -> list[dict]:
     ids = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM sources")}
     out = []
@@ -42,6 +54,16 @@ def sources_meta(conn: sqlite3.Connection, sources) -> list[dict]:
             "archive": s.archive,
             "timing_class": (s.timing or {}).get("class", "scattered"),
             "enabled": s.enabled,
+            # WHICH MARKET'S COMPANY ANNOUNCEMENTS THIS SOURCE CARRIES, or
+            # None. Derived rather than exposing `kind`, so the client asks
+            # a question about coverage instead of reverse-engineering
+            # parser names.
+            #
+            # NOT the same as `jurisdiction`, and the difference is the
+            # whole point: AU has two enabled sources and neither carries a
+            # company announcement, so matching on jurisdiction alone would
+            # report AU covered when nothing covers it.
+            "announces_for": s.jurisdiction if s.kind in WATCHLIST_KINDS else None,
         })
     return out
 
@@ -671,6 +693,13 @@ def rail(conn: sqlite3.Connection, sources, t) -> dict:
         health.append({
             "name": st["name"],
             "jurisdiction": source.jurisdiction,
+            # WHETHER THIS SOURCE IS POLLED AT ALL. The masthead indicator
+            # counts over enabled sources only: a disabled one is neither
+            # current nor failing, and counting it as current would put it
+            # in a denominator describing sources that are being kept up.
+            # It still gets a row here, because "switched off" is something
+            # the reader should be able to see.
+            "enabled": st["enabled"],
             "state": state_key,
             "state_severity": HEALTH_SEVERITY[state_key],
             "state_label": t(f"health.{state_key}.label"),
@@ -697,7 +726,19 @@ def rail(conn: sqlite3.Connection, sources, t) -> dict:
     unreachable = [h for h in health if h["state"] == "unreachable"]
     note = (t("rail.health_unreachable_many", n=len(unreachable), total=len(health))
             if len(unreachable) >= 2 else None)
-    return {"fx": fx, "ecb": ecb, "cot": cot, "rba": rba,
+    # HOW OFTEN EACH BLOCK IS PUBLISHED, so the client can say whether a
+    # value is merely old or actually late. Keyed by rail block rather than
+    # by source name, because that is what the as-of lines are drawn from.
+    # A source with no declared cadence maps to None and is never called
+    # late - the age still shows.
+    by_name = {s.name: s for s in sources}
+    cadence = {block: getattr(by_name.get(name), "cadence_days", None)
+               for block, name in (("fx", "cfets_ccpr"),
+                                   ("cot", "cftc_cot"),
+                                   ("ecb", "ecb_fx"),
+                                   ("rba", "rba_exchange_rates"),
+                                   ("southbound", "sse_southbound"))}
+    return {"fx": fx, "ecb": ecb, "cot": cot, "rba": rba, "cadence": cadence,
             "southbound": southbound, "health": health, "health_note": note,
             # The rail groups health rows by jurisdiction and used to carry
             # its own hardcoded order in JavaScript. It takes this instead.

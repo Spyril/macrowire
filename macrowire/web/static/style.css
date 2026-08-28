@@ -107,8 +107,46 @@
 
   --syd: #4f8f83; --tyo: #7d6ea6; --hkg: #9a6f60; --lon: #547da8; --nyc: #927c4d;
 
-  --mono: "IBM Plex Mono", "DejaVu Sans Mono", ui-monospace, monospace;
-  --sans: system-ui, "Noto Sans", "Noto Sans CJK SC", sans-serif;
+  /* LATIN STACKS. The CJK family is NOT named here - it is chosen by
+     language below and appended, so Latin glyphs keep coming from the
+     Latin font and only CJK codepoints fall through to it. That ordering
+     also matters for a partial locale, where missing keys fall back to
+     English inside an element still marked zh: the English words are
+     drawn by "Noto Sans", not by a CJK font's Latin glyphs. */
+  --mono: "IBM Plex Mono", "DejaVu Sans Mono", ui-monospace, var(--cjk-mono);
+  --sans: system-ui, "Noto Sans", var(--cjk);
+
+  /* ONE HARDCODED CJK FAMILY CANNOT SERVE THREE LANGUAGES.
+     --sans used to end with "Noto Sans CJK SC". SC is Simplified Chinese,
+     and Han codepoints shared with Japanese are DRAWN DIFFERENTLY - 直,
+     骨, 今 among many others. Japanese set in an SC face is legible and
+     visibly wrong to a native reader; Traditional Chinese has the same
+     problem in the other direction. So the family follows the language of
+     the text rather than being fixed at build time.
+     The default names no CJK family at all: the generic keeps today's
+     behaviour for a Latin interface, minus the assumption that any CJK on
+     screen is Simplified. */
+  --cjk: sans-serif;
+  --cjk-mono: monospace;
+}
+/* Region-specific first, script-level second: :lang() matching is by
+   hyphen prefix, so :lang(zh) alone would catch zh-TW as well and put SC
+   back on Traditional text - the exact bug this replaces. */
+:root:lang(zh-CN), :root:lang(zh-SG), :root:lang(zh-Hans) {
+  --cjk: "Noto Sans CJK SC", sans-serif;
+  --cjk-mono: "Noto Sans Mono CJK SC", monospace;
+}
+:root:lang(zh-TW), :root:lang(zh-HK), :root:lang(zh-MO), :root:lang(zh-Hant) {
+  --cjk: "Noto Sans CJK TC", sans-serif;
+  --cjk-mono: "Noto Sans Mono CJK TC", monospace;
+}
+:root:lang(ja) {
+  --cjk: "Noto Sans CJK JP", sans-serif;
+  --cjk-mono: "Noto Sans Mono CJK JP", monospace;
+}
+:root:lang(ko) {
+  --cjk: "Noto Sans CJK KR", sans-serif;
+  --cjk-mono: "Noto Sans Mono CJK KR", monospace;
 }
 
 * { box-sizing: border-box; }
@@ -134,15 +172,62 @@ header {
   display: flex; align-items: baseline; gap: 20px;
   padding: 11px 20px;
 }
-.mast-tokens {
+/* Was .mast-tokens, which hid itself when nothing was filtered. The
+   jurisdiction chips are always there, so this row is unconditional and
+   the tokens live in it - one row that sometimes carries tokens beats two
+   rows that each sometimes do. */
+.mast-jur {
   display: flex; align-items: center; gap: 10px;
   padding: 0 20px 8px; border-top: 1px solid var(--edge);
   padding-top: 7px;
 }
-.mast-tokens[hidden] { display: none; }
+.jlab { font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+        text-transform: uppercase; color: var(--chrome); flex: none; }
+.jchips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.jdiv { width: 1px; height: 15px; background: var(--edge); flex: none; }
+/* ONE LINE for the question asked on every glance. The band answers a
+   different one - how the whole day lays out - and charged 275px plus its
+   legend for it on every load; it is behind `r` now.
+   VENUE HUE APPLIES HERE on the same four conditions the palette note sets
+   out for the ribbon, all of which hold unchanged in this row: the set is
+   bounded at five, every dot sits beside its own code, the hue repeats a
+   name already written rather than replacing one, and no unread marker
+   appears in the strip, so nothing here competes with amber. */
+.mast-strip {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px;
+  padding: 0 20px 8px; font-family: var(--mono); font-size: 12px;
+  color: var(--chrome); border-top: 1px solid var(--edge); padding-top: 7px;
+}
+.sv { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.sv b { color: var(--ink-2); font-weight: 600; letter-spacing: .06em; }
+/* Closed is the DEFAULT half of a day, not a fault: dimmed, never --fault. */
+.sv.off { opacity: .62; }
+.sdot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.sdiv { width: 1px; height: 11px; background: var(--edge); flex: none; }
+.sband { margin-left: auto; }
+.ribbon[hidden] { display: none; }
 /* The Filter button sits between the clock and the unread count; the count
    keeps its right-hand position by pushing off the button instead. */
 .mast-line .fbtn { align-self: center; }
+/* SOURCE HEALTH, WITHOUT HAVING TO GO AND LOOK. It was the sixth of seven
+   rail sections, so a source that had gone quiet was below the fold - and
+   a stale feed is the thing that makes an empty tape lie to you.
+   Quiet in --chrome while everything is current; --fault when it is not.
+   NEVER --accent: amber is unread and only unread, and a warning that
+   competed with the unread gutter would cost the gutter its meaning as
+   well as its own. --fault already means failing or stale on the rows
+   inside, so the indicator and the detail say the same thing in the same
+   colour. */
+.hbtn { display: inline-flex; align-items: center; gap: 6px; align-self: center;
+        font-family: var(--mono); font-size: 12px; padding: 3px 9px;
+        border: 1px solid var(--edge-hi); border-radius: 2px;
+        background: var(--ground); color: var(--chrome); cursor: pointer; }
+.hbtn:hover { color: var(--ink); border-color: var(--chrome); }
+.hdot { width: 6px; height: 6px; border-radius: 50%; flex: none;
+        background: var(--chrome); }
+.hbtn.bad { color: var(--fault); border-color: var(--fault); }
+.hbtn.bad .hdot { background: var(--fault); }
+.hbtn.bad:hover { color: var(--fault); border-color: var(--fault); }
 .wordmark { font-family: var(--mono); font-size: 13px; letter-spacing: .2em;
             text-transform: uppercase; color: var(--chrome); }
 .clock { font-family: var(--mono); font-size: 14px; color: var(--ink);
@@ -327,9 +412,92 @@ kbd { font-family: var(--mono); font-size: 12px; color: var(--chrome);
 .fpanel-body::-webkit-scrollbar { width: 12px; }
 .fpanel-body::-webkit-scrollbar-thumb { background: var(--chrome); border-radius: 6px; }
 .fpanel-body::-webkit-scrollbar-track { background: var(--sunken); }
-.fgrid { display: block; }
+/* TWO COLUMNS. The content was never too tall - it was one column wide in
+   a box three columns wide.
+   `display: block` stacked all five axes down a panel around 1350px across.
+   JURISDICTION lays out seven chips and then breaks the line, SOURCE and
+   TYPE do the same, and the stack ran past the min(50vh, 520px) ceiling and
+   grew a scrollbar it had no need of. The ceiling and the scroll machinery
+   below are unchanged and still right on a short viewport; this just stops
+   spending the width on nothing.
+
+   PLACED EXPLICITLY, NOT AUTO-FLOWED. drawPanel() emits exactly five
+   sections in a fixed order - fx, jurisdiction, ticker, source, type - so
+   the positions are known. Left to auto-placement, SOURCE lands on row 4
+   and leaves a hole above it.
+
+   BALANCED BY SPLITTING THE TWO THAT GROW TOGETHER. SOURCE and TYPE both
+   grow with the source list, and stacking them in the SAME column is what
+   made the panel scroll: measured at 1600px, column one held FX and
+   JURISDICTION and then 240px of nothing, while column two carried SOURCE
+   above a 339px TYPE and overflowed. The count of columns was never the
+   problem. So the two that grow together are split - SOURCE joins FX and
+   JURISDICTION, TYPE gets a column to itself - and the taller of the two
+   no longer sits on top of the other.
+
+   THE GAIN IS FROM UNSTACKING, NOT FROM WIDTH, and it is worth being exact
+   about that because the two pull in opposite directions here. 1fr 1fr
+   NARROWS TYPE's column, from roughly 930px to 650px, and TYPE gets
+   slightly TALLER as a result: `.fsub` is width: 100%, so every source
+   sub-group label claims its own line and its chips wrap beneath it, and
+   fewer chips fit per line at 650px than at 930px. The column total still
+   falls, because removing SOURCE from that column takes away more than the
+   extra wrapping adds.
+   A future change that widened TYPE's column would shorten TYPE - that is
+   a real effect and it is not what this rule is for. This rule is about
+   which axis sits above which.
+
+   WATCHLIST SPANS, and it stays spanning even though the axis is now
+   bounded by ACTIVITY rather than by holdings - it renders only tickers
+   that published in the window, and the editing moved to the settings
+   dialog. It is still the least predictable of the five: FX has three
+   states, jurisdictions seven, sources sixteen at the most, and type is
+   bounded by those sources, while how many holdings publish in a given
+   month is not bounded by anything the layout knows. Full width fits
+   roughly three times the chips per line, and last means it grows DOWNWARD
+   into the scroll region rather than pushing a bounded axis out of view. */
+.fgrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 26px;
+  align-content: start;
+}
+.fax:nth-child(1) { grid-area: 1 / 1; }         /* fx */
+.fax:nth-child(2) { grid-area: 2 / 1; }         /* jurisdiction */
+.fax:nth-child(4) { grid-area: 3 / 1; }         /* source */
+.fax:nth-child(5) { grid-area: 1 / 2 / 4 / 3; } /* type */
+.fax:nth-child(3) { grid-area: 4 / 1 / 5 / 3; } /* watchlist */
+
+/* The divider was a border-bottom between stacked sections. Across two
+   columns that reads as a table rule, and these are not table rows: a
+   bottom border only where a section is not last in its column, one
+   vertical rule between the columns, and one horizontal rule above the
+   full-width watchlist row.
+   Column one is FX, JURISDICTION, SOURCE - so the first two are the ones
+   with something below them. Column two is TYPE alone, which carries the
+   vertical rule and needs no bottom. */
 .fax { border-bottom: 1px solid var(--edge); }
-.fax:last-child { border-bottom: none; }
+.fax:nth-child(3), .fax:nth-child(4), .fax:nth-child(5) { border-bottom: none; }
+.fax:nth-child(5) {
+  border-left: 1px solid var(--edge); padding-left: 26px; }
+.fax:nth-child(3) { border-top: 1px solid var(--edge); padding-top: 4px; }
+/* Already full width and narrow below this, so two columns would be two
+   cramped ones. Back to the stack, and the rules that only made sense
+   beside a second column go with it. */
+@media (max-width: 980px) {
+  .fgrid { display: block; }
+  /* The two-column scheme switches border-bottom OFF for these three -
+     one is last in its column, one carries the vertical rule instead, one
+     has a border-top. None of those reasons survives a single column, and
+     without putting it back the stacked layout showed dividers after FX
+     and JURISDICTION only. Stacked, border-bottom is the separator and
+     every section but the last wants one. */
+  .fax { border-bottom: 1px solid var(--edge); }
+  .fax:nth-child(3), .fax:nth-child(4), .fax:nth-child(5) {
+    border-left: none; border-top: none; padding-left: 0; padding-top: 0;
+    border-bottom: 1px solid var(--edge); }
+  .fax:last-child { border-bottom: none; }
+}
 /* Was a <summary>. It is a heading now: nothing here is pressable, so it
    takes no cursor, no hover state and no focus ring. */
 .fax > .fhead { display: flex; align-items: baseline; gap: 8px; padding: 7px 0; }
@@ -353,10 +521,39 @@ kbd { font-family: var(--mono); font-size: 12px; color: var(--chrome);
 .fsub:first-child { margin-top: 0; }
 .fempty { font-family: var(--mono); font-size: 12px; color: var(--chrome); }
 
+/* Type-to-narrow on the ticker axis. DISPLAY ONLY - it hides chips and
+   never touches filter state - so it is styled as chrome rather than as a
+   control that acts on the tape. */
+.fnarrow { font-family: var(--mono); font-size: 12px; padding: 3px 7px;
+           width: 100%; margin-bottom: 6px;
+           background: var(--ground); color: var(--ink);
+           border: 1px solid var(--edge); border-radius: 2px; }
+.fnarrow::placeholder { color: var(--chrome); }
+.fnarrow:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* The narrowing sets [hidden] on a chip. `.chip` sets no display of its
+   own today, so the UA rule wins unopposed - but this file has three times
+   watched an author `display` outrank a UA one that was doing the hiding,
+   so the rule that makes the feature work is written down rather than
+   inherited by luck. */
+.chip[hidden] { display: none; }
+
 /* Watchlist editing — the second write path in a read-only interface, so
-   it is visually distinct from a filter chip: filters select, these mutate. */
-.wl-chip { display: inline-flex; align-items: center; gap: 0; }
-.wl-chip .chip { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+   it is visually distinct from a filter chip: filters select, these mutate.
+   It lives in the settings dialog: the list grows with holdings, and a
+   dialog has no height ceiling to tune. */
+.swl { display: flex; flex-direction: column; gap: 2px; }
+.swl-row { display: grid; grid-template-columns: 6ch 4ch 1fr max-content;
+           gap: 10px; align-items: center; font-family: var(--mono);
+           font-size: 12.5px; padding: 3px 0;
+           border-bottom: 1px solid var(--edge); }
+.swl-row:last-of-type { border-bottom: none; }
+.swl-t { color: var(--ink); }
+.swl-m { color: var(--chrome); }
+/* Quiet is the DEFAULT reading, not a fault: a holding that published
+   nothing this window is a normal holding, so it is chrome and not --fault. */
+.swl-s { color: var(--chrome); }
+.swl-s.live { color: var(--ink-2); }
+.swl .wl-add { margin-top: 10px; }
 .wl-del { font-family: var(--mono); font-size: 12px; line-height: 1;
           padding: 4px 6px; cursor: pointer; color: var(--chrome);
           background: var(--ground); border: 1px solid var(--edge-hi);
@@ -486,6 +683,14 @@ kbd { font-family: var(--mono); font-size: 12px; color: var(--chrome);
          margin-top: -2px; white-space: nowrap; }
 .asof { font-family: var(--mono); font-size: 12px; color: var(--chrome); margin-top: 8px;
         line-height: 1.5; }
+/* HOW OLD, not a verdict. Brighter than the date beside it because it is
+   what the reader is actually after, but --ink-2 and not a signal colour:
+   a three-day-old weekly figure is perfectly healthy. */
+.age { color: var(--ink-2); }
+/* LATE IS a verdict, and only ever shown where the source declared its own
+   cadence. --fault, the same token the health rows use for a source that
+   has stopped keeping up - never --accent, which is unread. */
+.age.late { color: var(--fault); }
 
 .health { font-family: var(--mono); font-size: 12.5px; }
 .health .jgroup { display: block; color: var(--chrome); letter-spacing: .12em;
@@ -552,8 +757,17 @@ kbd { font-family: var(--mono); font-size: 12px; color: var(--chrome);
 .settings-head h2 { font-family: var(--mono); font-size: 13px; margin: 0;
                     letter-spacing: .14em; text-transform: uppercase;
                     color: var(--chrome-hi); font-weight: 600; }
+/* Same channel as .fpanel-body. Setting nothing here got the platform
+   default, which on this dark panel is a solid WHITE 12px bar - measured
+   (255,255,255) at every height, the only white element on the page. The
+   two scrolling panels are the same control and now look like it. */
 .settings-body { overflow-y: auto; padding: 4px 18px 18px;
-                 overscroll-behavior: contain; }
+                 overscroll-behavior: contain;
+                 scrollbar-width: auto;
+                 scrollbar-color: var(--chrome) var(--sunken); }
+.settings-body::-webkit-scrollbar { width: 12px; }
+.settings-body::-webkit-scrollbar-thumb { background: var(--chrome); border-radius: 6px; }
+.settings-body::-webkit-scrollbar-track { background: var(--sunken); }
 .settings section { margin-top: 18px; }
 .settings h3 { font-family: var(--mono); font-size: 12px; margin: 0 0 3px;
                letter-spacing: .14em; text-transform: uppercase;

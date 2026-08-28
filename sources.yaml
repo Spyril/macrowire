@@ -51,6 +51,16 @@
 #                   where a feed is genuinely daily; left off for sporadic
 #                   ones, because a threshold that cries wolf gets ignored.
 #
+#   cadence_days    How often the PUBLISHER publishes, in days. Not about
+#                   polling - staleness_days is that. This is what makes a
+#                   six-day-old CoT figure on time and a four-day-old RBA
+#                   rate late, so the rail can say which numbers are
+#                   current without the reader doing date arithmetic.
+#                   OMIT IT for anything whose cadence you have not
+#                   checked: absent means the age is still shown and
+#                   lateness is simply never asserted. A guessed cadence
+#                   would put --fault on a number nobody said was late.
+#
 #   skip_forms      SEC forms not worth reading. Form 4 and 144 are insider
 #                   transaction filings and were ~88% of volume across the
 #                   watchlisted tickers - skipped because they are not acted
@@ -290,6 +300,10 @@ sources:
     parser: cb_statistics
     url: https://www.rba.gov.au/rss/rss-cb-exchange-rates.xml
     config:
+      # PUBLISHED DAILY, and 3 rather than 1 on purpose: the largest
+      # ordinary gap is Friday to Monday, so a weekend must not read
+      # as a fault. Anything older than that is genuinely late.
+      cadence_days: 3
       institution: RBA
       jurisdiction: AU
       # A reference series: FX by construction, no vocabulary needed.
@@ -644,6 +658,10 @@ sources:
     parser: cfets_ccpr
     url: https://www.chinamoney.com.cn/ags/ms/cm-u-bk-ccpr/CcprHisNew
     config:
+      # PUBLISHED DAILY, and 3 rather than 1 on purpose: the largest
+      # ordinary gap is Friday to Monday, so a weekend must not read
+      # as a fault. Anything older than that is genuinely late.
+      cadence_days: 3
       institution: CFETS
       jurisdiction: CN
       # A reference series: FX by construction, no vocabulary needed.
@@ -932,6 +950,10 @@ sources:
     parser: sse_southbound
     url: https://query.sse.com.cn/ggt/getQuatationInfo.do
     config:
+      # PUBLISHED DAILY, and 3 rather than 1 on purpose: the largest
+      # ordinary gap is Friday to Monday, so a weekend must not read
+      # as a fault. Anything older than that is genuinely late.
+      cadence_days: 3
       institution: SSE
       jurisdiction: CN
       # A flow measure between two currencies' markets, by construction.
@@ -1037,6 +1059,10 @@ sources:
     parser: ecb_fx
     url: https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml
     config:
+      # PUBLISHED DAILY, and 3 rather than 1 on purpose: the largest
+      # ordinary gap is Friday to Monday, so a weekend must not read
+      # as a fault. Anything older than that is genuinely late.
+      cadence_days: 3
       institution: ECB
       jurisdiction: EU
       # A reference series: FX by construction, no vocabulary needed.
@@ -1091,6 +1117,9 @@ sources:
     parser: cftc_cot
     url: https://publicreporting.cftc.gov/resource/6dca-aqww.json
     config:
+      # WEEKLY. Positions as of Tuesday, released Friday, so six days
+      # old is on time and must not be flagged.
+      cadence_days: 7
       institution: CFTC
       jurisdiction: US
       # A reference series: FX by construction, no vocabulary needed.
