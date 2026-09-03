@@ -40,14 +40,19 @@ const FACT = {
 // the catalogue while the clock time does not. 周二 with the schedule
 // intact loses nothing; 周二 with the hour changed would be a lie.
 // One filter model, four axes. OR within an axis, AND across them.
-const AXES = ["fx", "jurisdiction", "ticker", "source", "type"];
+// UNREAD IS AN AXIS, not a sixth panel row. It lives here so it ANDs with
+// the others exactly like any of them, clears with "clear all", and shows
+// in the tokens row when active - no invisible filter. It is deliberately
+// NOT added to drawPanel's rows: the count is already in the masthead and
+// this costs no new chrome.
+const AXES = ["fx", "jurisdiction", "ticker", "source", "type", "unread"];
 const state = {
   sources: [], facets: null, tape: [], offsetHours: 10,
   // Filled from the server at boot. "en" and a null label are only the
   // shape; the real values are config, not defaults worth relying on.
   locale: "en", zoneLabel: null,
   f: { fx: new Set(), jurisdiction: new Set(), ticker: new Set(),
-       source: new Set(), type: new Set() },
+       source: new Set(), type: new Set(), unread: new Set() },
 };
 const anyActive = () => AXES.some((a) => state.f[a].size);
 // Where the READER is. Not a source's zone - those are in FACT.
@@ -335,7 +340,8 @@ function typeLabel(token) {
 }
 
 function tokenHtml({ axis, value }) {
-  const shown = axis === "fx" ? t(`filter.fx_state.${value}`)
+  const shown = axis === "unread" ? t("filter.unread_only")
+              : axis === "fx" ? t(`filter.fx_state.${value}`)
               : axis === "type" ? typeLabel(value)
               : axis === "source" ? value.replace(/_/g, " ") : value;
   const ax = t(`filter.short.${axis}`);
@@ -374,6 +380,7 @@ function drawJurBar() {
 
 function matches(r) {
   const f = state.f;
+  if (f.unread.size && !r.unread) return false;
   if (f.fx.size && !f.fx.has(r.fx_state || "unclassified")) return false;
   if (f.jurisdiction.size && !f.jurisdiction.has(r.jurisdiction)) return false;
   if (f.ticker.size && !f.ticker.has(r.ticker)) return false;
@@ -446,8 +453,15 @@ function drawTape() {
       // The VIEWER's locale, not a hardcoded en-AU. A day header is the
       // reader's own calendar; a publication time is not, and those live
       // in FACT rather than here.
-      html += `<div class="dayhead">${syd.toLocaleDateString(state.locale,
-        { weekday: "long", day: "numeric", month: "long" })}</div>`;
+      const label = syd.toLocaleDateString(state.locale,
+        { weekday: "long", day: "numeric", month: "long" });
+      // Chrome weight, not accent. Amber means unread and only unread, and
+      // a control that CLEARS unread must not be painted in the colour of
+      // the thing it clears.
+      html += `<div class="dayhead"><span>${label}</span>` +
+        `<button class="markday" data-markday="${esc(key)}"` +
+        ` title="${esc(t("tape.mark_day_title", { day: label }))}"` +
+        `>${esc(t("tape.mark_day"))}</button></div>`;
     }
     // Anything whose coverage begins after this row's date has now been
     // passed; emit it here, once.
@@ -478,32 +492,75 @@ function drawTape() {
   while (pending.length) html += boundaryHtml(pending.shift());
   html += endOfWindow(cov);
   $("tape").innerHTML = html;
-  observeItems();
+  wireReadControls();
 }
 
-// Mark read once an item has been on screen briefly. Collapsed groups mark
-// every member: 207 identical notices are one thing you have now seen.
-let observer = null;
-function observeItems() {
-  if (observer) observer.disconnect();
-  const pending = new Map();
-  observer = new IntersectionObserver((entries) => {
-    for (const e of entries) {
-      const el = e.target, key = el.dataset.key;
-      if (e.isIntersecting && el.classList.contains("unread")) {
-        if (!pending.has(key)) {
-          pending.set(key, setTimeout(() => {
-            pending.delete(key);
-            el.classList.remove("unread");
-            post("/api/read", { ids: el.dataset.ids.split(",") }).then(refreshUnread);
-          }, 1800));
-        }
-      } else if (pending.has(key)) {
-        clearTimeout(pending.get(key)); pending.delete(key);
+// READ IS EXPLICIT. It used to be a 1.8s dwell timer on an
+// IntersectionObserver: anything 60% on screen for 1.8 seconds marked
+// itself read. That works for exactly one behaviour - reading top to
+// bottom, once - and quietly destroys the others. Scanning for one item
+// cleared everything scrolled past on the way. Reading backwards through
+// weeks cleared the weeks. Leaving the tab open on a screenful cleared the
+// screenful. In every case the count went down without anybody reading
+// anything, and unread stopped meaning unread.
+//
+// So nothing marks itself now. Three deliberate acts do it, and each one
+// says what it will touch before it touches it.
+//
+// COLLAPSED GROUPS ARE STILL ONE THING. A row's data-ids carries every
+// member id - 207 identical notices are one unread and mark as one - and
+// every path below posts the whole list, which is what the dwell timer did
+// too. That part was never the problem.
+async function markRead(ids) {
+  const flat = [...new Set(ids)].filter(Boolean);
+  if (!flat.length) return;
+  await post("/api/read", { ids: flat });
+  // THE MODEL, NOT JUST THE DOM. The old code removed a class and left
+  // state.tape saying `unread: true`. That was survivable while unread was
+  // only a colour; it is not now that unread is a filter, because the next
+  // redraw would bring the row back.
+  const marked = new Set(flat);
+  for (const row of state.tape || []) {
+    if ((row.ids || []).some((id) => marked.has(id))) row.unread = false;
+  }
+  drawTape();
+  await refreshUnread();
+}
+
+// Every id currently ON SCREEN, which means AFTER the active filters. The
+// masthead control marks what you are looking at, so filtered to HK it
+// touches HK and nothing else.
+function visibleIds(predicate) {
+  const out = [];
+  for (const row of (state.tape || [])) {
+    if (!matches(row) || !row.unread) continue;
+    if (predicate && !predicate(row)) continue;
+    out.push(...(row.ids || []));
+  }
+  return out;
+}
+
+function wireReadControls() {
+  // A headline click marks that row. The link still opens: no
+  // preventDefault, so the article behaves like a link and reading it is
+  // what marks it.
+  $("tape").querySelectorAll("article.item .hl").forEach((a) => {
+    a.onclick = () => {
+      const el = a.closest("article.item");
+      if (el && el.classList.contains("unread")) {
+        markRead((el.dataset.ids || "").split(","));
       }
-    }
-  }, { threshold: 0.6 });
-  document.querySelectorAll(".item.unread").forEach((el) => observer.observe(el));
+    };
+  });
+  $("tape").querySelectorAll("[data-markday]").forEach((b) => {
+    b.onclick = () => markRead(visibleIds((r) => dayKey(r) === b.dataset.markday));
+  });
+}
+
+// One definition of "which day is this row in", used by the renderer and
+// by the day control, so a header and its button can never disagree.
+function dayKey(row) {
+  return dayKeySydney(row.published_at).toDateString();
 }
 
 // MEASURE, never warn unconditionally: when nothing is missing this says
@@ -884,10 +941,25 @@ async function refreshUnread() {
   // panel - and read as a contradiction. They are not: one counts unread,
   // the other counts the window, and now they say so side by side.
   // The catalogue is our own file, so a marked-up field is safe here.
-  $("unread-total").innerHTML = t("app.unread_and_window", {
-    unread: u.total ? `<b>${u.total}</b>` : "0",
-    total: u.window_total ?? "\u2014",
-  });
+  // THE COUNT IS THE CONTROL. It carries data-axis/data-value, so
+  // wireChips gives it the identical handler every filter chip has and
+  // syncChipPressed keeps its pressed state honest - one code path, not a
+  // second copy for the masthead. `chip` is on it for the wiring and the
+  // pressed treatment; `unread-toggle` puts the masthead's own type back.
+  $("unread-total").innerHTML =
+    `<button class="chip unread-toggle" data-axis="unread" data-value="unread"
+             aria-pressed="${state.f.unread.has("unread")}"
+             title="${esc(t("filter.unread_only_title"))}">`
+    + t("app.unread_and_window", {
+        unread: u.total ? `<b>${u.total}</b>` : "0",
+        total: u.window_total ?? "\u2014",
+      })
+    + `</button>`
+    + `<button class="markall" id="markall"
+               title="${esc(t("app.mark_view_title"))}"
+       >${esc(t("app.mark_view"))}</button>`;
+  wireChips($("unread-total"));
+  $("markall").onclick = () => markRead(visibleIds());
   if (panelOpen()) drawPanel(u);
 }
 

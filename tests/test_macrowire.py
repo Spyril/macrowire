@@ -7094,6 +7094,241 @@ class TapeStabilityTests(BrowserTestCase):
                         f"{m['body']}")
         self.assertEqual(after, before, "the locale was not put back")
 
+    def unread_state(self):
+        return self.js("""return {
+            onScreen: document.querySelectorAll('.item').length,
+            unread: document.querySelectorAll('.item.unread').length,
+            pressed: (document.querySelector('.unread-toggle') || {})
+                       .getAttribute ? document.querySelector('.unread-toggle')
+                       .getAttribute('aria-pressed') : null,
+            tokens: [...document.querySelectorAll('#tokens .token')]
+                      .map(t => t.textContent.trim())};""")
+
+    def reset_reads(self):
+        """Back to (almost) all-unread. These tests share one database, and
+        a test that marks rows read would otherwise hand the next one a
+        tape with nothing left to mark.
+
+        ONE ROW IS LEFT READ ON PURPOSE. First launch marks everything read
+        - 1,825 unread on a fresh install is a wall - and `first_run` is
+        "this user has no item_state at all". Deleting every row therefore
+        makes the next load look like a first launch, which sweeps the tape
+        read again and leaves these tests measuring zero. Keeping a single
+        flagged-read row says "this user has been here" without costing the
+        other 199."""
+        import os, sqlite3, time
+        import httpx
+        c = sqlite3.connect(os.environ["MACROWIRE_DB"])
+        c.execute("DELETE FROM item_state")
+        keep = c.execute("SELECT id FROM items ORDER BY published_at LIMIT 1"
+                         ).fetchone()[0]
+        c.execute("INSERT INTO item_state (user_id, item_id, read_at) "
+                  "VALUES (1, ?, '2026-01-01T00:00:00Z')", (keep,))
+        c.commit()
+        c.close()
+        self.js("document.getElementById('fclear').click(); return 1;")
+        time.sleep(0.8)
+        httpx.post(f"{self.base}/session/{self.sid}/url", timeout=60,
+                   json={"url": f"http://127.0.0.1:{self.app_port}/"})
+        time.sleep(3)
+
+    def test_scrolling_an_item_past_does_not_mark_it_read(self):
+        """THE WHOLE POINT OF THE CHANGE. A 1.8s dwell timer cleared
+        anything 60% on screen, so scanning for one item cleared everything
+        scrolled past on the way to it. Nothing marks itself now.
+
+        Scrolls the tape through several screens, waits far longer than the
+        old timer, and requires the unread count not to move."""
+        import time
+        self.reset_reads()
+        try:
+            before = self.unread_state()
+            self.assertGreater(before["unread"], 20,
+                               f"nothing unread to scroll past: {before}")
+            for y in (0, 900, 1800, 2700, 1200, 0):
+                self.js(f"window.scrollTo(0, {y}); return 1;")
+                time.sleep(0.7)
+            time.sleep(3.0)          # the old timer was 1.8s
+            after = self.unread_state()
+        finally:
+            self.reset_reads()
+        self.assertEqual(after["unread"], before["unread"],
+                         f"{before['unread'] - after['unread']} items marked "
+                         f"themselves read while scrolling")
+
+    def test_clicking_a_headline_marks_that_item(self):
+        import time
+        self.reset_reads()
+        try:
+            before = self.unread_state()
+            key = self.js("""const a = document.querySelector(
+                    'article.item.unread .hl');
+                a.removeAttribute('target'); a.removeAttribute('href');
+                const el = a.closest('article.item');
+                a.click();
+                return el.dataset.key;""")
+            time.sleep(2.0)
+            after = self.unread_state()
+            still = self.js(f"""const el = [...document.querySelectorAll(
+                    'article.item')].find(e => e.dataset.key === {json.dumps(key)});
+                return el ? el.classList.contains('unread') : null;""")
+        finally:
+            self.reset_reads()
+        self.assertEqual(after["unread"], before["unread"] - 1,
+                         f"clicking a headline moved unread from "
+                         f"{before['unread']} to {after['unread']}")
+        self.assertIs(still, False, "the clicked row is still marked unread")
+
+    def test_the_day_control_marks_only_that_day(self):
+        import time
+        self.reset_reads()
+        try:
+            counts = self.js("""const out = {};
+                for (const el of document.querySelectorAll('article.item')) {
+                  let d = el.previousElementSibling;
+                  while (d && !d.classList.contains('dayhead'))
+                    d = d.previousElementSibling;
+                  const k = d ? d.querySelector('[data-markday]').dataset.markday : '?';
+                  out[k] = (out[k] || 0) + (el.classList.contains('unread') ? 1 : 0);
+                }
+                return out;""")
+            floor(self, counts, "days on screen", 2)
+            target = max(counts, key=lambda k: counts[k])
+            before = self.unread_state()
+            self.js(f"""document.querySelector(
+                '[data-markday="{target}"]').click(); return 1;""")
+            time.sleep(2.5)
+            after = self.unread_state()
+        finally:
+            self.reset_reads()
+        self.assertGreater(counts[target], 0, "the chosen day had no unread")
+        self.assertEqual(
+            after["unread"], before["unread"] - counts[target],
+            f"marking {target} changed unread by "
+            f"{before['unread'] - after['unread']}, expected {counts[target]}")
+
+    def test_the_masthead_control_respects_active_filters(self):
+        """`mark all read` next to a filter has to mean "all of what I am
+        looking at". Marking everything while filtered to one jurisdiction
+        would silently clear the rest of the wire."""
+        import time
+        self.reset_reads()
+        try:
+            code = self.js("""return document.querySelector(
+                '#jur-chips .chip').dataset.value;""")
+            self.js(f"""document.querySelector(
+                '#jur-chips .chip[data-value="{code}"]').click(); return 1;""")
+            time.sleep(1.5)
+            shown = self.unread_state()
+            self.js("document.getElementById('markall').click(); return 1;")
+            time.sleep(2.5)
+            after_filtered = self.unread_state()
+            self.js("document.getElementById('fclear').click(); return 1;")
+            time.sleep(1.5)
+            unfiltered = self.unread_state()
+        finally:
+            self.reset_reads()
+        self.assertGreater(shown["unread"], 0, "the filter left nothing unread")
+        self.assertEqual(after_filtered["unread"], 0,
+                         "the filtered view still has unread items")
+        self.assertGreater(
+            unfiltered["unread"], 0,
+            f"marking read while filtered to {code} cleared items outside it")
+
+    def test_the_unread_toggle_ands_with_jurisdiction(self):
+        import time
+        self.reset_reads()
+        try:
+            code = self.js("""return document.querySelector(
+                '#jur-chips .chip').dataset.value;""")
+            self.js("""document.querySelector('.unread-toggle').click(); return 1;""")
+            time.sleep(1.5)
+            unread_only = self.unread_state()
+            self.js(f"""document.querySelector(
+                '#jur-chips .chip[data-value="{code}"]').click(); return 1;""")
+            time.sleep(1.5)
+            both = self.unread_state()
+            self.js("""document.querySelector('.unread-toggle').click(); return 1;""")
+            time.sleep(1.5)
+            jur_only = self.unread_state()
+            self.js("document.getElementById('fclear').click(); return 1;")
+            time.sleep(1.5)
+            cleared = self.unread_state()
+        finally:
+            self.reset_reads()
+        self.assertEqual(unread_only["pressed"], "true",
+                         "the toggle has no pressed state")
+        self.assertEqual(unread_only["onScreen"], unread_only["unread"],
+                         "unread-only is showing read items")
+        # AND, not OR: adding a jurisdiction can only narrow.
+        self.assertLessEqual(both["onScreen"], unread_only["onScreen"])
+        self.assertLessEqual(both["onScreen"], jur_only["onScreen"])
+        self.assertEqual(both["onScreen"], both["unread"],
+                         "unread + jurisdiction is showing read items")
+        # No invisible filter: it is in the tokens row while active.
+        self.assertTrue(any(t_en("filter.unread_only") in x
+                            for x in unread_only["tokens"]),
+                        f"the unread filter is not in the tokens row: "
+                        f"{unread_only['tokens']}")
+        self.assertEqual(cleared["pressed"], "false",
+                         "clear all left the toggle pressed")
+        self.assertGreater(cleared["onScreen"], both["onScreen"],
+                           "clearing did not widen the tape")
+
+    def test_a_collapsed_group_is_one_unread_and_marks_as_one(self):
+        """207 identical notices are one thing you have not seen. The row
+        carries every member id and marking it posts the whole list."""
+        import os, sqlite3, time
+        from datetime import datetime, timedelta, timezone
+        self.reset_reads()
+        path = os.environ["MACROWIRE_DB"]
+        c = sqlite3.connect(path)
+        src = c.execute("SELECT id FROM sources LIMIT 1").fetchone()[0]
+        now = datetime.now(timezone.utc)
+        c.executemany(
+            """INSERT OR IGNORE INTO items (id, source_id, title, url,
+                   fetched_at, published_at, fx_state, type_primary)
+               VALUES (?, ?, 'Identical notice', 'http://x', ?, ?,
+                       'unclassified', 'Press Release')""",
+            [(f"dup{i}", src, now.isoformat(),
+              (now - timedelta(minutes=i)).isoformat()) for i in range(7)])
+        c.commit(); c.close()
+        try:
+            import httpx
+            httpx.post(f"{self.base}/session/{self.sid}/url", timeout=60,
+                       json={"url": f"http://127.0.0.1:{self.app_port}/"})
+            time.sleep(3)
+            group = self.js("""const el = [...document.querySelectorAll(
+                    'article.item')].find(e =>
+                      e.querySelector('.hl').textContent.trim() === 'Identical notice');
+                return el ? {ids: el.dataset.ids.split(',').length,
+                            rows: 1,
+                            unread: el.classList.contains('unread'),
+                            key: el.dataset.key} : null;""")
+            self.assertIsNotNone(group, "the duplicate group did not render")
+            before = self.unread_state()
+            self.js(f"""const el = [...document.querySelectorAll('article.item')]
+                  .find(e => e.dataset.key === {json.dumps(group["key"])});
+                const a = el.querySelector('.hl');
+                a.removeAttribute('target'); a.removeAttribute('href'); a.click();
+                return 1;""")
+            time.sleep(2.5)
+            after = self.unread_state()
+            marked = self.js("""return fetch('/api/unread').then(r => r.json())
+                .then(u => u.total);""")
+        finally:
+            c = sqlite3.connect(path)
+            c.executemany("DELETE FROM items WHERE id=?",
+                          [(f"dup{i}",) for i in range(7)])
+            c.commit(); c.close()
+            self.reset_reads()
+        self.assertEqual(group["ids"], 7,
+                         f"the group carries {group['ids']} ids, not 7")
+        self.assertTrue(group["unread"], "the group did not render unread")
+        # ONE row, ONE unread, and one click clears all seven members.
+        self.assertEqual(after["unread"], before["unread"] - 1,
+                         "the collapsed group counted as more than one unread")
+
     def test_the_seeded_fixture_is_fresh_relative_to_now(self):
         """The guard on the fix for item 8.
 

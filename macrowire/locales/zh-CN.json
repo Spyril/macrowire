@@ -9,7 +9,9 @@
     "loading": "加载中…",
     "failed": "失败：{message}",
     "aria_ribbon": "交易时段带",
-    "unread_and_window": "{unread} 条未读 · 窗口内 {total} 条"
+    "unread_and_window": "{unread} 条未读 · 窗口内 {total} 条",
+    "mark_view": "标记已读",
+    "mark_view_title": "将当前视图中的内容全部标记为已读。当前筛选条件同样生效，因此只会影响屏幕上显示的内容。"
   },
   "ribbon": {
     "note": "本地时间按时刻实时换算 — 不存储时区偏移",
@@ -60,7 +62,8 @@
       "jurisdiction": "市场",
       "ticker": "自选标的",
       "source": "来源",
-      "type": "类型"
+      "type": "类型",
+      "unread": "未读"
     },
     "fx_state": {
       "fx": "与外汇相关",
@@ -81,7 +84,9 @@
     "ticker_of_held": "{held} 个自选标的中，{shown} 个在窗口内有发布",
     "narrow_placeholder": "查找",
     "narrow_label": "在已显示的标的中查找。不改变筛选条件。",
-    "also_above": "上方栏中也有"
+    "also_above": "上方栏中也有",
+    "unread_only": "仅未读",
+    "unread_only_title": "只显示未读。与其他筛选条件叠加使用。"
   },
   "watchlist": {
     "add": "添加",
@@ -104,7 +109,9 @@
     "empty_title": "窗口内无内容",
     "empty_body": "未设任何筛选 — 最近 30 天确实没有内容。",
     "no_sources_title": "没有启用任何来源",
-    "no_sources_body": "sources.yaml 中所有来源都设为 enabled: false，因此没有采集任何内容。请将需要的来源设为 enabled: true，然后运行一次抓取。"
+    "no_sources_body": "sources.yaml 中所有来源都设为 enabled: false，因此没有采集任何内容。请将需要的来源设为 enabled: true，然后运行一次抓取。",
+    "mark_day": "标记已读",
+    "mark_day_title": "将 {day} 标记为已读"
   },
   "rail": {
     "cot_heading": "投机性持仓",

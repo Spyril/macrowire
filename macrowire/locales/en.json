@@ -9,7 +9,9 @@
     "loading": "loading…",
     "failed": "failed: {message}",
     "aria_ribbon": "Session ribbon",
-    "unread_and_window": "{unread} unread · {total} in window"
+    "unread_and_window": "{unread} unread · {total} in window",
+    "mark_view": "mark read",
+    "mark_view_title": "Mark everything in the current view read. Active filters apply, so this touches only what is on screen."
   },
   "ribbon": {
     "note": "local time computed per instant — offsets are never stored",
@@ -60,7 +62,8 @@
       "jurisdiction": "JUR",
       "ticker": "TKR",
       "source": "SRC",
-      "type": "TYPE"
+      "type": "TYPE",
+      "unread": "UNR"
     },
     "fx_state": {
       "fx": "FX-relevant",
@@ -81,7 +84,9 @@
     "ticker_of_held": "{shown} of {held} held published in this window",
     "narrow_placeholder": "find",
     "narrow_label": "Narrow the tickers shown. Does not change the filter.",
-    "also_above": "also in the bar above"
+    "also_above": "also in the bar above",
+    "unread_only": "unread only",
+    "unread_only_title": "Show unread only. Combines with the other filters."
   },
   "watchlist": {
     "add": "add",
@@ -104,7 +109,9 @@
     "empty_title": "Nothing in this window",
     "empty_body": "No filters are active — the last 30 days are genuinely empty.",
     "no_sources_title": "No sources are enabled",
-    "no_sources_body": "Every source in sources.yaml has enabled: false, so nothing is being collected. Set enabled: true on the ones you want, then run a fetch."
+    "no_sources_body": "Every source in sources.yaml has enabled: false, so nothing is being collected. Set enabled: true on the ones you want, then run a fetch.",
+    "mark_day": "mark read",
+    "mark_day_title": "Mark {day} read"
   },
   "rail": {
     "cot_heading": "Speculative positioning",
