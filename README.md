@@ -367,11 +367,48 @@ fragment. The stored value is never altered.
 
 `item_state` is wired for real. **First launch marks everything read** —
 1,825 unread markers on a fresh install is a wall, not a wire. Only what
-arrives after that shows unread.
+arrives after that shows unread. That behaviour matters *more* now that
+nothing else marks itself, not less: it is the one sweep that stops a
+fresh install being unreadable, and it is deliberate rather than a side
+effect of scrolling.
 
-Items mark read after 1.8 seconds on screen. **Unread respects
-collapsing**: 207 identical notices are one unread, and marking the group
-read marks every member.
+**Read is explicit. Nothing marks itself.** Items used to mark read after
+1.8 seconds on screen, which works for exactly one behaviour — reading top
+to bottom, once — and quietly destroys the others. Scanning for a single
+item cleared everything scrolled past on the way to it. Reading backwards
+through a fortnight cleared the fortnight. Leaving the tab open on a
+screenful cleared the screenful. In every case the count fell without
+anyone reading anything, and unread stopped meaning unread. A signal that
+clears itself is not a signal.
+
+Three deliberate acts mark read, and each says what it will touch:
+
+| act | marks |
+|---|---|
+| clicking a headline | that item |
+| the control on a sticky day header | that day's items |
+| the control in the masthead | everything **in the current view** |
+
+The masthead control respects active filters. Filtered to HK, it marks HK
+and touches nothing else — it clears what you are looking at, which is the
+only reading of "all" that is safe to offer next to a filter.
+
+Both controls are chrome, not amber. They *clear* unread, and painting
+them in the colour of the thing they remove would put `--accent` on
+something that is not unread.
+
+**Unread respects collapsing**: 207 identical notices are one unread, and
+marking the group marks every member. Each row carries every member id, and
+all three paths post the whole list — that part was never the problem with
+the timer.
+
+**The unread count is a filter.** Clicking `N unread · M in window` in the
+masthead shows unread only; clicking again clears it. It is an axis like
+any other, so it ANDs with the rest — unread + HK gives unread HK items —
+it appears in the tokens row while active so there is no invisible filter,
+and `clear all` clears it. It is deliberately **not** a sixth row in the
+filter panel: the count was already in the masthead, so the toggle costs no
+new chrome.
 
 ### Palette and type
 
@@ -762,18 +799,50 @@ with no overlap between them.
 ### Blind spot: Treasury discretionary changes
 
 **Treasury announces buyback and issuance changes by press release, and
-those announcements reach no machine-readable feed.** Three layers, and
-only two of them are covered:
+those announcements reach no machine-readable feed at the time they are
+made.** Four layers:
 
-| what | covered by |
-|---|---|
-| auction supply and results | `treasury_auction_announcements`, `treasury_auction_results` |
-| the issuance and buyback **plan** | the quarterly refunding XMLs |
-| the announcement that a plan has **changed** | **nothing** |
+| what | covered by | when |
+|---|---|---|
+| auction supply and results | `treasury_auction_announcements`, `treasury_auction_results` | same day |
+| the issuance and buyback **plan** | the quarterly refunding XMLs, incl. `treasury_buyback_schedule` | quarterly |
+| the announcement that a plan has **changed** | **nothing** | — |
+| the **effect** of that change | Fiscal Data, and the republished calendar | days to weeks later |
 
-The worked example is 19 August 2026, when Treasury announced increased
-sizes for nominal long-end liquidity-support buybacks beginning 9
-September. It did not appear in the tape, and no feed carries it.
+The worked example is 19 August 2026. Treasury said, in full:
+
+> increasing, by at least double, the size of liquidity support buyback
+> operations for longer-dated nominal coupon securities (the 10-year to
+> 20-year sector and the 20-year to 30-year sector). The current maximum
+> size of **$2 billion per operation will be at least $4 billion per
+> operation**. This change is effective **September 9, 2026** and will be
+> in effect for the remainder of this refunding quarter (through November
+> 4, 2026). … *An updated tentative Treasury buyback schedule will be
+> released at a later date.*
+
+That did not appear in the tape and no feed carried it. **But it does not
+stay invisible** — the change becomes machine-readable afterwards, by two
+routes, and it is worth knowing which arrives first:
+
+- **Fiscal Data `v1/accounting/od/buybacks_operations`**, once the first
+  operation under the new sizing executes. Around 9–10 September 2026,
+  `max_par_amt_redeemed` for the long-end buckets should read at least
+  `4000000000`. Three weeks behind the announcement, but machine-readable,
+  unauthenticated JSON. That endpoint holds **executed operations only** —
+  filtering for dates after the last completed operation returns zero rows —
+  so it can confirm a change but never pre-announce one.
+- **`treasury_buyback_schedule`**, once Treasury republishes the calendar,
+  which the release above explicitly promises. It arrives as a **revision**
+  on `BUYBACK/Nominal Coupons 20Y to 30Y`, which is exactly what that
+  source was added for.
+
+**Why Treasury raised it**, from the same API and worth recording because
+it makes the change legible rather than arbitrary: all **22** long-end
+operations in 2026 ran at a $2.00B ceiling, and `total_par_amt_accepted`
+hit that ceiling exactly on **21 of the 22** — the single exception being
+2026-03-19. The ceiling was binding all year. The release's "consistent
+strong sponsorship … significant volume of high-quality offers" is visible
+in the data.
 
 **What was checked and found absent** — recorded so the next reader does
 not repeat the search:
@@ -791,22 +860,36 @@ not repeat the search:
   debt management. Its API documentation contains no reference to
   buybacks at all. Good source, wrong institution.
 
-**The near-miss worth knowing about.** The quarterly buyback schedule at
+**The near-miss, and what it does and does not prove.** The quarterly
+buyback schedule at
 `home.treasury.gov/system/files/221/Tentative-Buyback-Schedule.xml` is a
 real, well-formed, stable-URL XML file — and it was re-uploaded on 19
 August 2026 at 15:54 GMT, hours after the 08:30 announcement. That looks
-exactly like the artefact you would want. It is not. Comparing every
-bucket maximum across four consecutive refunding calendars:
+exactly like the artefact that would carry the change. On the day, it did
+not. Comparing every bucket maximum across four consecutive refunding
+calendars:
 
 | bucket | Nov 2025 | Feb 2026 | May 2026 | Aug 2026 |
 |---|---|---|---|---|
 | Nominal 20Y–30Y | $2.0B | $2.0B | $2.0B | $2.0B |
 | Nominal 10Y–20Y | $2.0B | $2.0B | $2.0B | $2.0B |
 
-Every maximum is unchanged, including for operations scheduled after 9
-September. Polling that file with full revision history would have
-surfaced **nothing** on 19 August. The modification date lines up; the
-contents do not move.
+Every maximum unchanged, including for operations scheduled after 9
+September. Polling it with full revision history would have surfaced
+nothing on 19 August.
+
+**That measurement is not evidence the source is useless, and it was
+first written up as though it were.** The release says an updated
+schedule *will be released at a later date*. So the file was **correct at
+the time** — Treasury had not yet republished it — rather than stale or
+neglected. When the updated calendar lands, the $4B ceiling appears there
+and the revision mechanism makes it visible. The file is the slower of
+the two routes above, not a dead end.
+
+The generalisable point, which is why this is written down at all: a
+modification date that lines up with an announcement is **not** evidence
+the contents changed. Both were checked here, and only one of them had
+moved.
 
 ## Chinese exchanges: what the terms actually say
 
