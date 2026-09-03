@@ -36,11 +36,16 @@ Kubuntu 26.04, Python 3.12, conda env `market`.
 ```bash
 conda activate market
 pip install -r requirements.txt
-cp .env.example .env      # then edit: set MACROWIRE_CONTACT
+cp .env.example .env      # then edit: set MACROWIRE_CONTACT,
+                          # MACROWIRE_PROJECT_URL and SEC_CONTACT
 ```
 
-`MACROWIRE_CONTACT` goes into the outbound `User-Agent`. These are public
-government servers; identify yourself to them.
+`MACROWIRE_CONTACT` and `MACROWIRE_PROJECT_URL` both go into the outbound
+`User-Agent`: one says who is operating this install, the other says what
+software is calling. These are public government servers; identify
+yourself to them. **Neither has a default** — set `MACROWIRE_PROJECT_URL`
+to your own fork or install URL, because a source seeing unfamiliar
+traffic should be pointed at you and not at whoever wrote this.
 
 Secrets are read from the environment with no fallback default. If
 `sources.yaml` interpolates `${NAME}` and `NAME` is unset, the config
@@ -254,9 +259,17 @@ meant inventing editorial judgement for seven sources that declare none.
 | EU | `ecb_press` |
 | UK | `boe_news` |
 
-It appears in three places: a code in each tape item's meta line, a chip
-row above the source chips, and as grouping headers in the rail's source
-health.
+**The interface calls it MARKET, and this file calls it jurisdiction.**
+That is deliberate, not drift. `jurisdiction` is the name of the field —
+in `sources.yaml`, in the payload, in `state.f` — and it stays. MARKET is
+the label a reader sees, chosen over LOCATION and REGION because the axis
+is not a place: EU is not a location, and what it separates is whose rules
+the publisher sits under. It also makes the three locales agree, since
+zh-CN and zh-HK already said 市场 / 市場 and the English was the outlier.
+
+It appears in three places: a code in each tape item's meta line, the
+MARKET row in the masthead, and as grouping headers in the source health
+dialog.
 
 **No colour.** Seven hues would compete with the one accent that means
 unread, so the code is a chrome-weight label in a hairline box and the
@@ -275,7 +288,7 @@ Filtering the tape to CN shows the two NBS feeds only.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│ Filter f │ JUR CN ×  TKR NVDA ×  TYPE sec edgar 8-K:2.02 ×│ clear all│
+│ Filter f │ MARKET CN ×  TKR NVDA ×  TYPE sec edgar 8-K:2.02 ×│ clear all│
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -334,7 +347,7 @@ distinct values to 16.
 
 ```
 No items match these filters
-  JUR CN ×   TKR NVDA ×
+  MARKET CN ×   TKR NVDA ×
 Filters combine as OR within a row and AND across rows, so narrowing
 two axes at once can leave nothing.
                                               [ clear all filters ]
@@ -1627,8 +1640,9 @@ is a YAML block; removing one is a deletion.
 
 ## Contacts are required, and fail at config load
 
-Two environment variables are required and validated when config loads, not
-when a request is about to go out:
+Three environment variables are required and validated when config loads,
+not when a request is about to go out — `MACROWIRE_CONTACT`,
+`MACROWIRE_PROJECT_URL` and `SEC_CONTACT`:
 
 ```
 SEC_CONTACT is not set, and sources.yaml needs it.
@@ -1639,9 +1653,16 @@ SEC_CONTACT is not set, and sources.yaml needs it.
   Set it in /path/to/.env (copy .env.example to start).
 ```
 
-`MACROWIRE_PROJECT_URL` is optional and defaults to the canonical repo —
-set it if you fork, so your traffic identifies your project. `sources.yaml`
-supports `${VAR:-default}` for exactly this.
+`MACROWIRE_PROJECT_URL` **was** optional, defaulting to the canonical
+repo. That was wrong: every request a downstream user made carried the
+author's URL, so a source seeing unfamiliar traffic would have gone looking
+for the wrong person. It is now required, with the same mechanism and the
+same failure as the contacts — no default, raised at load.
+
+The URL stays in the `User-Agent`. Dropping it would make MacroWire an
+anonymous fetcher, which is worse conduct towards a public server than
+naming yourself. `sources.yaml` still supports `${VAR:-default}`; nothing
+that names the operator or the install may use it.
 
 ## Git hook
 

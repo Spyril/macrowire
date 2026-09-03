@@ -2228,17 +2228,112 @@ class TestUsableByAnyone(unittest.TestCase):
     ROOT = Path(__file__).resolve().parent.parent
 
     def test_commit_hook_does_not_hardcode_an_identity(self):
-        """It would reject every other contributor to an open project."""
+        """It would reject every other contributor to an open project.
+
+        ASSERTED BY SHAPE, NOT BY NAMING THE PERSON. This used to read
+        `assertNotIn("spyril@gmail.com", hook)` and
+        `assertNotIn('EXPECTED_NAME="Spyril"', hook)` - which put the
+        author's real address and account name into a tracked file, so the
+        guard against leaking them was itself the leak, and every clone
+        carried it. Checking the shape catches any identity, including the
+        ones nobody has thought to name."""
+        import re
         hook = (self.ROOT / "git-hooks/commit-msg").read_text()
-        self.assertNotIn("spyril@gmail.com", hook)
-        self.assertNotIn('EXPECTED_NAME="Spyril"', hook)
+        PLACEHOLDER = "you@example.com"
+        real = [a for a in re.findall(r"[\w.+-]+@[\w-]+\.[\w.]+", hook)
+                if a != PLACEHOLDER]
+        self.assertEqual(real, [], f"the hook names a real address: {real}")
+        pinned = re.findall(r'(?i)expected_(?:name|email)\s*=\s*"([^"$][^"]*)"', hook)
+        self.assertEqual(pinned, [],
+                         f"the hook pins an identity as a literal: {pinned}; "
+                         f"the pin belongs in git config, where a contributor "
+                         f"can set their own")
         # The pin remains available, but opt-in and by git config.
         self.assertIn("macrowire.authorName", hook)
 
-    def test_user_agent_project_url_is_overridable(self):
+    def test_the_project_url_is_required_and_has_no_default(self):
+        """THE PREMISE OF THE OLD TEST IS GONE, so the test is gone with it.
+
+        It asserted `${MACROWIRE_PROJECT_URL:-` - the FALLBACK form - on the
+        reasoning that a fork must be able to identify itself. Overridable
+        was not enough: the fallback was the author's own repository, so
+        every request anyone made pointed the source at the wrong person,
+        and only a reader who went looking would ever discover it. Required
+        with no default is the same goal without the silent failure."""
         yaml_text = (self.ROOT / "sources.yaml").read_text()
-        self.assertIn("${MACROWIRE_PROJECT_URL:-", yaml_text,
-                      "a fork cannot identify itself")
+        self.assertIn("${MACROWIRE_PROJECT_URL}", yaml_text,
+                      "the project URL is not required of the operator")
+        self.assertNotIn("${MACROWIRE_PROJECT_URL:-", yaml_text,
+                         "the fallback form is back; whatever it falls back "
+                         "to travels on every request a stranger makes")
+
+    def test_no_default_anywhere_carries_the_author_url(self):
+        """The three files a fresh clone reads before its first request."""
+        for name in ("sources.yaml", ".env.example", "macrowire/config.py"):
+            with self.subTest(file=name):
+                self.assertNotIn("Spyril", (self.ROOT / name).read_text(),
+                                 f"{name} ships the author's identity as a "
+                                 f"value a downstream user would send")
+
+    def test_the_composed_user_agent_carries_the_operators_url(self):
+        """Composed the way the loader composes it, not asserted against a
+        substring of the YAML: the point is what goes on the wire."""
+        import os
+        from macrowire.config import load_sources, REPO_ROOT
+        mine = "https://example.org/not-the-author"
+        contact = "operator@example.org"
+        keys = ("MACROWIRE_PROJECT_URL", "MACROWIRE_CONTACT", "SEC_CONTACT")
+        saved = {k: os.environ.get(k) for k in keys}
+        # Whatever this machine really uses, including anything .env would
+        # supply. Local-parts too: an address is a leak, and so is half of
+        # one. Short tokens are dropped - a two-letter fragment would match
+        # inside an unrelated word and fail for the wrong reason.
+        env_file = REPO_ROOT / ".env"
+        real_values = set()
+        for source in (os.environ.get(k) for k in keys):
+            if source:
+                real_values.add(source)
+                real_values.add(source.split("@")[0])
+        if env_file.exists():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                if "=" in line and not line.strip().startswith("#"):
+                    val = line.split("=", 1)[1].strip()
+                    if val:
+                        real_values.add(val)
+                        real_values.add(val.split("@")[0])
+        real_values = {v for v in real_values
+                       if len(v) > 4 and v not in (mine, contact)
+                       and not v.startswith("https://example")}
+        os.environ["MACROWIRE_PROJECT_URL"] = mine
+        os.environ["MACROWIRE_CONTACT"] = contact
+        os.environ.setdefault("SEC_CONTACT", "Jane Doe jane@example.com")
+        try:
+            agents = {s.user_agent for s in load_sources()
+                      if "MacroWire" in s.user_agent}
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        floor(self, agents, "distinct user agents", 1)
+        for agent in agents:
+            with self.subTest(agent=agent[:60]):
+                self.assertIn(mine, agent, "the operator's URL is not sent")
+                self.assertIn(contact, agent, "the operator's contact is not sent")
+                self.assertNotIn("Spyril", agent,
+                                 "the author's URL is on the wire despite "
+                                 "the operator setting their own")
+                # AND NOTHING FROM THIS MACHINE'S OWN .env EITHER. Read at
+                # runtime rather than written down: naming the address in
+                # this file to prove it is absent would put it in every
+                # clone, which is the leak the check exists to prevent.
+                for leaked in real_values:
+                    self.assertNotIn(
+                        leaked, agent,
+                        "a value from the local .env reached the composed "
+                        "User-Agent even though both variables were "
+                        "overridden")
 
     def test_env_expansion_supports_defaults(self):
         import os
@@ -2253,7 +2348,7 @@ class TestUsableByAnyone(unittest.TestCase):
         import os
         from macrowire.config import ENV_HELP, _expand_env
         from macrowire.errors import ConfigError
-        for var in ("MACROWIRE_CONTACT", "SEC_CONTACT"):
+        for var in ("MACROWIRE_CONTACT", "MACROWIRE_PROJECT_URL", "SEC_CONTACT"):
             self.assertIn(var, ENV_HELP)
             saved = os.environ.pop(var, None)
             try:
@@ -3024,6 +3119,33 @@ class LocaleTests(unittest.TestCase):
         self.assertFalse([k for k in merged if k.startswith("cli.")])
         # and everything the page DOES use is still there
         self.assertIn("rail.health_heading", merged)
+
+    def test_cot_asof_states_the_method_in_every_catalogue(self):
+        """STRUCTURE, NOT ENGLISH TEXT. rail.sb_asof has always stated its
+        method as a `\u00b7`-delimited segment carrying `=` and a U+2212
+        MINUS SIGN - "net = buy \u2212 sell". rail.cot_asof now does the same.
+
+        Matching on the words "long minus short" would only ever test the
+        English file, and would pass a zh catalogue that dropped the method
+        entirely - which is exactly the drift this asserts against. So the
+        check is on the shape both keys share, in every locale.
+        """
+        MINUS = "\u2212"
+
+        def method_segments(text):
+            return [seg.strip() for seg in text.split("\u00b7")
+                    if "=" in seg and MINUS in seg]
+
+        for locale in floor(self, self.i18n.available(), "locale files", 2):
+            rail = self.i18n.load(locale)["rail"]
+            for key in ("cot_asof", "sb_asof"):
+                with self.subTest(locale=locale, key=key):
+                    segs = method_segments(rail[key])
+                    self.assertEqual(
+                        len(segs), 1,
+                        f"rail.{key} in {locale} states no method: a derived "
+                        f"value's as-of line is where the arithmetic is "
+                        f"declared, and {rail[key]!r} does not declare it")
 
     def test_source_facts_are_not_in_the_catalogue(self):
         # Publication times belong to the publisher, not to the reader. If
@@ -5961,7 +6083,14 @@ class BrowserTestCase(unittest.TestCase):
                                ("SOUTHBOUND/amount/buy", 298.18),
                                ("SOUTHBOUND/amount/sell", 349.52),
                                ("SOUTHBOUND/amount/total", 647.70)],
-            "cftc_cot": [("COT/AUD/net", -44159.0), ("COT/JPY/net", -158166.0)],
+            # AUD carries a change_net and JPY DELIBERATELY DOES NOT. That
+            # asymmetry is the fixture for the derived-value mark: AUD's
+            # change renders as a number and must be marked, JPY's renders
+            # as an em-dash and must not. Seeding both would leave the
+            # null case untested; seeding neither would leave the marked
+            # change_net case untested.
+            "cftc_cot": [("COT/AUD/net", -44159.0), ("COT/JPY/net", -158166.0),
+                         ("COT/AUD/change_net", 1204.0)],
             "cfets_ccpr": [("USD/CNY", 7.1234), ("EUR/CNY", 8.4321)],
             "ecb_fx": [("EUR/USD", 1.0912), ("EUR/JPY", 163.44)],
             "rba_exchange_rates": [("AUD/USD", 0.7211)],
@@ -7401,6 +7530,120 @@ class TapeStabilityTests(BrowserTestCase):
         missing = [k for k, v in withData.items() if not v["age"]]
         self.assertEqual(missing, [],
                          f"these as-of lines carry a date but no age: {missing}")
+
+    def test_the_derived_mark_is_on_computed_values_and_nowhere_else(self):
+        """THE ASYMMETRY IS THE DESIGN, and it is three-way.
+
+        A test that only checked presence would pass a version that marked
+        every number in the rail, which would put the mark on most of the
+        interface and leave it meaning nothing. A two-way test would still
+        pass a version that marked em-dashes, asserting that a method
+        produced nothing.
+
+        So all three legs are asserted here:
+          MARKED    COT net, COT change_net, southbound net - computed
+                    values that could pass for published ones.
+          UNMARKED  change and change_pct, and the published southbound
+                    turnover rows. Their derivation is self-evident from
+                    the label, or they are not derived at all.
+          NULL      a missing change_net renders an em-dash and carries no
+                    mark: "no value" and "computed value" are different
+                    statements, the same pair .n-unread.zero keeps apart.
+        """
+        seen = self.js("""
+            const cells = (sel) => [...document.querySelectorAll(sel)].map(
+              (e) => ({text: e.textContent.trim(),
+                       drv: !!e.querySelector('.drv')}));
+            return {
+              cotNet:    cells('#cot .v'),
+              cotChange: cells('#cot .d'),
+              sbNet:     cells('#sb .v.lead'),
+              sbOther:   cells('#sb .v:not(.lead)'),
+              sbChange:  cells('#sb .d'),
+              ecbChange: cells('#ecb .d'),
+              fxChange:  cells('#fx .d'),
+              ecbValue:  cells('#ecb .v'),
+              rbaValue:  cells('#rba .v'),
+            };""")
+        DASH = "\u2014"
+
+        # --- leg one: the three marked values carry the mark ---
+        for name, cs in (("COT net", seen["cotNet"]),
+                         ("southbound net", seen["sbNet"])):
+            with self.subTest(leg="marked", panel=name):
+                floor(self, cs, f"{name} cells", 1)
+                bare = [c["text"] for c in cs if not c["drv"]]
+                self.assertEqual(bare, [], f"{name} is computed but unmarked: {bare}")
+
+        withNumber = [c for c in seen["cotChange"] if DASH not in c["text"]]
+        floor(self, withNumber, "COT change_net cells carrying a number", 1)
+        for c in withNumber:
+            with self.subTest(leg="marked", panel="COT change_net", text=c["text"]):
+                self.assertTrue(c["drv"], f"{c['text']!r} is computed but unmarked")
+
+        # --- leg two: derived-but-obvious, and fetched, stay unmarked ---
+        for name, cs in (("CFETS change/change_pct", seen["fxChange"]),
+                         ("ECB change/change_pct", seen["ecbChange"]),
+                         ("southbound row change", seen["sbChange"]),
+                         ("southbound turnover rows", seen["sbOther"]),
+                         ("ECB level", seen["ecbValue"]),
+                         ("RBA level", seen["rbaValue"])):
+            with self.subTest(leg="unmarked", panel=name):
+                floor(self, cs, f"{name} cells", 1)
+                wrong = [c["text"] for c in cs if c["drv"]]
+                self.assertEqual(
+                    wrong, [],
+                    f"{name} carries the derived mark; marking everything "
+                    f"derived destroys what the mark means: {wrong}")
+
+        # --- leg three: an absent value is not a computed one ---
+        nulls = [c for c in seen["cotChange"] if DASH in c["text"]]
+        floor(self, nulls, "COT change_net cells with no value", 1)
+        for c in nulls:
+            with self.subTest(leg="null", text=c["text"]):
+                self.assertFalse(
+                    c["drv"],
+                    "an em-dash carries the derived mark, which asserts "
+                    "that a method produced nothing - 'no value' and "
+                    "'computed value' must not look alike")
+
+    def test_the_derived_mark_hugs_the_number_it_marks(self):
+        """A border on the GRID CELL was the obvious implementation and is
+        wrong. .fx .v and .fx .d fill the whole of column 2, so the rule ran
+        264.6px under a 54.6px number - 210px of it under empty space, and
+        all of it to the left because the cell is right-aligned. That reads
+        as a row divider, not as a mark on a value.
+
+        Measured, not asserted from the selector: the marked span must be
+        materially narrower than the cell that holds it."""
+        m = self.js("""
+            const cell = document.querySelector('#cot .v');
+            const span = cell.querySelector('.drv');
+            return {cell: cell.getBoundingClientRect().width,
+                    span: span.getBoundingClientRect().width};""")
+        self.assertGreater(m["span"], 0, "the mark has no width")
+        self.assertLess(
+            m["span"], m["cell"] * 0.9,
+            f"the mark spans {m['span']:.1f}px of a {m['cell']:.1f}px cell, "
+            f"which is the full-width rule the span exists to avoid")
+
+    def test_the_derived_mark_spends_no_signal_colour(self):
+        """--accent is unread and --fault is a fault. A derived value is a
+        measurement, not a verdict, and must be neither. Asserted against
+        the resolved tokens, not against a hex literal."""
+        m = self.js("""
+            const r = getComputedStyle(document.documentElement);
+            const s = getComputedStyle(document.querySelector('#cot .v .drv'));
+            return {border: s.borderBottomColor, style: s.borderBottomStyle,
+                    accent: r.getPropertyValue('--accent').trim(),
+                    fault: r.getPropertyValue('--fault').trim()};""")
+        rgb = lambda h: "rgb(" + ", ".join(
+            str(int(h.lstrip("#")[i:i + 2], 16)) for i in (0, 2, 4)) + ")"
+        self.assertEqual(m["style"], "dotted", "the mark is not a dotted rule")
+        for token in ("accent", "fault"):
+            with self.subTest(token=token):
+                self.assertNotEqual(m["border"], rgb(m[token]),
+                                    f"the derived mark spends --{token}")
 
     def test_the_health_indicator_is_chrome_when_every_source_is_current(self):
         """Measured against the token, not a literal colour.

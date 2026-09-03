@@ -124,7 +124,7 @@
     "no_data": "暫無數據",
     "week": "週",
     "_note_source_facts": "!! 請勿在這些條目中寫入發佈時間。{time}、{day} 和 {release} 佔位符填入的是關於發佈方的事實 —— 「4pm AEST」「09:15 CST」「~16:00 CET」「Fri 15:30 ET」 —— 它們對任何時區的任何讀者都成立。只翻譯其周圍的文字。在此處寫成「4pm 澳東標準時間 · {period}」看似完成了工作，實則悄悄破壞了一項來源事實。若任一該類字串出現在語言檔案中，測試將會失敗。",
-    "cot_asof": "CFTC 非商業淨持倉（合約張數）· 截至 {period}（{day}），{release} 發佈",
+    "cot_asof": "CFTC 非商業持倉（合約張數）· 淨持倉 = 多頭 − 空頭 · 截至 {period}（{day}），{release} 發佈",
     "cny_asof": "中間價 {period} {time} · 較 {prior} 變動",
     "ecb_asof": "參考匯率 {period} · {time} · 基準貨幣 {base}",
     "rba_asof": "{time} · {period}",

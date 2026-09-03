@@ -177,12 +177,22 @@ defaults:
   # Sent on every outbound request. These are public government servers and
   # they expect to know who is calling.
   #
-  # MACROWIRE_CONTACT is required - config load fails without it, rather
-  # than letting a nameless request reach a server that may block for it.
-  # MACROWIRE_PROJECT_URL has a default: change it (or set the variable) if
-  # you fork this, so your traffic identifies your project rather than the
-  # canonical one.
-  user_agent: "MacroWire/0.1 (personal news wire; +${MACROWIRE_PROJECT_URL:-https://github.com/Spyril/macrowire}; ${MACROWIRE_CONTACT})"
+  # BOTH ARE REQUIRED and neither has a default. Config load fails without
+  # them, rather than letting a request reach a server that may block for
+  # it - or worse, letting it go out under someone else's name.
+  #
+  # MACROWIRE_CONTACT says who is operating this install.
+  # MACROWIRE_PROJECT_URL says what software is calling. It USED to default
+  # to the author's repository, which meant every request a downstream user
+  # made identified the author rather than themselves - a source seeing
+  # unfamiliar traffic would have gone looking for the wrong person. The
+  # value belongs to whoever is running the software, so point it at your
+  # own fork or install.
+  #
+  # The URL stays in the User-Agent. Dropping it would make this an
+  # anonymous fetcher, which is worse conduct towards a public server than
+  # naming yourself.
+  user_agent: "MacroWire/0.1 (personal news wire; +${MACROWIRE_PROJECT_URL}; ${MACROWIRE_CONTACT})"
   # Floor on how often any one source may be polled. Enforced against
   # fetch_log, so it survives restarts. Values below 60 are rejected.
   min_interval_seconds: 60

@@ -76,9 +76,12 @@ JURISDICTIONS = {"AU", "US", "CN", "HK", "EU", "UK", "JP"}
 # drops items out of it. Both are the failure this project keeps catching.
 FX_STATES = ("fx", "not_fx", "unclassified")
 
-# ${NAME} is required; ${NAME:-fallback} has a default. The second form
-# exists so a fork can identify itself without every user having to set a
-# variable, while a genuinely required value still fails loudly.
+# ${NAME} is required; ${NAME:-fallback} has a default. The fallback form
+# is still supported and is currently UNUSED by sources.yaml: it used to
+# give MACROWIRE_PROJECT_URL the author's repository, which meant a
+# downstream user's traffic identified the author rather than themselves.
+# Anything that names the operator or the install has no business having a
+# default, and both such values now fail loudly instead.
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 # What each required variable is FOR, so a missing one explains itself
@@ -89,6 +92,16 @@ ENV_HELP = {
         "  public government or exchange server and they expect to know who is\n"
         "  calling; some block requests that do not say.\n"
         "    MACROWIRE_CONTACT=you@example.com"
+    ),
+    "MACROWIRE_PROJECT_URL": (
+        "The URL of YOUR fork or install, for the outbound User-Agent. A source\n"
+        "  seeing unfamiliar traffic needs to know what software is calling and\n"
+        "  who is operating it; the contact address answers the second and this\n"
+        "  answers the first.\n"
+        "  It has no default ON PURPOSE. It used to fall back to the author's\n"
+        "  repository, so every request anyone made pointed a source at the\n"
+        "  wrong person.\n"
+        "    MACROWIRE_PROJECT_URL=https://github.com/you/macrowire"
     ),
     "SEC_CONTACT": (
         "The SEC requires a User-Agent of the form 'Name email' and ENFORCES it -\n"

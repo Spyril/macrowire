@@ -1002,6 +1002,23 @@ function asOf(text, period, cadence) {
 
 function drawRail(d) {
   const sign = (v) => (v > 0 ? "+" : "");
+  // A DERIVED value, marked as one: computed here, not published by the
+  // source. Wraps the NUMBER and nothing else - not its unit, not the
+  // direction word - so the rule's length is structural. "into HK" is a
+  // different length in zh-CN and zh-HK, and a mark that changed size with
+  // the language would read as meaning something.
+  //
+  // NEVER WRAPS AN EM-DASH. A dotted rule under an absent value asserts
+  // that a method produced nothing, which conflates "no value" with
+  // "computed value" - the same pair .chip .n-unread.zero exists to keep
+  // apart, where "caught up" and "nothing here" must not look alike.
+  //
+  // SCOPE: only where a computed number could pass for a published one.
+  // COT net, COT change_net, southbound net. NOT change/change_pct, age,
+  // health counts or the countdown - their derivation is self-evident
+  // from the label, and marking everything derived would put the mark on
+  // most of the interface and leave it meaning nothing.
+  const drv = (text) => `<span class="drv">${text}</span>`;
   const cad = d.cadence || {};
   $("fx").innerHTML = d.fx.map((f) => `
       <div class="k">${esc(f.series)}</div>
@@ -1026,7 +1043,9 @@ function drawRail(d) {
         : ` <span class="dir">${esc(t(r.value >= 0 ? "rail.sb_into" : "rail.sb_out"))}</span>`;
       return `
       <div class="k">${esc(t(`rail.sb.${r.key}`))}</div>
-      <div class="v${r.key === "net" ? " lead" : ""}">${sign(r.value)}${r.value.toFixed(2)}${dir}</div>
+      <div class="v${r.key === "net" ? " lead" : ""}">${
+        r.key === "net" ? drv(sign(r.value) + r.value.toFixed(2))
+                        : sign(r.value) + r.value.toFixed(2)}${dir}</div>
       <div class="d">${r.change === null || r.change === undefined ? "\u2014"
         : sign(r.change) + r.change.toFixed(2)}</div>`;
     }).join("");
@@ -1040,11 +1059,13 @@ function drawRail(d) {
 
   const thou = (v) => (v === undefined || v === null) ? "\u2014"
     : (v > 0 ? "+" : "") + Math.round(v).toLocaleString(state.locale);
+  // Marked when there is a number, bare when there is not.
+  const thouD = (v) => (v === undefined || v === null) ? "\u2014" : drv(thou(v));
   $("cot").innerHTML = (d.cot || []).map((p) => `
       <div class="k">${esc(p.currency)}</div>
-      <div class="v">${thou(p.net)}</div>
+      <div class="v">${thouD(p.net)}</div>
       <div class="d">${p.change_net === undefined ? "\u2014"
-        : thou(p.change_net) + " " + t("rail.week")}</div>`
+        : thouD(p.change_net) + " " + t("rail.week")}</div>`
   ).join("");
   $("cot-asof").innerHTML = (d.cot && d.cot.length)
     ? asOf(t("rail.cot_asof", { period: d.cot[0].period,

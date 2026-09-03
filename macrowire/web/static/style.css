@@ -705,6 +705,27 @@ kbd { font-family: var(--mono); font-size: 12px; color: var(--chrome);
 .fx .v { color: var(--ink); text-align: right; white-space: nowrap; }
 .fx .d { grid-column: 2; text-align: right; color: var(--ink-3); font-size: 12px;
          margin-top: -2px; white-space: nowrap; }
+
+/* DERIVED, and saying so. A number this app computed rather than fetched
+   is visually identical to a published one, and the whole credibility of
+   the rail rests on the reader being able to tell them apart.
+
+   Same tier as .age: a MEASUREMENT, not a verdict. Always shown, never an
+   alarm, and it spends no signal colour - amber is unread and --fault is
+   something wrong, and a derived value is neither. Colour is inherited
+   from the cell, so the contrast floors are untouched.
+
+   The dotted rule extends .health .st's convention that a dotted underline
+   means there is an explanation. It carries NO cursor: help and no
+   tooltip, because unlike those two the explanation is not hidden - it is
+   the as-of line one row below, stating the method, always visible.
+
+   ON A SPAN, NOT THE GRID CELL. .fx .v and .fx .d are grid items filling
+   the whole of column 2: measured at the rail's own width, a border there
+   drew 264.6px of rule under a 54.6px number, 210px of it under empty
+   space and all of it to the LEFT because the cell is right-aligned. That
+   reads as a row divider, not as a mark on a value. */
+.fx .drv { border-bottom: 1px dotted var(--edge-hi); }
 .asof { font-family: var(--mono); font-size: 12px; color: var(--chrome); margin-top: 8px;
         line-height: 1.5; }
 /* HOW OLD, not a verdict. Brighter than the date beside it because it is

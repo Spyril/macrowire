@@ -123,7 +123,7 @@
     "no_data": "暂无数据",
     "week": "周",
     "_note_source_facts": "!! 请勿在这些条目中写入发布时间。{time}、{day} 和 {release} 占位符填入的是关于发布方的事实 —— “4pm AEST”“09:15 CST”“~16:00 CET”“Fri 15:30 ET” —— 它们对任何时区的任何读者都成立。只翻译其周围的文字。在此处写成“4pm 澳东标准时间 · {period}”看似完成了工作，实则悄悄破坏了一项来源事实。若任一该类字符串出现在语言文件中，测试将会失败。",
-    "cot_asof": "CFTC 非商业净持仓（合约张数）· 截至 {period}（{day}），{release} 发布",
+    "cot_asof": "CFTC 非商业持仓（合约张数）· 净持仓 = 多头 − 空头 · 截至 {period}（{day}），{release} 发布",
     "cny_asof": "中间价 {period} {time} · 较 {prior} 变动",
     "ecb_asof": "参考汇率 {period} · {time} · 基准货币 {base}",
     "rba_asof": "{time} · {period}",
