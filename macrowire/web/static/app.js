@@ -312,6 +312,66 @@ function toggleBand() {
   drawStrip(currentFraction());
 }
 
+// THEME. localStorage for the same reason the band is, and the rule is
+// the one stated above: a preference goes in the database when the SERVER
+// renders differently because of it. Locale, timezone and window do. A
+// palette does not - which is also why changing it does not call
+// reloadEverything(). A full redraw for a colour change would tell the
+// reader something happened that did not.
+//
+// Two things the band does not have to deal with. The stored value has
+// THREE states, because a boolean cannot say "match my OS" - and "system"
+// is stored unresolved, so the answer follows the machine rather than
+// freezing whatever it said the day it was set. And the first paint is
+// settled by the inline script in <head>, not here: by the time boot()
+// runs, the page has already painted. This half keeps it following the OS
+// live afterwards, and owns the writes.
+const THEME_KEY = "macrowire.theme";
+const THEMES = ["system", "dark", "light"];
+
+function storedTheme() {
+  try {
+    const v = localStorage.getItem(THEME_KEY);
+    return THEMES.includes(v) ? v : "system";
+  } catch (e) { return "system"; }
+}
+
+// The ONE definition of what "system" resolves to. The inline script holds
+// the only copy of this logic outside this line, and it has to: it runs
+// before this file exists.
+function resolveTheme(choice) {
+  if (choice !== "system") return choice;
+  return window.matchMedia
+    && window.matchMedia("(prefers-color-scheme: light)").matches
+    ? "light" : "dark";
+}
+
+function applyTheme(choice) {
+  document.documentElement.setAttribute("data-theme", resolveTheme(choice));
+}
+
+function setTheme(choice) {
+  if (!THEMES.includes(choice)) return;
+  try {
+    localStorage.setItem(THEME_KEY, choice);
+  } catch (e) { /* private window: the choice just does not outlive the tab */ }
+  applyTheme(choice);
+}
+
+// LIVE, not only at load. A reader on "system" who flips their OS at dusk
+// should see this follow without reloading - that is the whole difference
+// between "match my system" and "copy it once". Guarded because matchMedia
+// and addEventListener-on-a-MediaQueryList are not universal, and a
+// missing listener must degrade to "correct at load" rather than to a
+// thrown error during boot.
+function watchSystemTheme() {
+  if (!window.matchMedia) return;
+  const query = window.matchMedia("(prefers-color-scheme: light)");
+  const follow = () => { if (storedTheme() === "system") applyTheme("system"); };
+  if (query.addEventListener) query.addEventListener("change", follow);
+  else if (query.addListener) query.addListener(follow);
+}
+
 function currentFraction() {
   const now = new Date();
   const syd = new Date(now.getTime()
@@ -1207,18 +1267,53 @@ function provenance(row, key, label) {
         >${esc(t("settings.reset"))}</button>`;
 }
 
+// A SETTING THAT LIVES IN THE BROWSER, and says so. NOT a synthesised
+// server row: handing provenance() a faked {source, config_value} would
+// make a browser-stored setting indistinguishable from a database-backed
+// one to the next person reading that function - a thing built to make a
+// distinction clear, quietly erasing it instead.
+//
+// The SHAPE is borrowed rather than the text. provenance() shows no reset
+// for a config value because nothing sits beneath it; "system" occupies
+// exactly that position here, so it gets no reset either, and an explicit
+// dark or light resets back to it.
+function localProvenance(value, floor, key, label, floorLabel) {
+  if (value === floor) {
+    return `<span class="prov">${esc(t("settings.from_system"))}</span>`;
+  }
+  return `<span class="prov">${esc(t("settings.from_browser"))}</span>` +
+    ` <button class="sreset" data-reset-local="${esc(key)}"
+        title="${esc(t("settings.reset_local_title",
+                       { label, value: floorLabel }))}"
+        >${esc(t("settings.reset"))}</button>`;
+}
+
 function drawSettings(data) {
   settingsData = data;
   const p = data.preferences;
   const rows = [];
 
+  const optionsHtml = (options, current) => options.map(([v, text]) =>
+    `<option value="${esc(v)}"${v === current ? " selected" : ""}>${esc(text)}</option>`
+  ).join("");
+
   const pick = (key, label, options, current) => {
-    const opts = options.map(([v, text]) =>
-      `<option value="${esc(v)}"${v === current ? " selected" : ""}>${esc(text)}</option>`
-    ).join("");
     rows.push([label,
-      `<select data-pref="${esc(key)}">${opts}</select>` +
+      `<select data-pref="${esc(key)}">${optionsHtml(options, current)}</select>` +
       provenance(p[key], key, label)]);
+  };
+
+  // data-local, NOT data-pref, and the difference is structural on purpose.
+  // Every data-pref control POSTs to /api/settings; this one cannot, and
+  // marking it with the same attribute would mean one mis-routed change
+  // reaching the server allowlist and coming back "'theme' is not a viewer
+  // preference" - accurate, and baffling for a control the reader just
+  // changed inside the viewer-preferences panel.
+  const pickLocal = (key, label, options, current, floor) => {
+    const floorLabel = (options.find(([v]) => v === floor) || [, floor])[1];
+    rows.push([label,
+      `<select data-local="${esc(key)}">${optionsHtml(options, current)}</select>` +
+      localProvenance(current, floor, key, label, floorLabel)]);
   };
 
   // Named in their OWN language. A switcher labelled in a language you
@@ -1262,6 +1357,13 @@ function drawSettings(data) {
   pick("window_days", t("settings.window_days"),
        data.window_choices.map((n) => [String(n), t("settings.window_value", { n })]),
        p.window_days.value);
+
+  // Stored unresolved, so "system" keeps meaning "ask the machine".
+  pickLocal("theme", t("settings.theme"),
+            [["system", t("settings.theme_system")],
+             ["dark", t("settings.theme_dark")],
+             ["light", t("settings.theme_light")]],
+            storedTheme(), "system");
 
   $("settings-viewer").innerHTML = rows.map(
     ([label, body]) => `<div class="lab">${esc(label)}</div><div class="val">${body}</div>`
@@ -1376,6 +1478,23 @@ function wireSettings() {
   $("settings-viewer").querySelectorAll("[data-reset]").forEach((b) => {
     b.onclick = () => savePreference(b.dataset.reset, null);
   });
+  // The local half. No POST and no reloadEverything(): nothing the server
+  // renders depends on the palette, and redrawing the whole interface for
+  // a colour change would report an event that did not happen.
+  $("settings-viewer").querySelectorAll("select[data-local]").forEach((el) => {
+    el.onchange = () => saveLocal(el.dataset.local, el.value);
+  });
+  $("settings-viewer").querySelectorAll("[data-reset-local]").forEach((b) => {
+    b.onclick = () => saveLocal(b.dataset.resetLocal, "system");
+  });
+}
+
+function saveLocal(key, value) {
+  if (key === "theme") setTheme(value);
+  // Redraw the panel only, so the provenance row and the reset button
+  // follow the new value. The page behind it has already restyled itself
+  // from the attribute.
+  if (settingsData) drawSettings(settingsData);
 }
 
 async function savePreference(key, value) {
@@ -1456,6 +1575,9 @@ async function boot() {
       n.textContent = t("app.first_run", { n: swept.marked });
     }
   }
+  // The first paint was settled by the inline script in <head>; this only
+  // keeps "system" following the OS afterwards.
+  watchSystemTheme();
   wireKeyboard(); drawTokens(); drawJurBar();
   drawHours();
   // Before the first tick, so the band's stored state is settled before

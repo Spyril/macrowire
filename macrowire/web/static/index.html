@@ -9,6 +9,54 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MacroWire</title>
+<!-- THE ONLY INLINE SCRIPT IN THIS DOCUMENT, and it is inline for one
+     reason: it has to run BEFORE the stylesheet below, so <html> already
+     carries data-theme when the first paint happens. app.js is the last
+     line before </body> and boot() does not reach the stored value until
+     after the /api/bootstrap round trip - by then the default palette has
+     already painted, and a light-theme reader gets a full-viewport dark
+     flash on every single load.
+
+     THE BAND'S ORDERING TRICK DOES NOT TRANSFER. The ribbon solves the
+     same problem by shipping `hidden` and revealing itself in boot(), so
+     the common case never draws and only the open case reflows. That
+     works because "shut" is a real state the markup can hold. A theme has
+     no such state: something has to paint, whatever is in :root paints
+     first, and there is no third palette meaning "not yet decided". The
+     choice is between reading the value before the stylesheet or flashing.
+
+     It must not await anything - anything asynchronous here is a paint
+     later, which is the whole problem. try/catch because localStorage
+     throws in a private window and behind some cookie policies, and a
+     theme is not worth a broken page: the catch leaves data-theme unset
+     and :root answers, which is exactly the pre-theme behaviour.
+
+     "system" is resolved here rather than stored resolved, so a reader who
+     changes their OS between visits gets the new answer. app.js keeps it
+     following live afterwards; this only settles the first paint. -->
+<script>
+(function () {
+  try {
+    // VALIDATED HERE TOO, not only in app.js. This script does the
+    // stamping and runs first, so storedTheme()'s check comes too late to
+    // stop a stale or hand-edited value reaching the attribute: without
+    // this, localStorage holding "solarized" stamps data-theme="solarized",
+    // no palette answers to it, and the page renders as though the theme
+    // feature were not there. The duplication of the state list is the
+    // price of running before app.js exists, and a test asserts the two
+    // copies agree.
+    var valid = { system: 1, dark: 1, light: 1 };
+    var stored = localStorage.getItem("macrowire.theme");
+    if (!valid[stored]) stored = "system";
+    var theme = stored === "system"
+      ? (window.matchMedia
+         && window.matchMedia("(prefers-color-scheme: light)").matches
+         ? "light" : "dark")
+      : stored;
+    document.documentElement.setAttribute("data-theme", theme);
+  } catch (e) { /* no stored choice reachable: :root answers, as before */ }
+})();
+</script>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>

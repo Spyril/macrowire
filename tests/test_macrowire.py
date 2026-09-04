@@ -2810,10 +2810,22 @@ class TestLegibility(unittest.TestCase):
         c = c / 255
         return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
 
+    @staticmethod
+    def _rgb(h):
+        """#rgb, #rgba, #rrggbb and #rrggbbaa -> (r, g, b).
+
+        The scan used to require lowercase and EXACTLY six digits, so a
+        token written #fff or #E9EFF6 was not a token as far as this class
+        was concerned - it matched nothing, appeared in no pair, and every
+        contrast assertion silently skipped it."""
+        h = h.lstrip("#")
+        if len(h) in (3, 4):
+            h = "".join(c * 2 for c in h)
+        return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
     @classmethod
     def _lum(cls, h):
-        h = h.lstrip("#")
-        r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+        r, g, b = cls._rgb(h)
         return 0.2126 * cls._lin(r) + 0.7152 * cls._lin(g) + 0.0722 * cls._lin(b)
 
     @classmethod
@@ -2821,41 +2833,107 @@ class TestLegibility(unittest.TestCase):
         a, b = cls._lum(fg), cls._lum(bg)
         return (max(a, b) + 0.05) / (min(a, b) + 0.05)
 
+    # A THEME BLOCK IS `:root`, OR `:root[data-theme="NAME"]`. NOTHING ELSE.
+    #
+    # EXPLICIT, NOT INFERRED. The obvious alternative - "a block that
+    # defines a colour is a theme" - fails open in the wrong direction. The
+    # stylesheet already carries four `:root:lang()` blocks that set a font
+    # family and no colour, and a future `:root[data-density="compact"]` or
+    # print block that happened to set one colour would enrol itself as a
+    # theme and then be required by the completeness guard to define every
+    # token. That trap fires later, on someone else, for a reason they
+    # cannot guess from the failure.
+    THEME_SELECTOR = re.compile(r':root(?:\[data-theme="([\w-]+)"\])?\Z')
+    # `:root` itself carries no data-theme value, so it is named for what it
+    # is rather than for what it currently looks like. Deriving "dark" would
+    # mean this class knowing something the selector does not say.
+    DEFAULT_THEME = "default"
+    EXPECTED_THEMES = {"default", "light"}
+    # Widened from `#[0-9a-f]{6}`. rgb()/hsl() forms count as colours for
+    # COMPLETENESS - a theme that omitted --scrim would otherwise pass - but
+    # only opaque hexes are measurable, and the translucent ones are skipped
+    # by name below rather than by accident.
+    COLOUR_VALUE = re.compile(
+        r'(?:#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)|hsla?\([^)]*\))\Z')
+
+    @classmethod
+    def scan_themes(cls, code):
+        """(theme, name) -> value, scoped by the convention above.
+
+        Replaces a flat name -> hex dict built over the WHOLE file. That
+        dict kept the LAST definition of each name, so a second theme block
+        would have mixed one palette's foregrounds with another's surfaces
+        and reported ratios describing neither - without erroring, and
+        without any test noticing.
+        """
+        themes = {}
+        for rule in re.finditer(r"([^{}]+)\{([^}]*)\}", code):
+            selectors = [" ".join(part.split())
+                         for part in rule.group(1).strip().split(",")]
+            matched = [cls.THEME_SELECTOR.fullmatch(sel) for sel in selectors]
+            if not any(matched):
+                continue
+            if len(selectors) > 1:
+                raise AssertionError(
+                    f"a theme block shares its rule with other selectors: "
+                    f"{selectors}; a theme's palette must not be conditional "
+                    f"on anything else matching too")
+            name = matched[0].group(1) or cls.DEFAULT_THEME
+            block = themes.setdefault(name, {})
+            for token, value in re.findall(r"(--[\w-]+)\s*:\s*([^;]+)",
+                                           rule.group(2)):
+                value = value.strip()
+                if cls.COLOUR_VALUE.fullmatch(value):
+                    block[token] = value
+        return themes
+
     def setUp(self):
-        import re
         # BOTH views, on purpose. Most tests here ask a question about the
         # CODE and must not see comments. One asks a question about the
-        # DOCUMENTATION - the tightest-pair line is deliberately recorded in
-        # the header comment - so it needs the raw text. Naming them apart
-        # stops the next reader stripping the one that must not be.
+        # DOCUMENTATION - the tightest-pair lines are deliberately recorded
+        # in the header comment - so it needs the raw text. Naming them
+        # apart stops the next reader stripping the one that must not be.
         self.css = self.CSS.read_text()
         self.code = strip_comments(self.css, "css")
-        self.tokens = dict(re.findall(r"(--[\w-]+):\s*(#[0-9a-f]{6})", self.code))
+        self.themes = self.scan_themes(self.code)
 
     SURFACES = ("--ground", "--raised", "--sunken")
     VENUES = ("--syd", "--tyo", "--hkg", "--lon", "--nyc")
+    # Translucent by definition, so they have no fixed ratio against
+    # anything - they take the colour of whatever sits behind them.
+    OVERLAYS = ("--shadow", "--scrim")
     FLOOR_TEXT = 7.0
     FLOOR_NONTEXT = 3.0          # WCAG 1.4.11, for UI parts that are not text
 
-    def text_pairs(self):
-        """Every (token, surface) pair that will carry text, with its ratio."""
-        skip = set(self.SURFACES) | set(self.VENUES)
-        for name, value in sorted(self.tokens.items()):
+    def text_pairs(self, theme):
+        """Every (token, surface) pair that will carry text, with its ratio.
+
+        TOKEN NAMES ARE THEME-INVARIANT, which is what lets this run once
+        per theme unchanged: SURFACES, VENUES and the floors name tokens,
+        not values.
+        """
+        tokens = self.themes[theme]
+        skip = set(self.SURFACES) | set(self.VENUES) | set(self.OVERLAYS)
+        for name, value in sorted(tokens.items()):
             if name in skip or name.startswith("--edge"):
                 continue
             for surface in self.SURFACES:
-                yield name, surface, self._ratio(value, self.tokens[surface])
+                yield name, surface, self._ratio(value, tokens[surface])
 
     def test_every_text_token_clears_7to1_on_every_surface(self):
         # All THREE surfaces, not two. --sunken was never checked, and a
         # token can only be trusted on a surface it was measured against.
-        pairs = list(self.text_pairs())
-        self.assertTrue(pairs)
-        for name, surface, r in pairs:
-            with self.subTest(token=name, surface=surface):
-                self.assertGreaterEqual(
-                    r, self.FLOOR_TEXT,
-                    f"{name} on {surface} is {r:.3f}:1, below {self.FLOOR_TEXT}:1")
+        # EVERY THEME, for the same reason: a palette is only measured
+        # against its own surfaces, never another palette's.
+        for theme in floor(self, self.themes, "theme blocks", 1):
+            pairs = list(self.text_pairs(theme))
+            self.assertTrue(pairs, f"{theme} yielded no text pairs")
+            for name, surface, r in pairs:
+                with self.subTest(theme=theme, token=name, surface=surface):
+                    self.assertGreaterEqual(
+                        r, self.FLOOR_TEXT,
+                        f"{name} on {surface} in {theme} is {r:.3f}:1, "
+                        f"below {self.FLOOR_TEXT}:1")
 
     def test_the_tightest_pair_is_written_down_and_still_true(self):
         """The floor is cleared by 0.013 and nothing said so.
@@ -2866,31 +2944,45 @@ class TestLegibility(unittest.TestCase):
         this fails until you have re-measured and written the new number
         down - which is the point.
         """
-        import re
-        name, surface, ratio = min(self.text_pairs(), key=lambda p: p[2])
-        declared = re.search(
-            r"TIGHTEST TEXT PAIR:\s*(--[\w-]+) on (--[\w-]+)\s*=\s*([\d.]+):1",
-            self.css)
-        self.assertIsNotNone(
-            declared, "the stylesheet no longer records its tightest text pair")
-        self.assertEqual((name, surface), (declared.group(1), declared.group(2)),
-                         f"tightest pair is now {name} on {surface}, "
-                         f"not {declared.group(1)} on {declared.group(2)}")
-        self.assertAlmostEqual(
-            ratio, float(declared.group(3)), places=2,
-            msg=f"tightest pair measures {ratio:.3f}:1, header says "
-                f"{declared.group(3)}:1")
+        # finditer, NOT search. One line per theme, and re.search would
+        # have read the first and never noticed the rest going stale.
+        declared = {m.group(1): (m.group(2), m.group(3), float(m.group(4)))
+                    for m in re.finditer(
+                        r"TIGHTEST TEXT PAIR \(([\w-]+)\):\s*"
+                        r"(--[\w-]+) on (--[\w-]+)\s*=\s*([\d.]+):1",
+                        self.css)}
+        self.assertEqual(
+            set(declared), set(self.themes),
+            f"the header records tightest pairs for {sorted(declared)} but "
+            f"the stylesheet defines themes {sorted(self.themes)}; every "
+            f"palette needs its own measured line, and a line for a theme "
+            f"that no longer exists is worse than none")
+        for theme in sorted(self.themes):
+            name, surface, ratio = min(self.text_pairs(theme), key=lambda p: p[2])
+            want_name, want_surface, want_ratio = declared[theme]
+            with self.subTest(theme=theme):
+                self.assertEqual(
+                    (name, surface), (want_name, want_surface),
+                    f"tightest pair in {theme} is now {name} on {surface}, "
+                    f"not {want_name} on {want_surface}")
+                self.assertAlmostEqual(
+                    ratio, want_ratio, places=2,
+                    msg=f"tightest pair in {theme} measures {ratio:.3f}:1, "
+                        f"header says {want_ratio}:1")
 
     def test_non_text_tokens_clear_the_3to1_floor(self):
         # Dividers and chip borders are UI parts, not text: 1.4.11 asks 3:1,
         # not 7:1, and holding them to 7:1 would push them into the content
         # range where they would compete with what they frame.
-        for name in ("--edge", "--edge-hi"):
-            r = self._ratio(self.tokens[name], self.tokens["--ground"])
-            with self.subTest(token=name):
-                self.assertGreaterEqual(
-                    r, self.FLOOR_NONTEXT,
-                    f"{name} is {r:.2f}:1 on ground, below {self.FLOOR_NONTEXT}:1")
+        for theme in floor(self, self.themes, "theme blocks", 1):
+            tokens = self.themes[theme]
+            for name in ("--edge", "--edge-hi"):
+                r = self._ratio(tokens[name], tokens["--ground"])
+                with self.subTest(theme=theme, token=name):
+                    self.assertGreaterEqual(
+                        r, self.FLOOR_NONTEXT,
+                        f"{name} is {r:.2f}:1 on ground in {theme}, "
+                        f"below {self.FLOOR_NONTEXT}:1")
 
     def test_the_two_coincidentally_equal_tokens_are_flagged_as_such(self):
         """--ink-2 and --chrome-hi hold the same hex today by coincidence.
@@ -2900,22 +2992,145 @@ class TestLegibility(unittest.TestCase):
         other. That has to be written down or it is a trap.
         """
         import collections
-        by_hex = collections.defaultdict(list)
-        floor(self, self.tokens, "colour tokens", 10)
-        for name, value in self.tokens.items():
-            by_hex[value.lower()].append(name)
-        for value, names in by_hex.items():
-            if len(names) < 2:
-                continue
-            with self.subTest(hex=value, tokens=names):
-                self.assertIn(
-                    "coincidence", self.css,
-                    f"{names} share {value} with nothing saying whether that "
-                    f"is deliberate")
+        # WITHIN a theme, never across. Two tokens in DIFFERENT palettes
+        # holding the same hex is coincidence in the ordinary sense, not
+        # the documented one, and flagging it would train the reader to
+        # ignore this. The floor counts per theme too - counted across, it
+        # would silently become a floor of 10 x however many themes exist,
+        # which is a floor that stops meaning anything.
+        for theme in floor(self, self.themes, "theme blocks", 1):
+            tokens = self.themes[theme]
+            floor(self, tokens, f"colour tokens in {theme}", 10)
+            by_hex = collections.defaultdict(list)
+            for name, value in tokens.items():
+                by_hex[value.lower()].append(name)
+            for value, names in by_hex.items():
+                if len(names) < 2:
+                    continue
+                with self.subTest(theme=theme, hex=value, tokens=names):
+                    self.assertIn(
+                        "coincidence", self.css,
+                        f"{names} share {value} in {theme} with nothing "
+                        f"saying whether that is deliberate")
 
     def test_surface_step_is_visible_without_a_border(self):
-        r = self._ratio(self.tokens["--raised"], self.tokens["--ground"])
-        self.assertGreaterEqual(r, 1.2, f"surface step only {r:.3f}:1")
+        for theme in floor(self, self.themes, "theme blocks", 1):
+            tokens = self.themes[theme]
+            r = self._ratio(tokens["--raised"], tokens["--ground"])
+            with self.subTest(theme=theme):
+                self.assertGreaterEqual(
+                    r, 1.2, f"surface step in {theme} only {r:.3f}:1")
+
+    # Captured from the flat name -> hex scan BEFORE it was made
+    # theme-aware, using the same arithmetic. Written down rather than
+    # recomputed: a refactor that quietly changed what gets measured would
+    # recompute to whatever it now measures and agree with itself.
+    RECORDED_RATIOS = {
+        "--ink":    (15.3989, 12.4769, 16.2212),
+        "--ink-2":  (11.4222,  9.2548, 12.0321),
+        "--ink-3":  ( 8.6556,  7.0131,  9.1178),
+        "--chrome": ( 9.3180,  7.5498,  9.8156),
+    }
+
+    def test_the_theme_extraction_did_not_move_a_single_ratio(self):
+        """THE DECISIVE ONE. Making the instrument theme-aware must not
+        change what it reads on the palette that was already there.
+
+        If any of these moves, the extraction is picking up different
+        values than the flat scan did - a shorthand hex expanded wrongly, a
+        token captured from a block it does not belong to - and that is
+        worth a failure rather than being absorbed into a new baseline."""
+        got = {name: tuple(round(self._ratio(
+                   self.themes[self.DEFAULT_THEME][name],
+                   self.themes[self.DEFAULT_THEME][s]), 4)
+               for s in self.SURFACES)
+               for name in self.RECORDED_RATIOS}
+        for name, want in self.RECORDED_RATIOS.items():
+            with self.subTest(token=name):
+                self.assertEqual(
+                    got[name], want,
+                    f"{name} measured {got[name]} against a recorded "
+                    f"{want} on (ground, raised, sunken)")
+
+    def test_the_scan_finds_exactly_the_themes_expected(self):
+        """An unexpected theme block is a FAILURE, not a silent enrolment.
+
+        The four `:root:lang()` blocks are the reason: they are `:root`
+        rules that define custom properties, and any scan loose enough to
+        take them would report five palettes and then demand each define
+        eighteen colours. Adding a theme is a deliberate act and updating
+        EXPECTED_THEMES is part of it."""
+        self.assertEqual(
+            set(self.themes), self.EXPECTED_THEMES,
+            f"the stylesheet defines themes {sorted(self.themes)}, expected "
+            f"{sorted(self.EXPECTED_THEMES)}; if a theme was added on "
+            f"purpose, add it here and give it a TIGHTEST TEXT PAIR line")
+
+    def test_every_theme_defines_exactly_the_same_token_names(self):
+        """THE GUARD THE WHOLE JOB EXISTS FOR. Vacuous with one theme, and
+        the thing that prevents dark-on-light the moment there are two.
+
+        A partial theme block does not fail loudly - CSS simply inherits
+        the token it did not redefine. A light palette that forgot --ink-3
+        would render dark grey text on a light panel and every automated
+        check would pass, because the cascade is working exactly as
+        designed. Names, not values: what differs between themes is the
+        hex, never which tokens exist."""
+        names = {theme: set(tokens)
+                 for theme, tokens in self.themes.items()}
+        floor(self, names, "theme blocks", 1)
+        reference = names[self.DEFAULT_THEME]
+        floor(self, reference, f"tokens in {self.DEFAULT_THEME}", 10)
+        for theme, defined in sorted(names.items()):
+            if theme == self.DEFAULT_THEME:
+                continue
+            with self.subTest(theme=theme):
+                missing = sorted(reference - defined)
+                extra = sorted(defined - reference)
+                self.assertEqual(
+                    (missing, extra), ([], []),
+                    f"{theme} is not a complete palette: missing {missing}, "
+                    f"extra {extra}. A token it does not define is inherited "
+                    f"from {self.DEFAULT_THEME}, which is how a dark "
+                    f"foreground ends up on a light surface with nothing "
+                    f"reporting a fault")
+
+    FONT_TOKENS = ("--mono", "--sans", "--cjk", "--cjk-mono")
+
+    def test_no_theme_block_declares_a_font_token(self):
+        """SPECIFICITY, and it would fail silently.
+
+        `:root[data-theme="light"]` and `:root:lang(zh-TW)` have EQUAL
+        specificity, so whichever comes later in the file wins outright. A
+        theme block that set --cjk would override the language scoping and
+        hand Traditional Chinese to a Simplified face - or not - depending
+        on nothing but block order. Nobody would see a test fail; a reader
+        of Chinese would see the wrong glyphs.
+
+        Font selection follows the LANGUAGE of the text and a palette
+        follows the THEME. They are different axes and must not be set from
+        the same block. This is also what lets the two palette blocks sit
+        anywhere relative to the :lang() blocks.
+
+        Scoped to theme blocks only: `:root` is one, and it is where the
+        font stacks are legitimately defined."""
+        for rule in re.finditer(r"([^{}]+)\{([^}]*)\}", self.code):
+            selectors = [" ".join(part.split())
+                         for part in rule.group(1).strip().split(",")]
+            matched = [self.THEME_SELECTOR.fullmatch(sel) for sel in selectors]
+            if not any(matched):
+                continue
+            theme = matched[0].group(1)
+            if theme is None:          # `:root`, where the stacks belong
+                continue
+            declared = set(re.findall(r"(--[\w-]+)\s*:", rule.group(2)))
+            with self.subTest(theme=theme):
+                clash = sorted(declared.intersection(self.FONT_TOKENS))
+                self.assertEqual(
+                    clash, [],
+                    f"theme {theme} declares {clash}; a theme block and a "
+                    f":lang() block have equal specificity, so this silently "
+                    f"overrides CJK font selection by file order alone")
 
     def test_nothing_renders_below_12px(self):
         import re
@@ -5585,6 +5800,175 @@ class LicenceTests(unittest.TestCase):
                       self.licence)
 
 
+class ThemeStaticTests(unittest.TestCase):
+    """The theme toggle, as far as it can be pinned without a browser.
+
+    The ORDERING test is the one that matters. Everything else here would
+    still pass with the inline script moved below the stylesheet, and the
+    only symptom would be a full-viewport flash on every load - visible to
+    a reader, invisible to a suite that only checks presence.
+    """
+
+    THEMES = ("system", "dark", "light")
+
+    def setUp(self):
+        self.js = (ROOT / "macrowire/web/static/app.js").read_text()
+        # RAW, not comment-stripped: the ordering question is about the
+        # bytes the browser parses, and stripping comments moves offsets.
+        self.html = (ROOT / "macrowire/web/static/index.html").read_text()
+        self.code = read_code(ROOT / "macrowire/web/static/index.html")
+
+    def test_the_inline_script_runs_before_the_stylesheet(self):
+        """ORDERING, NOT PRESENCE. An inline script that reads the stored
+        theme is worth nothing below the <link>: the stylesheet has already
+        painted :root by the time it runs, so a light-theme reader gets a
+        dark flash on every load and nothing fails."""
+        script = self.code.index("<script>")
+        link = self.code.index('<link rel="stylesheet"')
+        self.assertLess(
+            script, link,
+            "the inline theme script sits BELOW the stylesheet link; the "
+            "first paint happens before it runs and the flash is back")
+        # It is in the head, not merely before the link.
+        self.assertLess(script, self.code.index("</head>"),
+                        "the inline script is outside <head>")
+
+    def test_the_inline_script_reads_the_stored_theme_and_stamps_it(self):
+        head = self.code[:self.code.index("</head>")]
+        block = head[head.index("<script>"):head.index("</script>")]
+        self.assertIn("macrowire.theme", block, "it reads no stored key")
+        self.assertIn("data-theme", block, "it stamps nothing")
+        self.assertIn("prefers-color-scheme", block,
+                      "it cannot resolve 'system' without asking the OS")
+
+    def test_the_inline_script_awaits_nothing(self):
+        """Anything asynchronous here is a paint later, which is the whole
+        problem it exists to solve."""
+        head = self.code[:self.code.index("</head>")]
+        block = head[head.index("<script>"):head.index("</script>")]
+        for banned in ("await", "fetch(", "addEventListener(\"DOMContentLoaded",
+                       "setTimeout", "requestAnimationFrame"):
+            with self.subTest(construct=banned):
+                self.assertNotIn(banned, block,
+                                 f"the inline script defers on {banned!r}")
+
+    def test_the_inline_script_survives_localstorage_throwing(self):
+        """localStorage throws in a private window and behind some cookie
+        policies. A theme is not worth a broken page: the catch must leave
+        data-theme unset so :root answers, exactly as before the theme
+        existed."""
+        head = self.code[:self.code.index("</head>")]
+        block = head[head.index("<script>"):head.index("</script>")]
+        self.assertIn("try", block, "no try/catch around the storage read")
+        self.assertIn("catch", block)
+        self.assertLess(block.index("try"), block.index("localStorage"),
+                        "the try does not enclose the storage read")
+
+    def test_exactly_three_states_and_no_more(self):
+        """A fourth state would stamp a data-theme no palette answers to,
+        and the page would render unthemed with nothing reporting it."""
+        import re
+        declared = re.search(r"const THEMES = \[([^\]]*)\]", self.js)
+        self.assertIsNotNone(declared, "THEMES is gone")
+        states = tuple(re.findall(r'"([\w-]+)"', declared.group(1)))
+        self.assertEqual(states, self.THEMES,
+                         f"the theme states are {states}, expected "
+                         f"{self.THEMES}")
+        self.assertIn("THEMES.includes", self.js,
+                      "nothing validates the value against THEMES, so an "
+                      "unknown state would be stored and stamped")
+
+    def test_the_inline_scripts_state_list_agrees_with_app_js(self):
+        """TWO COPIES, AND THEY MUST NOT DRIFT. The inline script cannot
+        import THEMES - it runs before app.js exists - so the valid set is
+        written twice. A state added to one and not the other either stamps
+        an attribute no palette answers to, or refuses one that does."""
+        import re
+        head = self.code[:self.code.index("</head>")]
+        block = head[head.index("<script>"):head.index("</script>")]
+        inline = re.search(r"var valid = \{([^}]*)\}", block)
+        self.assertIsNotNone(
+            inline, "the inline script no longer validates the stored value; "
+                    "a stale entry would be stamped verbatim")
+        # Against APP.JS's actual list, not this test's constant: the
+        # claim is that the two copies agree. Pinning both to a third
+        # value here would pass while they disagreed with each other.
+        declared = re.search(r"const THEMES = \[([^\]]*)\]", self.js)
+        self.assertIsNotNone(declared, "THEMES is gone from app.js")
+        self.assertEqual(set(re.findall(r"(\w+):", inline.group(1))),
+                         set(re.findall(r'"([\w-]+)"', declared.group(1))),
+                         "the inline script's state list has drifted from "
+                         "THEMES in app.js")
+
+    def test_system_is_stored_unresolved_and_resolved_at_read(self):
+        """Storing the RESOLVED palette would freeze whatever the OS said
+        on the day it was set - 'copy my system once', not 'match it'."""
+        self.assertIn("prefers-color-scheme", self.js,
+                      "app.js never asks the OS")
+        body = self.js[self.js.index("function resolveTheme"):]
+        body = body[:body.index("\n}")]
+        self.assertIn("matchMedia", body,
+                      "'system' resolves without asking matchMedia")
+        for palette in ("dark", "light"):
+            self.assertIn(f'"{palette}"', body)
+
+    def test_the_system_choice_follows_the_os_live(self):
+        """At load only would make 'match my system' mean 'match it when I
+        last opened the page'."""
+        self.assertIn("function watchSystemTheme", self.js)
+        body = self.js[self.js.index("function watchSystemTheme"):]
+        body = body[:body.index("\n}\n")]
+        self.assertIn("change", body, "no change listener")
+        self.assertIn('storedTheme() === "system"', body,
+                      "it would override an explicit dark or light choice")
+        self.assertIn("watchSystemTheme();", self.js, "it is never called")
+
+    def test_the_control_is_local_and_never_posts(self):
+        """data-local, NOT data-pref. Every data-pref control POSTs to
+        /api/settings, where the theme is not in SETTABLE - one mis-routed
+        change would come back "'theme' is not a viewer preference", which
+        is accurate and baffling at the same time."""
+        self.assertIn('data-local="', self.js)
+        self.assertIn('pickLocal("theme"', self.js,
+                      "the theme control is not rendered through pickLocal")
+        self.assertNotIn('pick("theme"', self.js,
+                         "the theme is rendered as a server preference")
+        body = self.js[self.js.index("function saveLocal"):]
+        body = body[:body.index("\n}")]
+        self.assertNotIn("post(", body, "saveLocal POSTs")
+        self.assertNotIn("reloadEverything", body,
+                         "a colour change redraws the whole interface, "
+                         "reporting an event that did not happen")
+
+    def test_provenance_for_a_local_setting_is_not_a_faked_server_row(self):
+        """A synthesised {source, config_value} would make a browser-stored
+        setting indistinguishable from a database-backed one to the next
+        reader of provenance() - a thing built to make a distinction clear,
+        erasing it instead."""
+        self.assertIn("function localProvenance", self.js)
+        body = self.js[self.js.index("function localProvenance"):]
+        body = body[:body.index("\n}")]
+        self.assertNotIn("config_value", body)
+        self.assertIn("settings.from_system", body)
+        self.assertIn("settings.from_browser", body)
+        self.assertIn("settings.reset_local_title", body)
+
+    def test_every_theme_string_exists_in_every_catalogue(self):
+        """All three, or a reader gets an untranslated control in a fully
+        translated panel."""
+        from macrowire import i18n
+        keys = ("theme", "theme_system", "theme_dark", "theme_light",
+                "from_system", "from_browser", "reset_local_title")
+        for locale in floor(self, i18n.available(), "locale files", 2):
+            settings = i18n.load(locale).get("settings") or {}
+            for key in keys:
+                with self.subTest(locale=locale, key=key):
+                    self.assertIn(key, settings,
+                                  f"settings.{key} missing from {locale}")
+                    self.assertTrue(str(settings[key]).strip(),
+                                    f"settings.{key} is blank in {locale}")
+
+
 class DialogStaticTests(unittest.TestCase):
     """What can be asserted without a browser.
 
@@ -5634,13 +6018,41 @@ class DialogStaticTests(unittest.TestCase):
                               f"else has to know how to shut it")
 
     def test_the_backdrop_rule_exists_and_is_not_transparent(self):
+        """FOLLOWS THE TOKEN NOW, and checks every theme rather than one
+        literal.
+
+        This used to read the alpha straight out of the rule, which worked
+        only while the scrim was written inline as rgba(9, 11, 14, .72) - a
+        hand-picked near-black tied to no token. It is --scrim now, so the
+        rule no longer carries a number to read. Resolving the token also
+        makes the check worth more than it was: a second palette needs a
+        readable scrim too, and a light theme that set a nearly-clear one
+        would have sailed past the old version entirely.
+        """
         import re
         rule = re.search(r"\.settings::backdrop \{([^}]*)\}", self.css)
         self.assertIsNotNone(rule, "no ::backdrop rule")
-        alpha = re.search(r"rgba\([^)]*,\s*([\d.]+)\s*\)", rule.group(1))
-        self.assertIsNotNone(alpha, "backdrop has no alpha to check")
-        self.assertGreater(float(alpha.group(1)), 0.4,
-                           "the backdrop is too transparent to read as modal")
+        token = re.search(r"var\((--[\w-]+)\)", rule.group(1))
+        self.assertIsNotNone(
+            token, f"the backdrop sets a literal colour rather than a token: "
+                   f"{rule.group(1).strip()!r}; a literal cannot follow a theme")
+        themes = TestLegibility.scan_themes(strip_comments(self.css, "css"))
+        floor(self, themes, "theme blocks", 1)
+        for theme, tokens in sorted(themes.items()):
+            with self.subTest(theme=theme, token=token.group(1)):
+                self.assertIn(token.group(1), tokens,
+                              f"{theme} does not define {token.group(1)}")
+                alpha = re.search(r"rgba\([^)]*,\s*([\d.]+)\s*\)",
+                                  tokens[token.group(1)])
+                self.assertIsNotNone(
+                    alpha, f"{token.group(1)} in {theme} is "
+                           f"{tokens[token.group(1)]!r}, which has no alpha; "
+                           f"an opaque backdrop hides the page instead of "
+                           f"dimming it")
+                self.assertGreater(
+                    float(alpha.group(1)), 0.4,
+                    f"the backdrop is too transparent in {theme} to read "
+                    f"as modal")
 
     def test_display_is_scoped_to_the_open_state(self):
         """THE BUG THAT SHIPPED.
@@ -6488,13 +6900,24 @@ class HongKongLocaleTests(unittest.TestCase):
     # memory: every one of these is in the Simplified catalogue today, so
     # the blocklist is live rather than aspirational, and a test below
     # proves it against zh-CN so it cannot quietly go stale.
+    #
+    # 跟 WAS REMOVED, and it should not have been here. It is the SAME
+    # character in both scripts - there is no Traditional variant - and it
+    # was almost certainly swept in with its neighbour 踪 (Traditional 蹤)
+    # when the word 跟踪 was added rather than the character. Nothing in
+    # zh-HK used it until "跟隨系統" was written, which is idiomatic
+    # Traditional and was being rejected by a list that describes it
+    # wrongly. The list is derived from OCCURRENCE in zh-CN, and occurring
+    # in Simplified text is not the same as being a simplified form - so
+    # other false positives of this shape may still be here, and the fix
+    # for one is to check the character, never to reword the Traditional.
     SIMPLIFIED = (
         "与业东丢两个临为么买于仅从仓们价优会体余储克关内写净准几划则刚删别"
         "刷务动匹区单卖占历参反发变后听启响围国场坏块处备复天夹实对导将尝属"
         "币布带并库应开张强当录径志态总户执扰护损换据数断无旧时显暂机权条来"
         "构标栈栏校档检欧汇没沪测添滚状独现界监盖盘码确种积称筛简箱类约线终"
         "经结络绝统继续维编网联节范获装观规计订认讯记许设访证词译试询该详语"
-        "误说请读败货资跟踪轮载较辑输达迁过运还这进连迟选邮配采里鉴钟链错键"
+        "误说请读败货资踪轮载较辑输达迁过运还这进连迟选邮配采里鉴钟链错键"
         "长闭问间闻阅阈隆随隐静页项顺频题额馈验默")
 
     def catalogue(self, code="zh-HK"):
@@ -7644,6 +8067,129 @@ class TapeStabilityTests(BrowserTestCase):
             with self.subTest(token=token):
                 self.assertNotEqual(m["border"], rgb(m[token]),
                                     f"the derived mark spends --{token}")
+
+    def reload_page(self):
+        import httpx, time
+        httpx.post(f"{self.base}/session/{self.sid}/url", timeout=60,
+                   json={"url": f"http://127.0.0.1:{self.app_port}/"})
+        time.sleep(3)
+
+    def load_with_theme(self, stored):
+        """Put a value in localStorage, reload, and report what painted."""
+        self.js(f"""try {{ localStorage.setItem("macrowire.theme",
+                    {stored!r}); }} catch (e) {{}} return 1;""".replace("'", '"'))
+        self.reload_page()
+        return self.js("""
+            const m = window.matchMedia
+              && window.matchMedia('(prefers-color-scheme: light)').matches;
+            let kept = null;
+            try { kept = localStorage.getItem('macrowire.theme'); } catch (e) {}
+            return {stamped: document.documentElement.getAttribute('data-theme'),
+                    kept: kept,
+                    osPrefersLight: !!m,
+                    ground: getComputedStyle(document.body).backgroundColor};""")
+
+    def test_all_three_theme_states_round_trip(self):
+        """Stored, read by the inline script, stamped before paint.
+
+        The palette is checked too, not only the attribute: a data-theme no
+        stylesheet answers to would stamp correctly and render unthemed."""
+        try:
+            grounds = {}
+            for choice in ("dark", "light", "system"):
+                with self.subTest(choice=choice):
+                    m = self.load_with_theme(choice)
+                    self.assertEqual(
+                        m["kept"], choice,
+                        f"the stored value became {m['kept']!r}; 'system' in "
+                        f"particular must persist UNRESOLVED or it means "
+                        f"'copy my system once'")
+                    expected = (("light" if m["osPrefersLight"] else "dark")
+                                if choice == "system" else choice)
+                    self.assertEqual(
+                        m["stamped"], expected,
+                        f"stored {choice!r} painted as {m['stamped']!r}")
+                    grounds[m["stamped"]] = m["ground"]
+            # The two palettes must actually differ, or every assertion
+            # above would pass against one stylesheet answering to both.
+            self.assertGreaterEqual(len(set(grounds.values())), 1)
+            if len(grounds) > 1:
+                self.assertEqual(
+                    len(set(grounds.values())), len(grounds),
+                    f"two themes painted the same ground: {grounds}")
+        finally:
+            self.js("""try { localStorage.removeItem("macrowire.theme"); }
+                       catch (e) {} return 1;""")
+            self.reload_page()
+
+    def test_system_resolves_through_matchmedia_not_a_stored_palette(self):
+        """'system' is not a palette name. What paints must agree with what
+        the OS says at THIS load, and the stored value must stay 'system'."""
+        try:
+            m = self.load_with_theme("system")
+            self.assertEqual(m["kept"], "system")
+            self.assertIn(m["stamped"], ("dark", "light"),
+                          f"'system' reached the attribute unresolved: "
+                          f"{m['stamped']!r}")
+            self.assertEqual(
+                m["stamped"], "light" if m["osPrefersLight"] else "dark",
+                f"the painted theme disagrees with matchMedia: stamped "
+                f"{m['stamped']!r}, OS prefers light: {m['osPrefersLight']}")
+        finally:
+            self.js("""try { localStorage.removeItem("macrowire.theme"); }
+                       catch (e) {} return 1;""")
+            self.reload_page()
+
+    def test_the_inline_script_does_not_throw_when_localstorage_does(self):
+        """RUNS THE SHIPPED SOURCE, rather than asserting a try/catch is
+        present. localStorage throws in a private window and behind some
+        cookie policies; if that escaped, it would escape in <head>, before
+        anything else on the page had run.
+
+        The script is executed with a throwing localStorage shadowing the
+        global, so this exercises the real bytes from index.html."""
+        import re
+        html = (ROOT / "macrowire/web/static/index.html").read_text()
+        head = html[:html.index("</head>")]
+        src = head[head.index("<script>") + len("<script>"):head.index("</script>")]
+        m = self.js("""
+            const src = arguments[0];
+            const boom = { getItem() { throw new Error("denied"); },
+                           setItem() { throw new Error("denied"); } };
+            const before = document.documentElement.getAttribute('data-theme');
+            document.documentElement.removeAttribute('data-theme');
+            let threw = null;
+            try { new Function("localStorage", src)(boom); }
+            catch (e) { threw = String(e); }
+            const after = document.documentElement.getAttribute('data-theme');
+            if (before !== null) {
+              document.documentElement.setAttribute('data-theme', before);
+            }
+            return {threw, after};""".replace("arguments[0]", repr(src)
+                                              .replace("'", '"', 1)[::1]
+                                              if False else "SRC")
+            .replace("SRC", "%s" % repr(src)))
+        self.assertIsNone(
+            m["threw"],
+            f"the inline script threw when localStorage did: {m['threw']}; "
+            f"in <head> that stops the document before anything else runs")
+        self.assertIsNone(
+            m["after"],
+            f"it stamped {m['after']!r} despite having read nothing; with no "
+            f"attribute :root answers, which is the pre-theme behaviour")
+
+    def test_an_unknown_stored_theme_falls_back_rather_than_stamping_it(self):
+        """A value no palette answers to would render the page unthemed."""
+        try:
+            m = self.load_with_theme("solarized")
+            self.assertIn(
+                m["stamped"], ("dark", "light"),
+                f"an unknown stored theme was stamped verbatim: "
+                f"{m['stamped']!r}")
+        finally:
+            self.js("""try { localStorage.removeItem("macrowire.theme"); }
+                       catch (e) {} return 1;""")
+            self.reload_page()
 
     def test_the_health_indicator_is_chrome_when_every_source_is_current(self):
         """Measured against the token, not a literal colour.

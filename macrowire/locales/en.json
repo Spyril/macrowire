@@ -478,7 +478,14 @@
     "watchlist_quiet": "nothing in window",
     "watchlist_no_source": "no source covers this market",
     "watchlist_no_source_detail": "No enabled source carries company announcements for this market, so nothing from it can reach the tape. The holding is still recorded.",
-    "market_no_source": "no source"
+    "market_no_source": "no source",
+    "theme": "Theme",
+    "theme_system": "match my system",
+    "theme_dark": "dark",
+    "theme_light": "light",
+    "from_system": "following your system",
+    "from_browser": "set here · this browser only",
+    "reset_local_title": "Reset {label} to {value}"
   },
   "coverage": {
     "recoverable_title": "{source} · nothing earlier collected",

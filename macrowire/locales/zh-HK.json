@@ -479,7 +479,14 @@
     "watchlist_quiet": "窗口內無發佈",
     "watchlist_no_source": "沒有來源涵蓋這個市場",
     "watchlist_no_source_detail": "沒有已啟用的來源提供這個市場的公司公告，因此這個市場的內容無法進入時間線。該持倉仍會記錄。",
-    "market_no_source": "無來源"
+    "market_no_source": "無來源",
+    "theme": "主題",
+    "theme_system": "跟隨系統",
+    "theme_dark": "深色",
+    "theme_light": "淺色",
+    "from_system": "跟隨系統設定",
+    "from_browser": "在此處設定 · 僅限此瀏覽器",
+    "reset_local_title": "將「{label}」重設為{value}"
   },
   "coverage": {
     "recoverable_title": "{source} · 更早的內容尚未採集",

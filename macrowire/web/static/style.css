@@ -37,7 +37,18 @@
  * Every token carrying text clears 7:1 on ALL THREE surfaces. Nothing
  * renders below 12px anywhere.
  *
- * TIGHTEST TEXT PAIR: --ink-3 on --raised = 7.01:1
+ * THEME BLOCKS ARE `:root` AND `:root[data-theme="NAME"]`. Nothing else is
+ * one - not the four `:root:lang()` blocks below, which set a font family
+ * and no colour, and not a future `:root[data-density]` or print block.
+ * The convention is EXPLICIT rather than inferred from "does this block
+ * set a colour", because a block that happened to set one would silently
+ * enrol itself as a theme and then be required to define every token -
+ * a trap that fires later, on someone else, for a reason they cannot
+ * guess. Every theme block defines the same token NAMES; the values are
+ * what differ. Asserted by the suite.
+ *
+ * TIGHTEST TEXT PAIR (default): --ink-3 on --raised = 7.01:1
+ * TIGHTEST TEXT PAIR (light):   --ink-3 on --sunken = 7.02:1
  *
  * That line is asserted by the test suite against a freshly computed value,
  * so it cannot rot. Read the margin before touching a colour: it is 0.01,
@@ -105,6 +116,22 @@
   --fault:      #f6a091;   /* source failing or stale */
   --cursor:     #f4f8fc;   /* now-marker */
 
+  /* Tells the UA which way round this is, so the surfaces IT paints - form
+     control internals, <option> popups, the default scrollbar, selection -
+     stop assuming light. There was none at all until the second palette
+     made the omission visible; it was already wrong with one. */
+  color-scheme: dark;
+
+  /* OVERLAYS. Translucent, so they carry whatever is behind them - which
+     is exactly why they are per-theme: these two were hand-picked
+     near-blacks written inline as rgba(9, 11, 14, ...), tied to no token,
+     close to --sunken by eye and equal to nothing. On a light ground a
+     black scrim is not a dimmer, it is a hole.
+     Not text and not a surface: nothing is measured against them, and
+     TestLegibility skips them by name for that reason. */
+  --shadow:     rgba(9, 11, 14, .55);   /* panel drop shadow */
+  --scrim:      rgba(9, 11, 14, .72);   /* modal backdrop */
+
   --syd: #4f8f83; --tyo: #7d6ea6; --hkg: #9a6f60; --lon: #547da8; --nyc: #927c4d;
 
   /* LATIN STACKS. The CJK family is NOT named here - it is chosen by
@@ -132,6 +159,63 @@
 /* Region-specific first, script-level second: :lang() matching is by
    hyphen prefix, so :lang(zh) alone would catch zh-TW as well and put SC
    back on Traditional text - the exact bug this replaces. */
+/* THE SECOND PALETTE. Nothing selects it yet - no toggle, no preference,
+   no media query - so nothing looks different today. It exists so the
+   scan, the completeness guard and the tightest-pair assertion run on real
+   content rather than on a mutation.
+
+   SETS NO FONT TOKENS, and that is load-bearing rather than an omission.
+   `:root[data-theme="light"]` and `:root:lang(zh-TW)` have EQUAL
+   specificity, so whichever comes later wins outright. A --cjk here would
+   silently override the language scoping and hand Traditional Chinese to
+   an SC face, or worse, depending only on block order. Because this block
+   declares no font family, its position relative to the :lang() blocks
+   does not matter. Keep it that way.
+
+   MEASURED, NOT PICKED. Every text token clears 7:1 on all three surfaces;
+   the worst is --ink-3 on --sunken at 7.02:1. Note that the tightest pair
+   sits on a DIFFERENT surface than it does in default: there the tightest
+   surface is --raised, the lightest of the three under light text; here it
+   is --sunken, the darkest of the three under dark text. Same rule, other
+   end. */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* surfaces */
+  --ground:     #e2e8f0;
+  --raised:     #ffffff;   /* 1.233:1 above ground - default's step is 1.234 */
+  --sunken:     #dae1ea;
+
+  /* content */
+  --ink:        #0d1218;   /* 14.3 : 1 worst surface */
+  --ink-2:      #29323d;   /*  9.9 : 1 - same hex as --chrome-hi, MIRRORING
+                              the coincidence in default and for the same
+                              reason. Still two families, still free to move
+                              apart, still not to be collapsed into one. */
+  --ink-3:      #3f4855;   /*  7.02: 1 - the tightest pair in this palette */
+
+  /* chrome */
+  --chrome:     #3d4652;   /*  7.3 : 1 */
+  --chrome-hi:  #29323d;   /* see --ink-2 */
+  --edge:       #748193;   /* dividers        3.21:1 */
+  --edge-hi:    #657182;   /* chip borders    4.02:1 */
+
+  /* signals. Same meanings, re-measured: amber-on-white is unreadable, so
+     the unread accent becomes a dark ochre rather than a lighter one. */
+  --accent:     #5c3800;   /* UNREAD ONLY */
+  --fault:      #80160f;   /* source failing or stale */
+  --cursor:     #05080b;   /* now-marker */
+
+  /* overlays. BOTH ARE JUDGEMENT, NOT MEASUREMENT, and are the two values
+     here most likely to want changing once the theme is selectable: a
+     shadow at default's .55 near-black is far too heavy on a light ground,
+     and the scrim sits just above the 0.4 the backdrop test asserts. */
+  --shadow:     rgba(13, 18, 24, .18);
+  --scrim:      rgba(13, 18, 24, .48);
+
+  --syd: #3d7d71; --tyo: #6b5c93; --hkg: #875c4d; --lon: #426a95; --nyc: #7e6a3c;
+}
+
 :root:lang(zh-CN), :root:lang(zh-SG), :root:lang(zh-Hans) {
   --cjk: "Noto Sans CJK SC", sans-serif;
   --cjk-mono: "Noto Sans Mono CJK SC", monospace;
@@ -263,7 +347,7 @@ header {
      where this ends, so without a border the two read as one widened
      rail rather than a panel in front of a page. */
   border: 1px solid var(--edge-hi); border-radius: 3px;
-  box-shadow: 0 10px 24px rgba(9, 11, 14, .55);
+  box-shadow: 0 10px 24px var(--shadow);
   /* A CEILING, not a tuning. Nothing collapses any more, so the content
      is as tall as the source count makes it: eleven source chips today,
      sixteen when everything is enabled, and the type axis grows with
@@ -795,7 +879,7 @@ kbd { font-family: var(--mono); font-size: 12px; color: var(--chrome);
             border: 1px solid var(--edge-hi); border-radius: 3px;
             padding: 0; width: min(680px, 92vw); max-height: 86vh; }
 .settings[open] { display: flex; flex-direction: column; }
-.settings::backdrop { background: rgba(9, 11, 14, .72); }
+.settings::backdrop { background: var(--scrim); }
 .settings-head { display: flex; align-items: center; justify-content: space-between;
                  padding: 12px 18px; border-bottom: 1px solid var(--edge);
                  position: sticky; top: 0; background: var(--raised); }
