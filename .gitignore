@@ -9,14 +9,16 @@ data/
 *.db
 *.sqlite
 
-# Data exports
+# Data exports. The export directory holds COLLECTED ROWS, not code, and
+# the licence that covers this repository does not cover them - see README,
+# "Licence". A clone arrives with no data at all and builds its own by
+# polling; keeping an export here would have published one publisher's
+# material under a code licence that says nothing about it.
+export/
 *.csv
 *.parquet
 
-# Assistant / editor scaffolding
-CLAUDE.md
-AI_RULES.md
-.claude/
+# Editor scaffolding
 .vscode/
 
 # Python

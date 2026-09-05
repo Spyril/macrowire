@@ -126,7 +126,7 @@
     "cot_asof": "CFTC 非商业持仓（合约张数）· 净持仓 = 多头 − 空头 · 截至 {period}（{day}），{release} 发布",
     "cny_asof": "中间价 {period} {time} · 较 {prior} 变动",
     "ecb_asof": "参考汇率 {period} · {time} · 基准货币 {base}",
-    "rba_asof": "{time} · {period}",
+    "rba_asof": "{time} · {period} · 来源：Reserve Bank of Australia {year}",
     "health_unreachable_many": "{total} 个来源中有 {n} 个不可达。若占了大多数，问题更可能出在本机网络连接，而不是这些来源。",
     "weekday": {
       "tue": "周二",

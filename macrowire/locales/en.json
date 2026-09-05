@@ -126,7 +126,7 @@
     "cot_asof": "CFTC non-commercial, contracts · net = long − short · as of {period} ({day}), released {release}",
     "cny_asof": "fix {period} {time} · change vs {prior}",
     "ecb_asof": "reference rate {period} · {time} · base {base}",
-    "rba_asof": "{time} · {period}",
+    "rba_asof": "{time} · {period} · Source: Reserve Bank of Australia {year}",
     "health_unreachable_many": "{n} of {total} sources are unreachable. When it is most of them, the connection is the more likely cause than the sources.",
     "weekday": {
       "tue": "Tue",

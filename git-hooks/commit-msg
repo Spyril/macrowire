@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Refuses a commit whose authorship looks wrong, and one carrying a
-# machine-generated attribution trailer.
+# Refuses a commit whose authorship looks wrong, and one carrying an
+# attribution trailer.
 #
 # WHAT IT IS FOR
-#   Two things go wrong quietly in a repository worked on with assistance:
-#   a commit lands under whatever identity the shell happened to have, and
-#   a tool appends "Co-authored-by" or "Generated with" to the message.
+#   Two things go wrong quietly: a commit lands under whatever identity
+#   the shell happened to have, and a commit message picks up an
+#   attribution trailer.
 #   Neither is caught by review, because neither shows up in a diff.
 #
 # WHAT IT CHECKS

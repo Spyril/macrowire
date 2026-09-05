@@ -1038,6 +1038,26 @@ async function refreshUnread() {
 // A series with no cadence_days shows its age and is never called late. A
 // guessed cadence would put --fault on a number nobody said was late,
 // which is the same failure as a staleness threshold that cries wolf.
+// THE YEAR OF THE DATA SHOWN, never the year it is now.
+//
+// RBA publishes under CC BY 4.0 and asks for "Source: Reserve Bank of
+// Australia [year]". The year belongs to the OBSERVATION, so it comes from
+// the period beside it: on 1 January, a panel still showing December's fix
+// must credit the year that fix was published, and `new Date()` would
+// silently start crediting the wrong one. A stale attribution is a small
+// false statement inside a compliance notice, which is the worst place to
+// put one - nobody re-reads it, and it is wrong for a whole year.
+//
+// An unparseable period falls back to the period itself rather than to a
+// guess or an empty string: it still names the moment the data belongs to
+// and it invents nothing. It cannot leave "{year}" on screen, which is
+// what shipping the catalogue string without this would have done.
+function yearOf(period) {
+  const text = String(period || "");
+  const m = /^(\d{4})/.exec(text);
+  return m ? m[1] : text;
+}
+
 function daysSince(period) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(period || ""));
   if (!m) return null;
@@ -1150,7 +1170,8 @@ function drawRail(d) {
       <div class="k">${esc(r.series)}</div><div class="v">${r.value}</div>`
   ).join("");
   $("rba-asof").innerHTML = d.rba.length
-    ? asOf(t("rail.rba_asof", { time: FACT.rbaFix, period: d.rba[0].period }),
+    ? asOf(t("rail.rba_asof", { time: FACT.rbaFix, period: d.rba[0].period,
+                                year: yearOf(d.rba[0].period) }),
            d.rba[0].period, cad.rba)
     : esc(t("rail.no_data"));
 
