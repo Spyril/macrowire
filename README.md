@@ -10,12 +10,19 @@ A personal news wire for macro and market announcements. It polls primary
 sources — central banks, regulators, exchange company announcements — and
 keeps every item in a local SQLite database.
 
-**Single user. Personal use. Runs on localhost. Not published, not
-deployed, not shared.** That matters legally as much as technically: the
-licensing picture for redistributing this material is different from the
-picture for reading it yourself, and nothing here has been cleared for
-publication. If this ever goes public, the source terms need reviewing
-first.
+**Single user. Personal use. Runs on localhost.** The code is published;
+the data it collects is not, and cannot be — every install builds its own
+history by polling, and **a clone arrives with no data at all**. That
+distinction matters legally as much as technically: the licensing picture
+for redistributing collected material is different from the picture for
+reading it yourself, and nothing collected here has been cleared for
+redistribution. Each publisher's terms are recorded below, including the
+sources deliberately not polled because their terms prohibit it.
+
+The project lives at <https://github.com/Spyril/macrowire>. If you fork it,
+set `MACROWIRE_PROJECT_URL` to **your** copy rather than this one — it goes
+into the outbound `User-Agent`, and a source seeing unfamiliar traffic
+should be pointed at whoever is running it.
 
 ## What this is not
 
@@ -448,45 +455,12 @@ Of ASX, HKEX and SEC EDGAR, **only the SEC permits what this does.**
 | | terms |
 |---|---|
 | **SEC EDGAR** | *"We allow scripted access to sec.gov content"* — 10 req/sec, declared User-Agent. US federal works are public domain. |
-| **ASX** | prohibits *"any spider, screen scraper, robot … to use or access the Site in any way whatsoever, including monitoring, downloading or copying"* without prior written consent (clause 5(b)). **Consent was requested and refused in writing** — 25 August 2026, ASX Office of General Counsel, ref `ASXO-ASXLEGAL.FID2125721`. See below. |
+| **ASX** | prohibits *"any spider, screen scraper, robot … to use or access the Site in any way whatsoever, including monitoring, downloading or copying"* without prior written consent (clause 5(b)). **Consent was requested and refused in writing** — 25 August 2026, ASX Office of General Counsel, ref `ASXO-ASXLEGAL.FID2125721`. See [Sources ruled out](#sources-ruled-out-and-why). |
 | **HKEX** | prohibits *"any programmatic, scripted or other mechanical means to access this Website"*, *"systematic retrieval to create collections, compilations, databases"*, and text/data mining. Its personal-use grant allows storing pages on disk *"but not on any server or other storage device connected to a network."* |
 
 ASX and HKEX are **out**. A JSON endpoint on a different hostname does not
 change the plain intent of "no spider, screen scraper, robot or similar
 process". Same call as the PBoC `robots.txt`.
-
-#### ASX: asked, and told no
-
-Clause 5(b) prohibits automated access *without prior written consent*, which
-means the prohibition has a documented way through it. So it was tried.
-
-On **21 August 2026** the repository owner wrote to ASX asking for that
-consent, for a narrow case: personal non-commercial use, a watchlist of about
-twenty securities, polled a few times a day, stored locally, never
-redistributed.
-
-On **25 August 2026** the ASX Office of General Counsel declined, under
-reference `ASXO-ASXLEGAL.FID2125721`. ASX does not allow retail end users to
-scrape the ASX website, and directed the request to its published list of data
-vendors and ISVs as the route for sourcing the data.
-
-That route is real, and it is the institutional one: licensed vendors
-redistribute ASX announcements under commercial agreements, priced for
-businesses rather than for individuals. It is not a route this project takes.
-
-Two things this does **not** say. It is not a statement of blanket ASX policy —
-it is one written answer to one retail request, and it is quoted as that rather
-than generalised. And it does not change the conclusion the terms already
-supported: ASX was out before the letter, on clause 5(b) alone. What changed is
-that the position is now **confirmed rather than inferred**, which is stronger,
-and the reasoning no longer rests on this project's reading of someone else's
-contract.
-
-The correspondence is kept in [`docs/licensing/`](docs/licensing/) — both the
-request and the reply. It is there so this position can be **verified rather
-than taken on trust**: a claim in a README that an exchange said no is worth
-exactly as much as the reader's willingness to believe it, and the letter is
-not.
 
 ### The licensing position, stated plainly
 
@@ -972,6 +946,112 @@ empty one — HTTP 200, zero bytes, `Last-Modified` recent, so maintained
 and deliberately empty. None restricts anything, and all four are
 readable, unlike NDRC's 403.
 
+## Sources ruled out, and why
+
+These were investigated and not polled. The record of what was ruled out
+is worth as much as the record of what was collected: a project
+whose whole position is that it respects source terms has to be able to
+show the ones it read and declined, not only the ones it read and accepted.
+
+Each entry quotes the operative clause rather than summarising it. A
+paraphrase of someone else's terms is this project's reading of a contract,
+which is exactly the thing a reader should not have to take on trust.
+
+### PBoC says no in the one place a fetcher is obliged to look
+
+`http://www.pbc.gov.cn/robots.txt` is *"User-agent: *"* followed by
+*"Disallow: /"*. There is no carve-out, no crawl-delay, and no permitted
+path — the whole host is closed to automated clients.
+
+**A `robots.txt` is not a technical obstacle, it is a stated wish**, and it
+is the one document a fetcher is obliged to read before anything else.
+Nothing about it is hard to circumvent, which is the point: compliance here
+is a decision rather than a capability.
+
+The cost is real. The PBoC publishes the policy statements that move the
+CNY fix, and the fix itself is collected from CFETS — a public JSON API
+with no terms restricting retrieval — so the number arrives without its
+commentary. That gap is not filled by going around the file.
+
+### HKEX prohibits the access and the database separately
+
+Two clauses, and either alone would settle it. HKEX prohibits *"any
+programmatic, scripted or other mechanical means to access this Website"*,
+and separately prohibits *"systematic retrieval to create collections,
+compilations, databases"* along with text and data mining.
+
+**The second clause forecloses the workaround the first invites.** A reader
+who concluded that manual browsing was permitted, and copied what they saw
+into a local store, would still be building the compilation the second
+clause names. This project is a database of retrieved announcements; that
+is its whole shape.
+
+Its personal-use grant does not help either. It allows storing pages on
+disk *"but not on any server or other storage device connected to a network"*
+— and this runs a local HTTP server, on a machine with a network interface.
+
+The cost is Hong Kong company announcements, which is the single largest
+gap in a tool used to trade HK equities. It is not closed by a JSON
+endpoint on a different hostname.
+
+### CCASS is out on HKEX's terms, not on its own
+
+CCASS shareholding search is an HKEX property and carries HKEX's terms —
+the same prohibition on *"any programmatic, scripted or other mechanical
+means to access this Website"* and on *"systematic retrieval to create
+collections, compilations, databases"*. **A shareholding database is
+precisely the derivative work that clause names**, so the question was
+closed before any technical one arose.
+
+The technical ones point the same way. Full-market coverage means roughly
+**2,700 POSTs a day** against an ASP.NET form, and the window is twelve
+months — anything earlier is gone. The free historical mirror that existed,
+webb-site, **shut down on 31 October 2025**; official backfill is a manual
+paid request to HKEX.
+
+Same call as HKEX itself, for the same reason and on the same document.
+
+### ASX: asked, and told no
+
+Clause 5(b) prohibits automated access *without prior written consent*, which
+means the prohibition has a documented way through it. So it was tried.
+
+On **21 August 2026** the repository owner wrote to ASX asking for that
+consent, for a narrow case: personal non-commercial use, a watchlist of about
+twenty securities, polled a few times a day, stored locally, never
+redistributed.
+
+On **25 August 2026** the ASX Office of General Counsel declined, under
+reference `ASXO-ASXLEGAL.FID2125721`. ASX does not allow retail end users to
+scrape the ASX website, and directed the request to its published list of data
+vendors and ISVs as the route for sourcing the data.
+
+That route is real, and it is the institutional one: licensed vendors
+redistribute ASX announcements under commercial agreements, priced for
+businesses rather than for individuals. It is not a route this project takes.
+
+Two things this does **not** say. It is not a statement of blanket ASX policy —
+it is one written answer to one retail request, and it is recorded as that
+rather than generalised. And it does not change the conclusion the terms already
+supported: ASX was out before the letter, on clause 5(b) alone. What changed is
+that the position is now **confirmed rather than inferred**, which is stronger,
+and the reasoning no longer rests on this project's reading of someone else's
+contract.
+
+**The letter itself is not published here, and that is deliberate.** Consent
+was sought to *access* the site; permission to republish ASX's own words was
+never asked for and never given, and a project whose whole position is that it
+asks first should not publish someone else's letter on the strength of having
+received it. The verbatim correspondence is retained privately by the operator
+and is available on request.
+
+What is published is the record: what was asked, what came back in summary,
+and ASX's own reference — [`docs/licensing/`](docs/licensing/). The reference
+is what makes this **verifiable rather than merely asserted**. A claim in a
+README that an exchange said no is worth exactly as much as the reader's
+willingness to believe it; a reference number is not, because it can be put to
+ASX and answered by the party that issued it.
+
 ### CFFEX is out
 
 Its two notices conflict. 版权声明 says *"任何**非私人**使用、转载和传播和
@@ -991,6 +1071,59 @@ the top 20 **member firms** by volume and by long/short open interest —
 positions, not whose money it is. COT's entire value is the
 commercial/non-commercial split, and this has no such axis. Not built, and
 not to be called one.
+
+### Gold reserves come from the IMF, not from the World Gold Council
+
+The WGC's terms, under *Use of this Website*, permit saving or printing
+*"only for your personal, non-commercial use"* and state that *"you are not
+permitted to modify, copy, scrape, distribute, transmit, display,
+reproduce, duplicate, publish, license, frame, link, create derivative
+works from, transfer or otherwise use in any manner, in whole or in part,
+this Website or the information and materials on this Website without the
+prior written authorisation of WGC"*. A separate clause forbids
+*"access or monitor this Website or any of its content other than using
+the Website's navigational structure"*. Checked 5 September 2026 at
+<https://www.gold.org/terms-and-conditions>.
+
+That would rule it out on its own. **But the reserves-by-country series is
+IMF International Financial Statistics data**, which the WGC republishes.
+The licensed route is to pull IFS directly, which sidesteps the permission
+question rather than arguing it — the same reasoning as reading a central
+bank's own feed instead of an aggregator's copy.
+
+The cost is nothing that is not obtainable elsewhere, which is what makes
+this the easy one.
+
+### SPDR's gold holdings are not republishable
+
+The daily tonnes CSV behind GLD is served from a site whose terms permit
+saving or printing *"only for your personal, non-commercial use"* and state
+that *"you are not permitted to modify, copy, distribute, transmit,
+display, reproduce, publish, license, frame, link, create derivative works
+from, transfer or otherwise use in any manner, in whole or in part, this
+Website or the information and materials on this Website without the prior
+written authorization of WGTS"*. Checked 5 September 2026 at
+<https://www.spdrgoldshares.com/terms-and-conditions/>.
+
+**Note what is not there.** The wording is close to the WGC's but the verb
+*scrape* is absent, and the authorisation runs to WGTS rather than WGC. The
+prohibition that does the work here is on reproduction, not on the method
+of access — fetching the file into a local database is the reproduction the
+clause addresses, however politely it is fetched.
+
+Not polled, and the holdings series is not a substitute for anything
+currently collected.
+
+### The faireconomy calendar works, and is still the wrong route
+
+`ff_calendar_thisweek.json` returns clean data and is undocumented,
+Cloudflare-fronted, and **grants no redistribution rights at all** — there
+are no terms to comply with, which is not the same as permission.
+
+**An endpoint that responds is not an endpoint that is offered.** For the
+releases actually traded here, the primary calendars are the licensed route
+and are already how the schedules are known: ABS and the RBA for Australia,
+BIS, and Fed, BLS and BEA for the United States.
 
 ## Where the sources are, and switching them off
 
@@ -1668,7 +1801,7 @@ that names the operator or the install may use it.
 
 `git-hooks/commit-msg` catches two things that do not show up in a diff:
 a commit landing under whatever identity the shell happened to have, and a
-tool appending `Co-authored-by` or `Generated with` to the message.
+commit message picking up an attribution trailer.
 
 By default it checks only that author and committer are **set, non-empty
 and identical** — enough to catch a misconfigured shell without naming
@@ -2301,11 +2434,33 @@ exports rows and passes them on.
 Nothing in the AGPL grants you any right to redistribute what the tool
 fetched. Some of it is straightforward: **SEC EDGAR is US federal work and
 public domain.** Some of it is not, and each publisher's terms are
-recorded in [The licensing position, stated plainly](#the-licensing-position-stated-plainly)
-and [Chinese exchanges: what the terms actually say](#chinese-exchanges-what-the-terms-actually-say),
-including the three sources that are deliberately **not polled** because
-their terms prohibit it — PBoC, HKEX, and
-[ASX, which refused consent in writing](#asx-asked-and-told-no).
+recorded in [The licensing position, stated plainly](#the-licensing-position-stated-plainly),
+[Chinese exchanges: what the terms actually say](#chinese-exchanges-what-the-terms-actually-say),
+and [Sources ruled out, and why](#sources-ruled-out-and-why) — which sets out
+every source deliberately **not polled** because its terms prohibit it,
+among them PBoC, HKEX, and
+[ASX, which refused consent in writing](#asx-asked-and-told-no). No count is
+given there or here: the number has been written down twice and been wrong
+both times.
+
+### RBA data carries a condition, and it is the only one that does
+
+Every other polled source either places no requirement on reuse or
+prohibits it outright. The RBA publishes under **Creative Commons
+Attribution 4.0**, which permits redistribution *and asks for credit* — an
+obligation rather than a prohibition, and the only positive one here.
+
+Its specified form is:
+
+```
+Source: Reserve Bank of Australia [year]
+```
+
+The interface carries it beneath the RBA panel's values, with the year
+taken from the observation being shown rather than written down — an
+attribution stating the wrong year is a small false statement inside a
+compliance notice, which is worse than an ordinary stale string. If you
+redistribute RBA rows from an export, this line travels with them.
 
 Two practical consequences:
 

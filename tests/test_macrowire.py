@@ -2222,6 +2222,153 @@ class TestStatusFalseAlarms(TempDB):
         self.assertIsNone(db.last_attempt_at(self.conn, self.cf.name))
 
 
+def operator_identity():
+    """Whoever this clone commits as, read from git config at test time.
+
+    NEVER WRITTEN DOWN. Naming a person in a tracked file to prove that
+    person is absent is the leak the check exists to prevent, and this is
+    the THIRD time that shape has appeared in this file: first the
+    assertions themselves, then the docstring explaining why they were
+    removed. Reading the value means the guard carries no identity at all
+    and works for a downstream user running the suite against their own.
+
+    Email local-parts count too: an address is a leak, and so is half of
+    one. Tokens of four characters or fewer are dropped - the same floor
+    the User-Agent test uses, because a shorter one matches inside an
+    unrelated word and fails for the wrong reason.
+
+    Returns [] when git or an identity is unavailable. Callers must SKIP on
+    that rather than pass: "could not run this check" and "ran it and it
+    was clean" are different statements and must not look alike.
+    """
+    import subprocess
+    found = []
+    for key in ("user.name", "user.email",
+                "macrowire.authorName", "macrowire.authorEmail"):
+        try:
+            result = subprocess.run(["git", "config", "--get", key],
+                                    capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return []
+        if result.returncode == 0 and result.stdout.strip():
+            value = result.stdout.strip()
+            found.append(value)
+            if "@" in value:
+                found.append(value.split("@")[0])
+    return sorted({v for v in found if len(v) > 4})
+
+
+NO_IDENTITY = ("no git identity is configured here, so \"the operator's name "
+               "does not appear in this file\" could not be checked. This is "
+               "a SKIP and not a PASS on purpose: the check did not run.")
+
+
+class PublicationHygieneTests(unittest.TestCase):
+    """What must be true of the repository itself before it is published.
+
+    THE GUARD IS AN ALLOWLIST, NOT A BLOCKLIST, and that is the whole
+    design. A blocklist of tool and vendor names would have to WRITE those
+    names in a tracked file in order to forbid them - which is the same
+    mistake as naming a person to assert the person is absent, and this
+    file has now made that mistake three times. An allowlist names only
+    what is permitted, so nothing it forbids ever appears in it, and a new
+    entry has to be justified rather than merely not-yet-noticed.
+    """
+
+    ROOT = Path(__file__).resolve().parent.parent
+
+    # Every .gitignore entry that has a stated reason to exist. Adding one
+    # here is a deliberate act; anything else fails until it is.
+    ALLOWED_IGNORES = {
+        ".env", ".env.local", "*.key", "credentials.json",   # secrets
+        "data/", "*.db", "*.sqlite",                         # local store
+        "export/", "*.csv", "*.parquet",                     # collected rows
+        ".vscode/",                                          # editor
+        "__pycache__/", ".ipynb_checkpoints/", "venv/",      # python
+        "docs/context/",
+    }
+
+    def entries(self):
+        return [line.strip() for line in
+                (self.ROOT / ".gitignore").read_text().splitlines()
+                if line.strip() and not line.strip().startswith("#")]
+
+    def test_gitignore_names_nothing_outside_the_allowlist(self):
+        """A tool's scaffolding directory named here says what this repo is
+        worked on with, in the first file a reader opens."""
+        entries = self.entries()
+        floor(self, entries, "gitignore entries", 10)
+        unexpected = sorted(set(entries) - self.ALLOWED_IGNORES)
+        self.assertEqual(
+            unexpected, [],
+            f"{unexpected} is ignored but not in ALLOWED_IGNORES. If it "
+            f"belongs in this repository add it there with a reason; if it "
+            f"is local scaffolding it belongs in .git/info/exclude, which "
+            f"is not published")
+
+    def test_the_allowlist_is_live(self):
+        """Guard on the guard. An allowlist describing entries that no
+        longer exist would permit anything by describing nothing."""
+        entries = set(self.entries())
+        stale = sorted(self.ALLOWED_IGNORES - entries)
+        self.assertEqual(stale, [],
+                         f"these are allowed but no longer ignored, so the "
+                         f"allowlist has drifted: {stale}")
+
+    def test_no_tracked_path_is_tool_scaffolding(self):
+        """Hidden directories are where editors and tools keep state. None
+        is tracked today and none should become tracked by accident."""
+        import subprocess
+        result = subprocess.run(["git", "ls-files"], cwd=self.ROOT,
+                                capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            self.skipTest("git is unavailable, so the tracked file list "
+                          "could not be read. A SKIP, not a PASS.")
+        tracked = [p for p in result.stdout.splitlines() if p]
+        floor(self, tracked, "tracked files", 20)
+        hidden = sorted(p for p in tracked
+                        if any(part.startswith(".") and part not in
+                               (".env.example", ".gitignore")
+                               for part in p.split("/")))
+        self.assertEqual(hidden, [],
+                         f"these tracked paths are hidden files or live "
+                         f"inside a hidden directory: {hidden}")
+
+    def test_no_collected_data_is_tracked(self):
+        """The AGPL covers the code and says nothing about what the tool
+        fetched. An export in the tree publishes one publisher's material
+        under a licence that does not cover it - and it would make the
+        README's "a clone arrives with no data at all" false."""
+        import subprocess
+        result = subprocess.run(["git", "ls-files"], cwd=self.ROOT,
+                                capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            self.skipTest("git is unavailable. A SKIP, not a PASS.")
+        tracked = [p for p in result.stdout.splitlines() if p]
+        floor(self, tracked, "tracked files", 20)
+        data = sorted(p for p in tracked
+                      if p.startswith("export/")
+                      or p.endswith((".jsonl", ".db", ".sqlite", ".csv",
+                                     ".parquet")))
+        self.assertEqual(data, [], f"collected data is tracked: {data}")
+
+    def test_the_readme_says_where_the_project_lives(self):
+        readme = (self.ROOT / "README.md").read_text()
+        self.assertIn("The project lives at", readme,
+                      "a published repository with no URL in its README "
+                      "gives a reader no way back to the source")
+
+    def test_rba_attribution_is_present_and_states_the_licence(self):
+        """CC BY 4.0 asks for credit. RBA is the only polled source placing
+        a positive obligation rather than a prohibition, and the README's
+        licence section enumerated every prohibition and no obligation."""
+        readme = (self.ROOT / "README.md").read_text()
+        for needed in ("Source: Reserve Bank of Australia",
+                       "Creative Commons"):
+            with self.subTest(text=needed):
+                self.assertIn(needed, readme)
+
+
 class TestUsableByAnyone(unittest.TestCase):
     """Nothing here may assume one particular person is running it."""
 
@@ -2230,13 +2377,14 @@ class TestUsableByAnyone(unittest.TestCase):
     def test_commit_hook_does_not_hardcode_an_identity(self):
         """It would reject every other contributor to an open project.
 
-        ASSERTED BY SHAPE, NOT BY NAMING THE PERSON. This used to read
-        `assertNotIn("spyril@gmail.com", hook)` and
-        `assertNotIn('EXPECTED_NAME="Spyril"', hook)` - which put the
-        author's real address and account name into a tracked file, so the
-        guard against leaking them was itself the leak, and every clone
-        carried it. Checking the shape catches any identity, including the
-        ones nobody has thought to name."""
+        ASSERTED BY SHAPE, NOT BY NAMING THE PERSON. Two earlier
+        assertions named the author's real address and account name as
+        literals, in order to assert the hook did not contain them - so the
+        guard against leaking an identity was itself the leak, and every
+        clone carried it. They are described here and not reproduced: the
+        third iteration of this mistake was the docstring that quoted them
+        back while explaining the problem. Checking the shape catches any
+        identity, including the ones nobody has thought to name."""
         import re
         hook = (self.ROOT / "git-hooks/commit-msg").read_text()
         PLACEHOLDER = "you@example.com"
@@ -2267,13 +2415,25 @@ class TestUsableByAnyone(unittest.TestCase):
                          "the fallback form is back; whatever it falls back "
                          "to travels on every request a stranger makes")
 
-    def test_no_default_anywhere_carries_the_author_url(self):
-        """The three files a fresh clone reads before its first request."""
+    def test_no_default_anywhere_carries_the_operators_identity(self):
+        """The three files a fresh clone reads before its first request.
+
+        READ, NOT WRITTEN DOWN. This named the author as a literal, which
+        made the guard the only tracked file carrying it. Reading git
+        config asserts the property actually worth guarding - that whoever
+        runs this does not ship their own identity as a default someone
+        else would send - and it holds for a downstream user too."""
+        identity = operator_identity()
+        if not identity:
+            self.skipTest(NO_IDENTITY)
         for name in ("sources.yaml", ".env.example", "macrowire/config.py"):
-            with self.subTest(file=name):
-                self.assertNotIn("Spyril", (self.ROOT / name).read_text(),
-                                 f"{name} ships the author's identity as a "
-                                 f"value a downstream user would send")
+            text = (self.ROOT / name).read_text()
+            for token in identity:
+                with self.subTest(file=name):
+                    self.assertNotIn(
+                        token, text,
+                        f"{name} ships the operator's identity as a value a "
+                        f"downstream user would send")
 
     def test_the_composed_user_agent_carries_the_operators_url(self):
         """Composed the way the loader composes it, not asserted against a
@@ -2321,9 +2481,11 @@ class TestUsableByAnyone(unittest.TestCase):
             with self.subTest(agent=agent[:60]):
                 self.assertIn(mine, agent, "the operator's URL is not sent")
                 self.assertIn(contact, agent, "the operator's contact is not sent")
-                self.assertNotIn("Spyril", agent,
-                                 "the author's URL is on the wire despite "
-                                 "the operator setting their own")
+                for token in operator_identity():
+                    self.assertNotIn(
+                        token, agent,
+                        "the operator's own identity is on the wire despite "
+                        "both variables being set to something else")
                 # AND NOTHING FROM THIS MACHINE'S OWN .env EITHER. Read at
                 # runtime rather than written down: naming the address in
                 # this file to prove it is absent would put it in every
@@ -3334,6 +3496,26 @@ class LocaleTests(unittest.TestCase):
         self.assertFalse([k for k in merged if k.startswith("cli.")])
         # and everything the page DOES use is still there
         self.assertIn("rail.health_heading", merged)
+
+    def test_the_rba_attribution_is_in_every_catalogue(self):
+        """CC BY 4.0 asks for credit and RBA specified the form. The
+        institution's NAME stays as given in every locale - it is the
+        identification the licence cares about, and the same call
+        rail.cot_asof already makes by keeping CFTC Latin inside translated
+        words. Only the frame word around it is translated.
+
+        The {year} placeholder is asserted here and its VALUE in the
+        browser: a literal year would be wrong every January."""
+        for locale in floor(self, self.i18n.available(), "locale files", 2):
+            text = self.i18n.load(locale)["rail"]["rba_asof"]
+            with self.subTest(locale=locale):
+                self.assertIn("Reserve Bank of Australia", text,
+                              f"{locale} does not credit the source by the "
+                              f"name RBA specified")
+                self.assertIn("{year}", text,
+                              f"{locale} states no year, or states one as a "
+                              f"literal - which is wrong every January")
+                self.assertNotIn("{years}", text)
 
     def test_cot_asof_states_the_method_in_every_catalogue(self):
         """STRUCTURE, NOT ENGLISH TEXT. rail.sb_asof has always stated its
@@ -5509,7 +5691,13 @@ class FactMatrixTests(unittest.TestCase):
         for locale in floor(self, i18n.available(), "locale files", 2):
             t = i18n.Translator(locale)
             rendered = {
-                "rba": t("rail.rba_asof", time=facts["rbaFix"], period="2026-08-21"),
+                # `year` is the RBA attribution's, added when the line
+                # gained one. Python's Translator returns the string
+                # UNFORMATTED on a missing field - louder than the JS side,
+                # which passes the placeholder through per-name, but either
+                # way an unsupplied field means the fact never renders.
+                "rba": t("rail.rba_asof", time=facts["rbaFix"],
+                         period="2026-08-21", year="2026"),
                 "cny": t("rail.cny_asof", period="2026-08-21",
                          time=facts["cfetsFix"], prior="2026-08-20"),
                 "ecb": t("rail.ecb_asof", period="2026-08-21",
@@ -5715,6 +5903,104 @@ class SettingsSurfaceTests(unittest.TestCase):
                       (ROOT / "macrowire/preferences.py").read_text())
 
 
+class LicensingRecordTests(unittest.TestCase):
+    """docs/licensing/ records correspondence that is NOT reproduced there.
+
+    WHAT THIS ASSERTS AND WHAT IT MUST NEVER ASSERT.
+
+    It checks that the mechanism of verification survives: the files exist,
+    each carries ASX's own reference, and each states the retention policy
+    so a reader knows the letter is withheld on purpose rather than lost.
+
+    It does NOT assert the absence of any letter text, and must not. A test
+    naming a sentence in order to prove that sentence is absent would put
+    that sentence in a tracked file - which is the leak, not the guard. The
+    commit-hook test made exactly that mistake and became the only tracked
+    file carrying the author's email address; its docstring then repeated
+    the mistake by quoting the assertions it had removed. Third time here
+    would be a pattern, not an accident.
+
+    So: presence of OUR OWN words only. Never a word that could plausibly
+    be ASX's.
+    """
+
+    DIR = Path(__file__).resolve().parent.parent / "docs/licensing"
+    REFERENCE = "ASXO-ASXLEGAL.FID2125721"
+    # The correspondence files, named. Deleting one is caught here and
+    # nowhere else - a directory that quietly lost half an exchange would
+    # otherwise still pass every remaining assertion.
+    FILES = ("2026-08-21-asx-request.txt",
+             f"2026-08-25-asx-reply-{REFERENCE}.txt")
+
+    def read(self, name):
+        return (self.DIR / name).read_text(encoding="utf-8")
+
+    def test_both_sides_of_the_exchange_are_still_recorded(self):
+        """A request with no reply, or a reply with no request, is half a
+        record - and half a record of asking permission reads worse than
+        none, because it invites the assumption that the missing half went
+        the other way."""
+        present = sorted(f.name for f in self.DIR.glob("*.txt"))
+        floor(self, present, "files in docs/licensing", 3)
+        for name in self.FILES:
+            with self.subTest(file=name):
+                self.assertIn(name, present)
+
+    def test_every_file_carries_the_reference(self):
+        """THE REFERENCE IS THE VERIFICATION. The letter is deliberately
+        not reproduced, so nothing else in this directory can be checked
+        against anything: a summary is this project's account of what was
+        said. The reference can be put to ASX and answered by the party
+        that issued it. Lose it and the record becomes an assertion."""
+        for name in self.FILES + ("README.txt",):
+            with self.subTest(file=name):
+                self.assertIn(
+                    self.REFERENCE, self.read(name),
+                    f"{name} no longer carries ASX's reference, which is "
+                    f"the only thing here a reader can verify against ASX "
+                    f"rather than against this repository")
+
+    def test_every_file_states_the_retention_policy(self):
+        """Withheld ON PURPOSE and withheld by accident look identical to a
+        reader. Each file says which, so nobody has to wonder whether the
+        letter was lost, forgotten, or never obtained.
+
+        Phrase SHAPE, not a quotation: these are the project's own words
+        about its own filing, and none of them could be ASX's."""
+        for name in self.FILES + ("README.txt",):
+            text = " ".join(self.read(name).split()).lower()
+            for phrase in ("retained privately", "available on request",
+                           "not repro"):
+                with self.subTest(file=name, phrase=phrase):
+                    self.assertIn(
+                        phrase, text,
+                        f"{name} does not state the retention policy "
+                        f"({phrase!r}); a withheld letter and a missing one "
+                        f"must not look alike")
+
+    def test_no_paste_placeholder_survives(self):
+        """These files were written when the plan was to paste the letters
+        in. A half-finished edit that shipped the instruction to paste
+        would advertise a section that is never going to be filled."""
+        for f in sorted(self.DIR.glob("*.txt")):
+            with self.subTest(file=f.name):
+                text = f.read_text(encoding="utf-8").upper()
+                for marker in ("HAS NOT BEEN PASTED", "VERBATIM TEXT AS"):
+                    self.assertNotIn(
+                        marker, text,
+                        f"{f.name} still carries the paste placeholder")
+
+    def test_the_readme_does_not_claim_the_letters_are_published(self):
+        """The README said the correspondence was kept in docs/licensing/,
+        "both the request and the reply". That was true of the plan and
+        never true of the tree."""
+        readme = " ".join(
+            (Path(__file__).resolve().parent.parent / "README.md")
+            .read_text(encoding="utf-8").split()).lower()
+        self.assertIn("retained privately by the operator", readme)
+        self.assertIn("available on request", readme)
+
+
 class LicenceTests(unittest.TestCase):
     """The licence covers the CODE. Someone will assume it covers the data."""
 
@@ -5722,6 +6008,14 @@ class LicenceTests(unittest.TestCase):
         self.licence = (ROOT / "LICENSE").read_text(encoding="utf-8")
         self.readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.section = self.flat(self.readme[self.readme.index("## Licence"):])
+        # A SECOND SLICE, not a wider one. Widening `section` to reach the
+        # ruled-out material would have let every assertion above it match
+        # text outside the licence section - "it does not cover the data"
+        # would pass on a sentence somewhere else entirely - so the older
+        # guarantees would quietly weaken while the new one was added.
+        start = self.readme.index("## Sources ruled out, and why")
+        stop = self.readme.index("## Where the sources are", start)
+        self.ruled_out = self.flat(self.readme[start:stop])
 
     @staticmethod
     def flat(text):
@@ -5792,10 +6086,80 @@ class LicenceTests(unittest.TestCase):
         self.assertIn("deliberately **not polled**", self.section)
         self.assertIn("The licensing position, stated plainly", self.readme)
 
+    # Every source investigated and declined, and the token its own HEADING
+    # must carry. NAMES ONLY - never a clause, never a date, never a word
+    # of correspondence.
+    #
+    # ON THE HEADINGS, NOT THE BODY, and the first version got this wrong.
+    # Searching the section text passed while WGC's whole subsection was
+    # deleted, because SPDR's entry says "the authorisation runs to WGTS
+    # rather than WGC" - and passed with PBoC's deleted, because CFFEX's
+    # says "Same call as PBoC and HKEX". A name mentioned in a NEIGHBOUR
+    # satisfied a test meant to prove the source had an entry of its own.
+    RULED_OUT = (("pboc", "pboc"), ("hkex", "hkex"), ("ccass", "ccass"),
+                 ("asx", "asx"), ("cffex", "cffex"),
+                 ("wgc", "world gold council"), ("spdr", "spdr"),
+                 ("faireconomy", "faireconomy"))
+
+    def headings(self):
+        import re
+        return [self.flat(m.group(1)) for m in
+                re.finditer(r"^### (.+)$",
+                            self.readme[self.readme.index(
+                                "## Sources ruled out, and why"):
+                                self.readme.index("## Where the sources are")],
+                            re.M)]
+
+    def test_every_ruled_out_source_is_still_on_the_record(self):
+        """A project whose position is that it respects source terms has to
+        show the ones it read and declined. Four of these went undocumented
+        for months; the record is only evidence of the discipline while it
+        is complete, and nothing but a test keeps it that way."""
+        floor(self, self.ruled_out, "ruled-out section characters", 2000)
+        heads = self.headings()
+        # DERIVED from RULED_OUT, not written down beside it: a second
+        # number would be a second thing to maintain, and the count and the
+        # list would drift the first time one was added.
+        self.assertEqual(
+            len(heads), len(self.RULED_OUT),
+            f"the section has {len(heads)} entries for "
+            f"{len(self.RULED_OUT)} ruled-out sources: {heads}")
+        for name, token in self.RULED_OUT:
+            with self.subTest(source=name):
+                self.assertTrue(
+                    any(token in h for h in heads),
+                    f"no subsection heading names {name}; a source dropped "
+                    f"from the record is indistinguishable from one that "
+                    f"was never investigated. Headings: {heads}")
+
+    def test_the_ruled_out_section_gives_no_count(self):
+        """The number has been written down twice and been wrong both
+        times - once as three, once as four - because sources kept being
+        added to the record and not to the sentence. A count is a fact that
+        has to be maintained in two places at once."""
+        import re
+        # BOTH SLICES. The count was wrong twice in the LICENCE sentence,
+        # not in the section it describes - guarding only the section would
+        # have left the sentence free to reintroduce exactly the fault this
+        # exists to prevent.
+        for label, text in (("ruled-out section", self.ruled_out),
+                            ("licence section", self.section)):
+            for word in ("three", "four", "five", "six", "seven", "eight"):
+                with self.subTest(where=label, word=word):
+                    self.assertIsNone(
+                        re.search(rf"\b{word} sources\b", text),
+                        f"the {label} counts the ruled-out sources "
+                        f"({word}); the count and the entries drift apart "
+                        f"the moment one is added")
+
     def test_the_licence_file_is_not_modified_boilerplate(self):
         """A licence with local edits is not that licence any more."""
         self.assertNotIn("MacroWire", self.licence)
-        self.assertNotIn("Spyril", self.licence)
+        for token in operator_identity():
+            self.assertNotIn(token, self.licence,
+                             "the licence names the operator; AGPL-3.0 is "
+                             "verbatim boilerplate and a local edit makes it "
+                             "a different licence")
         self.assertIn("Copyright (C) 2007 Free Software Foundation",
                       self.licence)
 
@@ -7953,6 +8317,116 @@ class TapeStabilityTests(BrowserTestCase):
         missing = [k for k, v in withData.items() if not v["age"]]
         self.assertEqual(missing, [],
                          f"these as-of lines carry a date but no age: {missing}")
+
+    def test_no_asof_line_renders_an_unsubstituted_placeholder(self):
+        """ON THE RENDERED OUTPUT, not on the catalogue string.
+
+        This is the failure the catalogue could not have shown. t()
+        substitutes only the fields it is GIVEN and returns "{name}"
+        verbatim for the rest, so a catalogue entry can be perfectly
+        correct while the call site never passes the field - and the page
+        ships "Source: Reserve Bank of Australia {year}", which looks
+        finished in the JSON and is broken on screen. Only the DOM knows.
+
+        Every as-of line, not only RBA: the mechanism is shared and the
+        next one to gain a field will be checked for free."""
+        import re
+        seen = self.js("""const out = {};
+            for (const id of ['fx-asof', 'sb-asof', 'cot-asof',
+                              'ecb-asof', 'rba-asof']) {
+              const e = document.getElementById(id);
+              out[id] = e ? e.textContent.trim() : null;
+            }
+            return out;""")
+        withText = {k: v for k, v in seen.items() if v}
+        floor(self, withText, "as-of lines carrying text", 3)
+        for panel, text in sorted(withText.items()):
+            with self.subTest(panel=panel):
+                left = re.findall(r"\{\w+\}", text)
+                self.assertEqual(
+                    left, [],
+                    f"{panel} renders unsubstituted {left}: the catalogue "
+                    f"declares a field the call site never passes")
+
+    def test_the_rba_attribution_names_the_years_of_the_data_not_of_today(self):
+        """THE CLOCK IS MUTATED, NOT THE DATA.
+
+        RBA asks for "Source: Reserve Bank of Australia [year]" and the
+        year belongs to the observation. On 1 January a panel still showing
+        December's fix must credit the year that fix was published; a
+        `new Date()` would quietly start crediting the wrong one and stay
+        wrong for twelve months. So the assertion is that moving the clock
+        five years forward does not move the attribution."""
+        import re
+        rendered = self.js("""
+            const e = document.getElementById('rba-asof');
+            return e ? e.textContent.trim() : null;""")
+        self.assertTrue(rendered, "the RBA as-of line is empty")
+        self.assertIn("Reserve Bank of Australia", rendered,
+                      f"no attribution on the RBA panel: {rendered!r}")
+        # The period the panel is actually showing, taken from the payload
+        # rather than from the same string under test.
+        period = self.js("""return fetch('/api/rail').then(r => r.json())
+            .then(d => (d.rba && d.rba.length) ? d.rba[0].period : null);""")
+        self.assertTrue(period, "the rail payload carries no RBA period")
+        want = str(period)[:4]
+        self.assertIn(want, rendered,
+                      f"the attribution does not name the data's year "
+                      f"{want}: {rendered!r}")
+
+        # Now move the clock. yearOf() must not consult it.
+        #
+        # window.Date, NOT the bare identifier: geckodriver evaluates this
+        # script in its own sandbox where `window.Date === Date` is FALSE,
+        # so patching the bare name changes the sandbox's clock and leaves
+        # the page's alone. The first version of this test did exactly that
+        # and reported "the clock did not actually move" - correctly, and
+        # about the wrong clock.
+        try:
+            shifted = self.js("""
+                const Real = window.Date;
+                const skew = 5 * 365.25 * 24 * 3600 * 1000;
+                function Fake(...a) {
+                  return a.length ? new Real(...a) : new Real(Real.now() + skew);
+                }
+                Fake.now = () => Real.now() + skew;
+                Fake.UTC = Real.UTC;
+                Fake.parse = Real.parse;
+                Fake.prototype = Real.prototype;
+                window.__realDate = Real;
+                window.Date = Fake;
+                return new window.Date().getFullYear();""")
+            self.js("""return fetch('/api/rail').then(r => r.json())
+                       .then(d => { drawRail(d); return 1; });""")
+            import time
+            time.sleep(1.5)
+            after = self.js("""
+                const e = document.getElementById('rba-asof');
+                return e ? e.textContent.trim() : null;""")
+        finally:
+            self.js("""if (window.__realDate) { window.Date = window.__realDate;
+                       delete window.__realDate; } return 1;""")
+            self.redraw_rail()
+        self.assertNotEqual(
+            str(shifted), want,
+            f"the clock did not move; the mutation proves nothing "
+            f"(clock year {shifted}, data year {want})")
+        # PROOF THE PAGE SAW IT, measured in page-rendered output rather
+        # than assumed from the assignment succeeding. asOf() computes the
+        # age from the same clock, so a five-year jump must show there. If
+        # this line ever passes trivially the test below is worthless.
+        self.assertNotEqual(
+            after, rendered,
+            f"the rendered line is unchanged, so the page never saw the "
+            f"moved clock and the assertion below proves nothing: {after!r}")
+        self.assertIn(
+            want, after,
+            f"with the clock at {shifted} the attribution stopped naming "
+            f"the data's year {want}: {after!r}")
+        self.assertNotIn(
+            str(shifted), after,
+            f"the attribution named the CLOCK's year {shifted} rather than "
+            f"the observation's {want}: {after!r}")
 
     def test_the_derived_mark_is_on_computed_values_and_nowhere_else(self):
         """THE ASYMMETRY IS THE DESIGN, and it is three-way.
