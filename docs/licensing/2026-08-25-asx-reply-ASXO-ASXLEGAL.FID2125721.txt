@@ -7,32 +7,55 @@ Reference:      ASXO-ASXLEGAL.FID2125721
 Regarding:      Request of 21 August 2026 for written consent under
                 clause 5(b) of the ASX Terms of Use
 
-THE VERBATIM TEXT OF THIS REPLY HAS NOT BEEN PASTED IN YET.
--------------------------------------------------------------------------
-Paste the reply as received, below the line at the end of this file, and
-delete these five lines. Until then this file is a record of what the
-reply said, written from a summary - which is NOT the same thing as the
-reply, and is not what this directory exists to hold.
--------------------------------------------------------------------------
+What was asked, and when
+------------------------
+
+On 21 August 2026 the repository owner asked ASX for written consent under
+clause 5(b) for automated access to company announcements, on a narrow
+case: personal non-commercial use, a watchlist of about twenty securities,
+polled a few times a day, stored locally, never redistributed. The request
+is recorded in 2026-08-21-asx-request.txt.
 
 What the reply said
 -------------------
 
-Consent declined. ASX does not allow retail end users to scrape the ASX
-website. The request was directed to ASX's published list of data vendors
-and ISVs as the route for sourcing the data.
+Consent was declined. ASX does not allow retail end users to scrape the
+ASX website. The request was directed to ASX's published list of data
+vendors and ISVs as the route for sourcing the data - the institutional
+route, under commercial agreements priced for businesses rather than for
+individuals. It is not a route this project takes.
+
+Reference
+---------
+
+ASX reference:  ASXO-ASXLEGAL.FID2125721
+Date received:  25 August 2026
+Issuing office: ASX, Office of General Counsel
+
+Retention
+---------
+
+The verbatim letter is retained privately by the operator and is available
+on request.
+
+It is deliberately not reproduced here. Consent was sought to ACCESS the
+site; permission to republish ASX's own words was never asked for and
+never given. A project whose whole position is that it asks first should
+not publish someone else's letter on the strength of having received it.
+
+What makes this checkable is the reference, not a quotation. A reader who
+doubts the summary above can put ASXO-ASXLEGAL.FID2125721 to ASX and get
+the same answer from the party that issued it. That is a stronger form of
+verification than a pasted letter, which can only be read and must still
+be believed.
 
 Scope of this document
 ----------------------
 
 This is one written answer to one retail request. It is not a statement of
-ASX policy beyond what the reply itself says, and the README does not
-present it as one.
+ASX policy beyond what the reply itself says, and the project README does
+not present it as one.
 
-The conclusion it supports was already reached from clause 5(b) alone:
-ASX was out before this letter. What the letter changes is that the
-position is confirmed rather than inferred.
-
--------------------------------------------------------------------------
-VERBATIM TEXT AS RECEIVED
--------------------------------------------------------------------------
+The conclusion it supports was already reached from clause 5(b) alone: ASX
+was out before this letter. What the letter changes is that the position is
+confirmed rather than inferred.
