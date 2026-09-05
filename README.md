@@ -24,6 +24,16 @@ set `MACROWIRE_PROJECT_URL` to **your** copy rather than this one — it goes
 into the outbound `User-Agent`, and a source seeing unfamiliar traffic
 should be pointed at whoever is running it.
 
+![MacroWire — dark theme](docs/mainpage_dark.png)
+
+<details>
+<summary>Light theme, and Simplified Chinese</summary>
+
+![Light theme](docs/mainpage_light.png)
+![Light theme, Simplified Chinese (zh-CN)](docs/mainpage_light_chinese.png)
+
+</details>
+
 ## Before you use it
 
 **Nothing this tool shows you is financial advice or a recommendation to
@@ -60,17 +70,21 @@ no market data vendor feeds. The distinction is deliberate: announcements
 are free to read for personal use; exchange price data costs four figures
 a month.
 
-The one apparent exception is the RBA exchange rate feed, which is a
-central bank's own published daily reference series — not a market data
-product, not tradeable, and stored in a separate table precisely so it
-never gets confused with news. See *Exchange rates* below.
+The apparent exceptions are all of the same kind: reference series and
+positioning data that the issuing institution publishes itself — the RBA,
+ECB and CFETS reference rates, and the CFTC's Commitments of Traders.
+None is a market data product, none is tradeable, and all of them live in
+`observations` rather than `items`, in a separate table precisely so they
+never get confused with news. See *Three reference series, three bases*
+and *Positioning* below.
 
 ## Requirements
 
-Kubuntu 26.04, Python 3.12, conda env `market`.
+Python 3.12. Developed on Kubuntu 26.04; nothing in it is
+distribution-specific.
 
 ```bash
-conda activate market
+python3 -m venv .venv && source .venv/bin/activate   # or your own env
 pip install -r requirements.txt
 cp .env.example .env      # then edit: set MACROWIRE_CONTACT,
                           # MACROWIRE_PROJECT_URL and SEC_CONTACT
@@ -133,7 +147,8 @@ Edit `sources.yaml`. Nothing else.
       staleness_days: 14
 ```
 
-`parser` names a handler in `macrowire/parsers/`. Two ship today:
+`parser` names a handler in `macrowire/parsers/`. The registry in
+`parsers/__init__.py` is the list; these are its entries:
 
 | parser | reads | writes to |
 |---|---|---|
@@ -142,6 +157,11 @@ Edit `sources.yaml`. Nothing else.
 | `rss_news` | plain RSS 2.0 `<item>` entries | `items` |
 | `cfets_ccpr` | CFETS CNY central parity JSON API | `observations` |
 | `ecb_fx` | ECB euro reference rates (gesmes XML) | `observations` |
+| `cftc_cot` | CFTC Commitments of Traders, FX futures | `observations` |
+| `sec_edgar` | SEC EDGAR company submissions JSON | `items` |
+| `cninfo` | CNINFO announcement query API | `items` |
+| `sse_southbound` | SSE Southbound Connect turnover JSON | `observations` |
+| `buyback_schedule` | Treasury buyback tentative schedule XML | `observations` |
 
 Only the RBA uses RSS-CB. Every other central bank verified publishes
 plain RSS 2.0 with no `cb:` namespace at all.
@@ -288,11 +308,11 @@ meant inventing editorial judgement for seven sources that declare none.
 | | sources |
 |---|---|
 | AU | `rba_media_releases`, `rba_exchange_rates` |
-| CN | `cfets_ccpr`, `nbs_releases`, `nbs_interpretation` |
-| US | `fed_press_monetary`, `fed_speeches` |
+| CN | `cfets_ccpr`, `nbs_releases`, `nbs_interpretation`, `cninfo_announcements`, `sse_southbound` |
+| US | `fed_press_monetary`, `fed_speeches`, `treasury_auction_announcements`, `treasury_auction_results`, `treasury_buyback_schedule`, `sec_edgar`, `cftc_cot` |
+| EU | `ecb_press`, `ecb_fx` |
 | HK | `hkma_press` |
 | JP | `boj_whatsnew` |
-| EU | `ecb_press` |
 | UK | `boe_news` |
 
 **The interface calls it MARKET, and this file calls it jurisdiction.**
@@ -350,9 +370,9 @@ sec_edgar   44 distinct types      ecb_press  3
 boe_news, boj_whatsnew, hkma_press, nbs_*, fed_*, rba_*   1 each
 ```
 
-**Nine of ten sources have exactly one type — their type *is* their
-source.** A global type axis would ship nine chips selecting rows already
-selectable by the source row. So type is grouped under its owning source,
+**Every source but `sec_edgar` and `ecb_press` has exactly one type —
+their type *is* their source.** A global type axis would ship a chip per
+source, selecting rows already selectable by the source row. So type is grouped under its owning source,
 and a source with a single type is not offered as a type filter at all.
 
 And the stored string is a composite: `8-K [2.02, 9.01]`. *"Show me
@@ -765,10 +785,20 @@ to well under 1%. A misparse would be off by orders of magnitude.
 Every URL below was found on that institution's own RSS directory page
 and confirmed to return parseable entries. None were guessed.
 
+**This records the initial feed survey, not the current source list.** It
+covers the RSS and JSON feeds verified when the project was built; sources
+added since — the Treasury feeds, SEC EDGAR, CFTC — are documented in
+their own sections. `fed_press_all` is listed because it was verified and
+its overlap with `fed_press_monetary` is discussed below; it is not in
+`sources.yaml`. The `archive` column uses the same three values as
+`sources.yaml` (`none`, `rolling`, `queryable`) where a source declares
+one; `shallow` and `deep` describe how far a feed's own window reaches and
+are observations, not settings.
+
 | source | feed | ver | entries | archive |
 |---|---|---|---|---|
 | `rba_media_releases` | rba.gov.au/rss/rss-cb-media-releases.xml | rss10 | 1 | none |
-| `rba_exchange_rates` | rba.gov.au/rss/rss-cb-exchange-rates.xml | rss10 | 21 | today only |
+| `rba_exchange_rates` | rba.gov.au/rss/rss-cb-exchange-rates.xml | rss10 | 21 | none |
 | `fed_press_monetary` | federalreserve.gov/feeds/press_monetary.xml | rss20 | 15 | shallow |
 | `fed_press_all` | federalreserve.gov/feeds/press_all.xml | rss20 | 20 | shallow |
 | `fed_speeches` | federalreserve.gov/feeds/speeches.xml | rss20 | 15 | shallow |
@@ -1162,22 +1192,23 @@ configuration stays, and `status` marks it `[DISABLED]` instead of
 reporting it stale — a disabled source cannot be stale, because nothing
 is polling it.
 
-Two of the fourteen are domestic to mainland China and served from
-inside it:
+Five sources are domestic to mainland China and served from inside it;
+the rest are not:
 
 | domestic to China | international |
 |---|---|
 | `cfets_ccpr` (chinamoney.com.cn) | RBA ×2 (AU) |
-| `nbs_releases`, `nbs_interpretation` (stats.gov.cn) | Fed ×2, SEC, CFTC (US) |
+| `nbs_releases`, `nbs_interpretation` (stats.gov.cn) | Fed ×2, Treasury ×3, SEC, CFTC (US) |
 | `cninfo_announcements` (cninfo.com.cn) | ECB ×2 (EU), BoE (UK) |
 | `sse_southbound` (query.sse.com.cn) | BoJ (JP), HKMA (HK) |
 
-That is five source blocks on four Chinese hosts, and eleven abroad.
-Enabling only those four gives a working tool: the CNY fix, the rail
-panel that draws from it, NBS statistical releases, company
-announcements for any mainland code on the watchlist, and the tape. What
-you lose is everything priced off the other eleven — the ECB and RBA
-reference-rate panels, the CFTC positioning panel, and SEC company
+That is five source blocks on four Chinese hosts, and fourteen abroad.
+Enabling only the domestic five gives a working tool: the CNY fix, the
+rail panel that draws from it, NBS statistical releases, Southbound
+Connect turnover, company announcements for any mainland code on the
+watchlist, and the tape. What you lose is everything priced off the
+others — the ECB and RBA reference-rate panels, the CFTC positioning
+panel, the Treasury auction and buyback series, and SEC company
 filings.
 
 The tool does not detect where you are and does not change its behaviour
@@ -1187,7 +1218,7 @@ streak is timeouts or connections that never landed is shown as
 never as failing, because nothing came back to judge the feed by. If two
 or more sources are in that state at once the rail says so above the
 per-source rows, since most of them unreachable points at the connection
-rather than at fourteen publishers.
+rather than at every publisher at once.
 
 If a link is slow rather than blocked, raise `timeout_seconds` —
 globally under `defaults:`, or under one source's `config:`. It is not a
@@ -1700,7 +1731,7 @@ parsing, its encoding sniffer guessed `iso-8859-2` for a document
 declaring UTF-8, and the old gate waved all 313 through because
 `parsed.entries` was non-empty. Partial garbage is still garbage.
 
-All eight feeds currently polled report `bozo=False`, so strictness costs
+Every feed currently polled reports `bozo=False`, so strictness costs
 nothing today. If a feed later turns out to be persistently bozo for a
 benign reason, that is a decision to make deliberately, not something to
 absorb silently.
@@ -1780,8 +1811,8 @@ candidate if you want one more.
   one.
 - `stagger_seconds` (default 2) spaces sources within a cycle. Fetching
   is sequential, so servers are never hit simultaneously in any case;
-  this stops nine requests going out inside a second across five
-  different governments. A full cycle takes ~20s.
+  this stops a whole cycle's requests going out inside a second, spread
+  across every government it polls.
 
 ## The defaults are opinions
 
@@ -1794,7 +1825,7 @@ configuration, and are marked as such in the file itself:
 | `staleness_days` | which feeds are expected to be daily |
 | `skip_forms` | SEC forms not worth reading (Form 4 + 144 were ~88% of volume) |
 | `currencies` | which ECB pairs are stored — 8 of the 29 published |
-| **the source list** | **six of thirteen sources are AU, CN or HK** |
+| **the source list** | **eight of nineteen sources are AU, CN or HK** |
 
 The last is the largest and least visible: it is not a setting you can
 change, it is a point of view about which economies matter. Adding a source
@@ -1856,7 +1887,7 @@ chmod +x .git/hooks/commit-msg
 
 ```
 sources.yaml              every source definition
-export/irreplaceable.jsonl  COMMIT THIS - off-machine copy of unrecoverable rows
+export/                   off-machine copy of unrecoverable rows; gitignored
 macrowire/
   __main__.py             CLI: fetch, status
   config.py               YAML loader, ${ENV} expansion, validation
@@ -1880,6 +1911,13 @@ macrowire/
     cb_news.py            RSS-CB cb:news       -> items
     cb_statistics.py      RSS-CB cb:statistics -> observations
     rss_news.py           plain RSS 2.0        -> items
+    cfets_ccpr.py         CNY central parity   -> observations
+    ecb_fx.py             euro reference rates -> observations
+    cftc_cot.py           Commitments of Traders -> observations
+    sec_edgar.py          EDGAR submissions    -> items
+    cninfo.py             CNINFO announcements -> items
+    sse_southbound.py     Southbound turnover  -> observations
+    buyback_schedule.py   Treasury buybacks    -> observations
 git-hooks/commit-msg
 data/macrowire.db         gitignored
 ```
@@ -1982,7 +2020,7 @@ language natively, and trades, understand it without stopping?*
 python -m unittest discover -s tests -v
 ```
 
-Twenty-four regression tests over stdlib `unittest` — no new dependency.
+Regression tests over stdlib `unittest` — no new dependency.
 
 **Tests never touch `data/macrowire.db`.** The suite sets
 `MACROWIRE_REFUSE_DEFAULT_DB=1` before importing anything, which makes
@@ -2268,9 +2306,9 @@ that genuinely cannot is what makes the paragraph worth reading.
 
 | | meaning | sources |
 |---|---|---|
-| `NO` (none) | our copy is the only one | `rba_media_releases`, `rba_exchange_rates` |
-| `PARTIAL` (rolling) | only the live window is re-fetchable | the six news feeds, both NBS |
-| `YES` (queryable) | fully re-fetchable on demand | `cfets_ccpr` |
+| `NO` (`archive: none`) | our copy is the only one | `rba_media_releases`, `rba_exchange_rates` |
+| `PARTIAL` (`archive: rolling`) | only the live window is re-fetchable | the news feeds, both NBS, both Treasury auction feeds, `ecb_fx` |
+| `YES` (`archive: queryable`) | fully re-fetchable on demand | `cfets_ccpr`, `cftc_cot`, `cninfo_announcements`, `sec_edgar`, `sse_southbound`, `treasury_buyback_schedule` |
 
 Sources marked `archive: none` are **forbidden from setting
 `raw_retention_days`** — the config loader rejects it, because pruning
@@ -2315,12 +2353,18 @@ and the rail says so rather than pretending otherwise.
 
 #### Version control is one option, not the instruction
 
-If you keep this in git, committing the export is a perfectly good way to
-get it off the disk, and `<repo>/export` is not gitignored so that it can
-be. It is **one** arrangement among several — a synced folder, an external
-drive, a backup job — and the tool does not assume it. Nothing in the
-interface mentions git, and the CLI only mentions it parenthetically when
-a repository is actually present.
+**This repository does not track the export.** `export/` is gitignored
+here, because what the file holds is collected rows belonging to their
+publishers rather than code belonging to this project — see
+[Licence](#licence).
+
+That is a decision about *this* repository, not about yours. If you keep
+your own copy in your own repository, committing the export is a perfectly
+good way to get it off the disk; you would remove `export/` from your
+`.gitignore` to do it. It is **one** arrangement among several — a synced
+folder, an external drive, a backup job — and the tool does not assume any
+of them. Nothing in the interface mentions git, and the CLI only mentions
+it parenthetically when a repository is actually present.
 
 The project never commits anything itself. That is deliberate and will not
 change: a background process making commits in your name, potentially
@@ -2348,7 +2392,8 @@ release and 21 per trading day of fixings.
 
 #### Why JSONL rather than a SQL dump
 
-Because the whole point is that this file lives in git.
+Because a line-oriented file diffs and syncs cleanly, and the whole point
+of the export is that it can be carried somewhere else.
 
 Line-oriented data diffs per row: a new media release appends one line
 and touches nothing else, so history stays readable and a conflict is

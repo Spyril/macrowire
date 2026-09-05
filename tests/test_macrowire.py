@@ -2358,6 +2358,41 @@ class PublicationHygieneTests(unittest.TestCase):
                       "a published repository with no URL in its README "
                       "gives a reader no way back to the source")
 
+    def test_the_readme_does_not_instruct_committing_the_export(self):
+        """The README told the reader to COMMIT THIS next to the export
+        path, and said `<repo>/export` was "not gitignored so that it can
+        be". Both were true of an earlier plan and false once the export
+        was untracked before publication.
+
+        THE LOAD-BEARING HALF IS A CROSS-CHECK, NOT A STRING MATCH. What
+        makes the README right is that it agrees with .gitignore, so this
+        asserts the two files say the same thing: if `export/` is ever
+        un-ignored, the README's claim becomes false and this fails, which
+        a search for a banned phrase would never notice.
+
+        The phrase check is kept as well, cheaply, because it names the
+        exact regression that shipped. It is narrow on purpose - it cannot
+        catch the same instruction reworded, and is not asked to."""
+        readme = (self.ROOT / "README.md").read_text()
+        ignored = [l.strip() for l in
+                   (self.ROOT / ".gitignore").read_text().splitlines()
+                   if l.strip() and not l.strip().startswith("#")]
+
+        self.assertNotIn(
+            "COMMIT THIS", readme,
+            "the README instructs the reader to commit the export, which "
+            "this repository does not track")
+        self.assertIn(
+            "does not track the export", readme,
+            "the README no longer states that this repository leaves the "
+            "export untracked; a reader has nothing telling them which "
+            "arrangement is the shipped one")
+        self.assertIn(
+            "export/", ignored,
+            "the README says this repository does not track the export, "
+            "and .gitignore no longer agrees - one of the two is now lying "
+            "to the reader")
+
     def test_the_changelog_exists_and_names_a_release(self):
         """A published repository with no changelog gives a reader no way
         to tell a first release from an abandoned working tree.
