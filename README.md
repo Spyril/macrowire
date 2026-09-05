@@ -24,6 +24,35 @@ set `MACROWIRE_PROJECT_URL` to **your** copy rather than this one — it goes
 into the outbound `User-Agent`, and a source seeing unfamiliar traffic
 should be pointed at whoever is running it.
 
+## Before you use it
+
+**Nothing this tool shows you is financial advice or a recommendation to
+trade anything.** It fetches what institutions published and puts it on a
+page in the order they published it. Any judgement about what that means,
+or what to do about it, is entirely yours.
+
+**No warranty on accuracy.** Sources revise figures, republish corrections,
+change formats and go quiet without saying so. The app renders what was
+published, not what is true — that is deliberate, and the mechanics of it
+are set out in [Revisions are surfaced, not
+swallowed](#revisions-are-surfaced-not-swallowed) and [Failure
+policy](#failure-policy). A number on the rail is a claim a source made at
+a moment, and the as-of line beside it tells you which moment.
+
+**Complying with a source's terms is the operator's responsibility, not
+this project's.** Requests go out under *your* identity — that is what
+`MACROWIRE_PROJECT_URL` and `MACROWIRE_CONTACT` are for — so a source
+looking at unfamiliar traffic sees you, not whoever wrote this. [Sources
+ruled out, and why](#sources-ruled-out-and-why) records the positions this
+project reached about specific publishers. Those are readings of terms as
+they stood on the dates given, not permission for anyone else's fetching,
+and terms change.
+
+**The software is provided as-is.** The AGPL's warranty disclaimer —
+sections 15 and 16 of [LICENSE](LICENSE) — is what governs, and the
+plain-language summary in [Licence](#licence) is orientation rather than a
+substitute for it.
+
 ## What this is not
 
 This is **news and announcements**, not price data. No OHLCV, no quotes,

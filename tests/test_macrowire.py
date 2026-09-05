@@ -2358,6 +2358,40 @@ class PublicationHygieneTests(unittest.TestCase):
                       "a published repository with no URL in its README "
                       "gives a reader no way back to the source")
 
+    def test_the_changelog_exists_and_names_a_release(self):
+        """A published repository with no changelog gives a reader no way
+        to tell a first release from an abandoned working tree.
+
+        SHAPE, NOT CONTENT: that a version heading exists, never which
+        version or what it says. The entry's prose must stay editable
+        without touching a test."""
+        import re
+        path = self.ROOT / "CHANGELOG.md"
+        self.assertTrue(path.exists(), "CHANGELOG.md is gone")
+        text = path.read_text(encoding="utf-8")
+        floor(self, text, "changelog characters", 200)
+        versions = re.findall(r"^## \[[^\]]+\]", text, re.M)
+        self.assertTrue(
+            versions,
+            "the changelog records no release; a file with no version "
+            "heading is a placeholder, not a changelog")
+
+    def test_the_readme_carries_a_disclaimer_before_the_install_steps(self):
+        """A reader deciding whether to use this must meet the disclaimer
+        BEFORE the copy-pasteable install block, not after it.
+
+        Position is the assertion. The wording is not: no sentence of the
+        disclaimer is named here, so it can be rewritten freely and only
+        deleting or moving the section fails."""
+        readme = (self.ROOT / "README.md").read_text()
+        self.assertIn("## Before you use it", readme,
+                      "the disclaimer section is gone")
+        self.assertLess(
+            readme.index("## Before you use it"),
+            readme.index("## Requirements"),
+            "the disclaimer sits below the install instructions, where a "
+            "reader has already started using the tool")
+
     def test_rba_attribution_is_present_and_states_the_licence(self):
         """CC BY 4.0 asks for credit. RBA is the only polled source placing
         a positive obligation rather than a prohibition, and the README's
